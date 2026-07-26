@@ -27,8 +27,8 @@ break (or hijack) the script.
 ### Register with Claude Code
 
 ```bash
-git clone https://github.com/andyyaro/mcp-keynote.git ~/Downloads/mcp-keynote
-claude mcp add keynote-mcp -- uv --directory ~/Downloads/mcp-keynote run keynote-mcp
+git clone https://github.com/andyyaro/mcp-keynote.git /path/to/mcp-keynote
+claude mcp add keynote-mcp -- uv --directory /path/to/mcp-keynote run keynote-mcp
 ```
 
 That exact command is verified end-to-end: it starts the server, lists the
@@ -41,7 +41,7 @@ tools, and executes them. Check health with `claude mcp list`.
   "mcpServers": {
     "keynote-mcp": {
       "command": "uv",
-      "args": ["--directory", "/Users/you/Downloads/mcp-keynote", "run", "keynote-mcp"],
+      "args": ["--directory", "/path/to/mcp-keynote", "run", "keynote-mcp"],
       "env": { "UNSPLASH_KEY": "optional_key_here" }
     }
   }

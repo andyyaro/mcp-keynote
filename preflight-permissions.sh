@@ -14,7 +14,8 @@
 
 set -uo pipefail
 
-SCRATCH="${HOME}/Downloads/mcp-keynote/.scratch"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRATCH="${REPO}/.scratch"
 BOLD=$'\033[1m'; DIM=$'\033[2m'; GRN=$'\033[32m'; RED=$'\033[31m'; YLW=$'\033[33m'; RST=$'\033[0m'
 
 ok()   { printf "  ${GRN}✓${RST} %s\n" "$1"; }
@@ -169,7 +170,7 @@ if [[ $PASS -eq 1 ]]; then
   printf "     'Require password after screen saver begins' → Never. UI scripting fails\n"
   printf "     against a locked screen, and caffeinate does not prevent locking.\n"
   printf "  4. Start the run under caffeinate so nothing sleeps mid-phase:\n\n"
-  printf "     ${BOLD}cd ~/Downloads/mcp-keynote && caffeinate -dimsu claude --dangerously-skip-permissions${RST}\n\n"
+  printf "     ${BOLD}cd ${REPO} && caffeinate -dimsu claude --dangerously-skip-permissions${RST}\n\n"
 else
   printf "  ${RED}${BOLD}Not ready.${RST} Fix the ✗ items above and re-run.\n"
   printf "  If a dialog never appears, you previously denied it — reset and retry:\n\n"

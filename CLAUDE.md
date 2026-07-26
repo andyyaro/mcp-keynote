@@ -15,7 +15,7 @@ uv --directory /path/to/mcp-keynote run keynote-mcp
 
 Registered in Claude Code as:
 ```bash
-claude mcp add keynote-mcp -- uv --directory ~/Downloads/mcp-keynote run keynote-mcp
+claude mcp add keynote-mcp -- uv --directory ~/dev/mcp-keynote run keynote-mcp
 ```
 
 **After any code change, restart the MCP server** (exit/re-enter the Claude
