@@ -43,7 +43,7 @@ class ContentTools:
         return [
             Tool(
                 name="add_text_box",
-                description="Add a text box to a slide",
+                description="Add a text box to a slide. Returns the item's index and its final position/size after Keynote's auto-fit settles; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -88,7 +88,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_title",
-                description="Add a title text box to a slide (default 36pt)",
+                description="Add a title text box to a slide (default 36pt). Returns the item's index and final position/size; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -120,7 +120,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_subtitle",
-                description="Add a subtitle text box to a slide (default 24pt)",
+                description="Add a subtitle text box to a slide (default 24pt). Returns the item's index and final position/size; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -152,7 +152,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_bullet_list",
-                description="Add a bullet list to a slide (default 18pt)",
+                description="Add a bullet list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -176,7 +176,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_numbered_list",
-                description="Add a numbered list to a slide (default 18pt)",
+                description="Add a numbered list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -200,7 +200,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_code_block",
-                description="Add a monospaced code block to a slide (default 14pt Monaco)",
+                description="Add a monospaced code block to a slide (default 14pt Monaco). Returns the item's index and final position/size; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -227,7 +227,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_quote",
-                description="Add a quote text box to a slide (default 20pt, wrapped in quotes)",
+                description="Add a quote text box to a slide (default 20pt, wrapped in quotes). Returns the item's index and final position/size; x/y land exactly as given.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -273,7 +273,7 @@ class ContentTools:
             ),
             Tool(
                 name="add_image",
-                description="Add an image from a local file to a slide",
+                description="Add an image from a local file to a slide. Returns the image's index and final position/size.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -601,8 +601,8 @@ class ContentTools:
         width: float | None = None,
         height: float | None = None,
         centered: bool = False,
-    ) -> str:
-        """Create a text item; returns its 1-based index on the slide.
+    ) -> tuple[str, str, str]:
+        """Create a text item; returns (index, "x,y", "w,h") after settling.
 
         The index is located by object identity, NOT via ``count of text
         items``: Keynote's count includes the slide's hidden default
@@ -616,6 +616,16 @@ class ContentTools:
         when the caller gives no width - and the text is re-set afterwards to
         restore any truncation. Callers never need the old resize-then-edit
         workaround.
+
+        Position is applied AFTER all font/size mutations. Text items are
+        born at the theme default font size (48pt measured) and auto-fit
+        their box when the font size changes, keeping the box's vertical
+        CENTER fixed - so a position set before the font size drifts by
+        (h_before - h_after)/2 (horizontal auto-fit is left-anchored; x
+        holds). Setting position last lands exactly. The final geometry is
+        read back in the same osascript call and returned, in the same
+        AppleScript coercion get_slide_content uses, so callers never need a
+        follow-up read.
         """
         validate_slide_number(slide_number)
         x_pos, y_pos = validate_coordinates(x, y)
@@ -675,7 +685,7 @@ class ContentTools:
             else "-- no centering"
         )
 
-        return self.runner.run(
+        raw = self.runner.run(
             f"""
             on run argv
                 set docName to item 1 of argv
@@ -686,13 +696,13 @@ class ContentTools:
                     tell slide {slide_number} of targetDoc
                         set newItem to make new text item with properties ¬
                             {{object text:theText}}
-                        {set_position}
                         {set_width}
                         {set_height}
                         {set_font}
                         {set_size}
                         {restore_text}
                         {set_color}
+                        {set_position}
                         {center_h}
                         set newIndex to 0
                         repeat with i from 1 to (count of text items)
@@ -705,7 +715,10 @@ class ContentTools:
                             error "Created text item could not be located on the slide" ¬
                                 number -1728
                         end if
-                        return newIndex
+                        set finalPos to position of newItem
+                        return (newIndex as text) & "|" & (item 1 of finalPos) & "," & ¬
+                            (item 2 of finalPos) & "|" & (width of newItem) & "," & ¬
+                            (height of newItem)
                     end tell
                 end tell
             end run
@@ -714,6 +727,13 @@ class ContentTools:
             text,
             font_name,
         )
+        index, pos, size = raw.split("|")
+        return index, pos, size
+
+    @staticmethod
+    def _geometry_note(pos: str, size: str) -> str:
+        """Human-readable final geometry: 'at (x, y), size WxH'."""
+        return f"at ({pos.replace(',', ', ')}), size {size.replace(',', 'x')}"
 
     async def add_text_box(
         self,
@@ -730,13 +750,16 @@ class ContentTools:
     ) -> list[TextContent]:
         """Add text box."""
         try:
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number, text, x, y, font_size, font_name, color, doc_name, width, height
             )
             return [
                 TextContent(
                     type="text",
-                    text=f"Added text box to slide {slide_number} (text item index {index})",
+                    text=(
+                        f"Added text box to slide {slide_number} (text item index {index}) "
+                        f"{self._geometry_note(pos, size)}"
+                    ),
                 )
             ]
         except Exception as e:
@@ -756,7 +779,7 @@ class ContentTools:
     ) -> list[TextContent]:
         """Add title."""
         try:
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number,
                 title,
                 x,
@@ -771,7 +794,10 @@ class ContentTools:
             return [
                 TextContent(
                     type="text",
-                    text=f"Added title to slide {slide_number} (text item index {index}{note})",
+                    text=(
+                        f"Added title to slide {slide_number} (text item index {index}{note}) "
+                        f"{self._geometry_note(pos, size)}"
+                    ),
                 )
             ]
         except Exception as e:
@@ -791,7 +817,7 @@ class ContentTools:
     ) -> list[TextContent]:
         """Add subtitle."""
         try:
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number,
                 subtitle,
                 x,
@@ -806,7 +832,10 @@ class ContentTools:
             return [
                 TextContent(
                     type="text",
-                    text=f"Added subtitle to slide {slide_number} (text item index {index}{note})",
+                    text=(
+                        f"Added subtitle to slide {slide_number} (text item index {index}{note}) "
+                        f"{self._geometry_note(pos, size)}"
+                    ),
                 )
             ]
         except Exception as e:
@@ -825,7 +854,7 @@ class ContentTools:
         """Add bullet list."""
         try:
             text = "\n".join(f"• {item}" for item in items)
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number, text, x, y, font_size or 18, font_name, "", doc_name
             )
             return [
@@ -833,7 +862,8 @@ class ContentTools:
                     type="text",
                     text=(
                         f"Added bullet list to slide {slide_number} "
-                        f"({len(items)} items, text item index {index})"
+                        f"({len(items)} items, text item index {index}) "
+                        f"{self._geometry_note(pos, size)}"
                     ),
                 )
             ]
@@ -853,7 +883,7 @@ class ContentTools:
         """Add numbered list."""
         try:
             text = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(items))
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number, text, x, y, font_size or 18, font_name, "", doc_name
             )
             return [
@@ -861,7 +891,8 @@ class ContentTools:
                     type="text",
                     text=(
                         f"Added numbered list to slide {slide_number} "
-                        f"({len(items)} items, text item index {index})"
+                        f"({len(items)} items, text item index {index}) "
+                        f"{self._geometry_note(pos, size)}"
                     ),
                 )
             ]
@@ -881,7 +912,7 @@ class ContentTools:
     ) -> list[TextContent]:
         """Add code block."""
         try:
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number,
                 code,
                 x,
@@ -894,7 +925,10 @@ class ContentTools:
             return [
                 TextContent(
                     type="text",
-                    text=f"Added code block to slide {slide_number} (text item index {index})",
+                    text=(
+                        f"Added code block to slide {slide_number} (text item index {index}) "
+                        f"{self._geometry_note(pos, size)}"
+                    ),
                 )
             ]
         except Exception as e:
@@ -912,13 +946,16 @@ class ContentTools:
     ) -> list[TextContent]:
         """Add quote."""
         try:
-            index = await self._add_text_element(
+            index, pos, size = await self._add_text_element(
                 slide_number, f"“{quote}”", x, y, font_size or 20, font_name, "", doc_name
             )
             return [
                 TextContent(
                     type="text",
-                    text=f"Added quote to slide {slide_number} (text item index {index})",
+                    text=(
+                        f"Added quote to slide {slide_number} (text item index {index}) "
+                        f"{self._geometry_note(pos, size)}"
+                    ),
                 )
             ]
         except Exception as e:
@@ -1000,7 +1037,7 @@ class ContentTools:
                 if (x is not None or y is not None)
                 else "-- default position"
             )
-            self.runner.run(
+            raw = self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
@@ -1011,6 +1048,17 @@ class ContentTools:
                         tell slide {slide_number} of targetDoc
                             set newImage to make new image with properties {{file:imageFile}}
                             {set_position}
+                            set newIndex to 0
+                            repeat with i from 1 to (count of images)
+                                if image i is newImage then
+                                    set newIndex to i
+                                    exit repeat
+                                end if
+                            end repeat
+                            set finalPos to position of newImage
+                            return (newIndex as text) & "|" & (item 1 of finalPos) & "," & ¬
+                                (item 2 of finalPos) & "|" & (width of newImage) & "," & ¬
+                                (height of newImage)
                         end tell
                     end tell
                 end run
@@ -1018,7 +1066,16 @@ class ContentTools:
                 doc_name,
                 image_path,
             )
-            return [TextContent(type="text", text=f"Added image to slide {slide_number}")]
+            index, pos, size = raw.split("|")
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Added image to slide {slide_number} (image index {index}) "
+                        f"{self._geometry_note(pos, size)}"
+                    ),
+                )
+            ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to add image: {e}")]
 
@@ -1428,7 +1485,7 @@ class ContentTools:
             op = validate_number(
                 opacity if opacity is not None else 100, "opacity", minimum=0, maximum=100
             )
-            self.runner.run(
+            raw = self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
@@ -1438,18 +1495,30 @@ class ContentTools:
                             set newShape to make new shape with properties ¬
                                 {{position:{{{x_pos}, {y_pos}}}, width:{w}, height:{h}}}
                             set opacity of newShape to {int(op)}
+                            set newIndex to 0
+                            repeat with i from 1 to (count of shapes)
+                                if shape i is newShape then
+                                    set newIndex to i
+                                    exit repeat
+                                end if
+                            end repeat
+                            set finalPos to position of newShape
+                            return (newIndex as text) & "|" & (item 1 of finalPos) & "," & ¬
+                                (item 2 of finalPos) & "|" & (width of newShape) & "," & ¬
+                                (height of newShape)
                         end tell
                     end tell
                 end run
                 """,
                 doc_name,
             )
+            index, pos, size = raw.split("|")
             return [
                 TextContent(
                     type="text",
                     text=(
-                        f"Added shape to slide {slide_number} at ({x_pos}, {y_pos}), "
-                        f"size {w:g}x{h:g}, opacity {op:g}."
+                        f"Added shape to slide {slide_number} (shape index {index}) "
+                        f"{self._geometry_note(pos, size)}, opacity {op:g}"
                     ),
                 )
             ]

@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-07-26
+
+Geometry honesty. A field build showed every add_* placed at y=Y settling at
+a different y (deterministic, proportional to font size). Live step-traces
+(12–96pt × 1/4-line text) pinned the cause: text items are created at the
+theme default 48pt and auto-fit their box around its vertical CENTER when
+the font size is applied, moving the top edge by (h_before−h_after)/2 — not
+an anchor-point mismatch (position reads back exactly as set) and not a
+deferred layout pass (the move is synchronous with `set size of object
+text`). Horizontal auto-fit is left-anchored, so x never drifted. Explicit
+`set height` on a text item snaps back to auto-fit with the same center-math
+side effect.
+
+### Changed — behavior
+
+- **add_* coordinates now land exactly.** `_add_text_element` applies
+  `set position` AFTER all font/size/text mutations (re-asserted positions
+  stick; verified across sizes), so the caller's x/y is the settled
+  top-left. 48pt callers see no change; other sizes no longer drift.
+- **Every add_* returns the element's final geometry.** add_text_box /
+  add_title / add_subtitle / add_bullet_list / add_numbered_list /
+  add_code_block / add_quote / add_image / add_shape read back the settled
+  position and size in the same osascript call and report
+  `at (x, y), size WxH` (same AppleScript coercion as `get_slide_content`,
+  so the strings match verbatim). add_image and add_shape now also return
+  the element's index (located by object identity), usable with
+  move_element / delete_element.
+
+### Added
+
+- `scripts/verify_tools.py` geometry-honesty section: places elements at
+  known coordinates across 12/24/36/48/96pt (single- and multi-line, plus
+  shape and image), asserts exact landing and reply == `get_slide_content`.
+  Full harness: 109 live checks, 0 failed.
+- Unit tests pinning the mutation order (position after font sizing) and
+  the geometry-bearing reply format.
+
 ## [2.1.0] - 2026-07-26
 
 Fixes for five defects surfaced by a live field test (a real 4-slide deck

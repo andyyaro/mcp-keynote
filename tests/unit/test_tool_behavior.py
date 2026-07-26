@@ -214,7 +214,7 @@ class TestContentTools:
         assert "delete image" not in script
 
     async def test_centered_title_computes_x_server_side(self, content_tools, mock_subprocess_run):
-        mock_subprocess_run.return_value.stdout = "1"
+        mock_subprocess_run.return_value.stdout = "1|484,400|951,119"
         result = await content_tools.add_title(1, "Big", font_size=96, centered=True)
         script = last_script(mock_subprocess_run)
         assert "((width of targetDoc) - (width of newItem)) div 2" in script
@@ -223,7 +223,7 @@ class TestContentTools:
         assert "centered" in result[0].text
 
     async def test_uncentered_title_has_no_centering_math(self, content_tools, mock_subprocess_run):
-        mock_subprocess_run.return_value.stdout = "1"
+        mock_subprocess_run.return_value.stdout = "1|100,200|300,40"
         await content_tools.add_subtitle(1, "s")
         assert "div 2" not in last_script(mock_subprocess_run)
 
@@ -233,13 +233,50 @@ class TestContentTools:
         # `count of text items` over-reports (hidden placeholders count) and
         # the new item is not last, so the returned index must come from an
         # identity search - the same space get_slide_content/move_element use.
-        mock_subprocess_run.return_value.stdout = "1"
+        mock_subprocess_run.return_value.stdout = "2|100,200|300,40"
         result = await content_tools.add_title(1, "T")
         script = last_script(mock_subprocess_run)
         assert "if text item i is newItem then" in script
-        assert "return newIndex" in script
         assert "return count of text items" not in script
-        assert "text item index 1" in result[0].text
+        assert "text item index 2" in result[0].text
+
+    async def test_add_sets_position_after_font_sizing(self, content_tools, mock_subprocess_run):
+        # Text items are born at the theme default font size and auto-fit
+        # around their vertical CENTER when the size changes, so a position
+        # set before `set size of object text` drifts by (h_before-h_after)/2.
+        # Position must be applied after all font/size/text mutations.
+        mock_subprocess_run.return_value.stdout = "1|100,300|300,40"
+        await content_tools.add_text_box(1, "T", x=100, y=300, font_size=24)
+        script = last_script(mock_subprocess_run)
+        assert script.index("set position of newItem") > script.index("set size of object text")
+        assert script.index("set position of newItem") > script.index(
+            "set object text of newItem to theText"
+        )
+
+    async def test_add_reports_final_geometry(self, content_tools, mock_subprocess_run):
+        # Every add_* answer carries the element's settled position/size read
+        # back in the SAME osascript call - callers must never need a
+        # follow-up get_slide_content to learn where the element landed.
+        mock_subprocess_run.return_value.stdout = "3|120,290|430,250"
+        result = await content_tools.add_bullet_list(1, ["a", "b"], x=120, y=290)
+        script = last_script(mock_subprocess_run)
+        assert "position of newItem" in script
+        assert "height of newItem" in script
+        assert "at (120, 290), size 430x250" in result[0].text
+
+    async def test_add_image_and_shape_report_index_and_geometry(
+        self, content_tools, mock_subprocess_run, tmp_path
+    ):
+        img = tmp_path / "i.png"
+        img.write_bytes(b"png")
+        mock_subprocess_run.return_value.stdout = "2|800,100|64,64"
+        result = await content_tools.add_image(1, str(img), x=800, y=100)
+        assert "image index 2" in result[0].text
+        assert "at (800, 100), size 64x64" in result[0].text
+        mock_subprocess_run.return_value.stdout = "1|50,60|400,300"
+        result = await content_tools.add_shape(1, x=50, y=60, width=400, height=300)
+        assert "shape index 1" in result[0].text
+        assert "at (50, 60), size 400x300" in result[0].text
 
     async def test_get_slide_content_filters_phantom_placeholder_entries(
         self, content_tools, mock_subprocess_run

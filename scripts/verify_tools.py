@@ -4,8 +4,9 @@ Phase 3 built the original happy-path coverage; Phase 8 added the regression
 checks for what a field test showed that coverage missed: the untitled-
 document save path, opening files from outside Keynote's sandbox container
 (~/Downloads and ~/Desktop), index round-trips for every add_* tool, phantom
-placeholder filtering, screenshot placeholder honesty, and server-side
-centering.
+placeholder filtering, screenshot placeholder honesty, server-side centering,
+and geometry honesty (placed coordinates land exactly despite Keynote's
+center-anchored auto-fit; add_* replies match get_slide_content).
 
 Creates documents only under .scratch/ (plus one temporary copy on ~/Desktop
 for the outside-sandbox open check, removed afterwards), closes them without
@@ -296,6 +297,73 @@ async def main():
             entry[:120] or report[:120],
         )
     check("delete centering slide", await slides.delete_slide(4), "Deleted slide 4")
+
+    # --- geometry honesty (drift regression) ---
+    # Text items are born at the theme default font size (48pt) and auto-fit
+    # around their vertical CENTER when the font size is applied, so a
+    # position set before sizing drifted by (h_before - h_after)/2 (measured:
+    # 24pt 1-line +14, 24pt 4-line +52, 96pt -28; 48pt exactly 0). add_* now
+    # applies position AFTER sizing and reports the settled geometry, which
+    # must (a) put the top-left exactly at the requested coordinates and
+    # (b) match get_slide_content verbatim - no follow-up read needed.
+    check("add_slide(blank, for geometry)", await slides.add_slide(), "Added slide #4")
+    geo_re = re.compile(
+        r"text item index (\d+)(?:, centered)?\) at \(([^,]+), ([^)]+)\), size ([^x]+)x(\S+)"
+    )
+    geometry_cases = [
+        ("add_text_box(12pt)", 150, 120, lambda: content.add_text_box(4, "geometry probe", x=150, y=120, font_size=12)),
+        ("add_subtitle(24pt)", 150, 200, lambda: content.add_subtitle(4, "geometry subtitle", x=150, y=200)),
+        ("add_title(36pt)", 150, 280, lambda: content.add_title(4, "Geometry Title", x=150, y=280, font_size=36)),
+        ("add_title(48pt=default)", 150, 380, lambda: content.add_title(4, "Geometry Title", x=150, y=380, font_size=48)),
+        ("add_bullet_list(24pt, 4 lines)", 150, 480, lambda: content.add_bullet_list(4, ["g1", "g2", "g3", "g4"], x=150, y=480, font_size=24)),
+        ("add_title(96pt clip path)", 150, 760, lambda: content.add_title(4, "Big Geometry", x=150, y=760, font_size=96)),
+        ("add_code_block(14pt)", 900, 120, lambda: content.add_code_block(4, "geo = 1", x=900, y=120)),
+    ]
+    for name, gx, gy, call in geometry_cases:
+        reply = text_of(await call())
+        m = geo_re.search(reply)
+        if not m:
+            record(f"{name} reports final geometry", False, reply[:140])
+            continue
+        idx, rx, ry, rw, rh = m.groups()
+        placed_ok = float(rx) == gx and float(ry) == gy
+        record(
+            f"{name} lands exactly at ({gx}, {gy})",
+            placed_ok,
+            f"reported ({rx}, {ry})" if not placed_ok else "",
+        )
+        report = text_of(await content.get_slide_content(4))
+        entry = next((e for e in report.split("|||") if e.startswith(f"TEXT:{idx}:::")), "")
+        parts = entry.split(":::")
+        match_ok = len(parts) > 3 and parts[2] == f"{rx},{ry}" and parts[3] == f"{rw},{rh}"
+        record(
+            f"{name} reported geometry matches get_slide_content",
+            match_ok,
+            f"reply ({rx},{ry}) {rw},{rh} vs slide {entry[-40:]}" if not match_ok else "",
+        )
+    shape_reply = text_of(await content.add_shape(4, x=1400, y=120, width=300, height=180))
+    m = re.search(r"shape index (\d+)\) at \(([^,]+), ([^)]+)\), size ([^x]+)x([\d.]+)", shape_reply)
+    if m:
+        idx, rx, ry, rw, rh = m.groups()
+        report = text_of(await content.get_slide_content(4))
+        entry = next((e for e in report.split("|||") if e.startswith(f"SHAPE:{idx}:::")), "")
+        parts = entry.split(":::")
+        ok = len(parts) > 2 and parts[1] == f"{rx},{ry}" and parts[2] == f"{rw},{rh}"
+        record("add_shape reported geometry matches get_slide_content", ok, entry[:100])
+    else:
+        record("add_shape reports index and geometry", False, shape_reply[:140])
+    img_reply = text_of(await content.add_image(4, str(png_path), x=1400, y=400))
+    m = re.search(r"image index (\d+)\) at \(([^,]+), ([^)]+)\), size ([^x]+)x(\S+)", img_reply)
+    if m:
+        idx, rx, ry, rw, rh = m.groups()
+        report = text_of(await content.get_slide_content(4))
+        entry = next((e for e in report.split("|||") if e.startswith(f"IMAGE:{idx}:::")), "")
+        parts = entry.split(":::")
+        ok = len(parts) > 2 and parts[1] == f"{rx},{ry}" and parts[2] == f"{rw},{rh}"
+        record("add_image reported geometry matches get_slide_content", ok, entry[:100])
+    else:
+        record("add_image reports index and geometry", False, img_reply[:140])
+    check("delete geometry slide", await slides.delete_slide(4), "Deleted slide 4")
 
     # --- export tools ---
     shot = SCRATCH / "slide2.png"

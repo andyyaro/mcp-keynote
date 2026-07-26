@@ -89,6 +89,13 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
   `window 1` of the Keynote process.
 - Fonts > 48pt land in a tiny auto-sized box that truncates text; the server
   absorbs this (auto-size box before setting size, re-set text after).
+- Text items are born at the theme default font size (48pt, default theme)
+  and auto-fit when the size changes, keeping the box's vertical CENTER
+  fixed — a position set before sizing drifts by (h_before−h_after)/2
+  (horizontal auto-fit is left-anchored; x holds). Explicit `set height` on
+  a text item snaps back to auto-fit with the same center-math side effect.
+  Hence `_add_text_element` applies position AFTER all sizing and every
+  add_* returns the settled geometry read back in the same osascript call.
 - `move slide X to slide Y` REPLACES slide Y — always `before/after slide Y`.
 - Build animations, build order, "With Previous" timing, and connection-line
   routing have no AppleScript API; builds use System Events UI scripting

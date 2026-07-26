@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "keynote-mcp"
-version = "2.1.0"
+version = "2.2.0"
 description = "An MCP server for controlling Apple Keynote presentations via AppleScript"
 readme = "README.md"
 license = "MIT"

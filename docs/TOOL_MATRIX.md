@@ -4,8 +4,9 @@ First verified 2026-07-25/26 on macOS 26.5.1, Keynote 14.5 (see
 `docs/ENVIRONMENT.md`); re-verified 2026-07-26 after the Phase 8 field-test
 fixes. Every AppleScript verb/property was checked against the Keynote
 scripting dictionary (tracked at `docs/keynote-14.5.sdef`), then executed
-against a live Keynote via `scripts/verify_tools.py` — **91 live checks, 0
-failed**. "Verified" below means the tool ran against a real document and its
+against a live Keynote via `scripts/verify_tools.py` — **109 live checks, 0
+failed** (last full run 2026-07-26, after the geometry-honesty fix).
+"Verified" below means the tool ran against a real document and its
 effect was confirmed by reading state back (`get_slide_content`, file
 existence, round-trips), not just a non-error exit.
 
@@ -49,15 +50,15 @@ only are marked *(re-verified P8)*.
 
 | Tool | Args | Status | AppleScript mapping | Verification exercises |
 |------|------|--------|--------------------|------------------------|
-| `add_text_box` | slide_number, text, x?, y?, font_size?, font_name?, color?, width?, height?, doc_name? | verified *(re-verified P8)* | `make new text item with properties {object text:…}`; identity loop for the returned index | Adversarial-string round-trip; index round-trip (create → move by returned index → read back the same element). |
-| `add_title` | + color?, centered? | verified at 96pt — clipping bug absorbed *(re-verified P8)* | same helper | Index round-trip; 96pt clip absorption; server-side centering (x = (slide−box)/2 exact). |
-| `add_subtitle` | + color?, centered? | verified *(re-verified P8)* | same helper | Index round-trip; centering. |
-| `add_bullet_list` | items[] | verified *(re-verified P8)* | same helper (joined with real newlines) | Index round-trip. |
+| `add_text_box` | slide_number, text, x?, y?, font_size?, font_name?, color?, width?, height?, doc_name? | verified *(re-verified P8)* | `make new text item with properties {object text:…}`; identity loop for the returned index; position applied AFTER sizing; settled geometry read back in the same call | Adversarial-string round-trip; index round-trip (create → move by returned index → read back the same element). Geometry honesty: placed x/y land exactly (position applied after font sizing; text boxes auto-fit around their vertical center when the font size changes from the 48pt default) and the reply's settled position/size matches `get_slide_content` verbatim. |
+| `add_title` | + color?, centered? | verified at 96pt — clipping bug absorbed *(re-verified P8)* | same helper | Index round-trip; 96pt clip absorption; server-side centering (x = (slide−box)/2 exact); exact placement at 36/48/96pt with reply geometry == `get_slide_content`. |
+| `add_subtitle` | + color?, centered? | verified *(re-verified P8)* | same helper | Index round-trip; centering; exact 24pt placement with reply geometry == `get_slide_content`. |
+| `add_bullet_list` | items[] | verified *(re-verified P8)* | same helper (joined with real newlines) | Index round-trip; exact multiline placement (4 lines, 24pt) with reply geometry == `get_slide_content`. |
 | `add_numbered_list` | items[] | verified *(re-verified P8)* | same helper | Index round-trip. |
-| `add_code_block` | + color? | verified (green color confirmed in render) *(re-verified P8)* | same helper (default Monaco) | Index round-trip; color render. |
+| `add_code_block` | + color? | verified (green color confirmed in render) *(re-verified P8)* | same helper (default Monaco) | Index round-trip; color render; exact placement with reply geometry == `get_slide_content`. |
 | `add_quote` | quote | verified *(re-verified P8)* | same helper (curly quotes) | Index round-trip. |
 | `set_slide_content` | slide_number, title?, body?, doc_name? | verified *(re-verified P8)* | `title showing` / `body showing`; `object text of default title item / default body item` | Fill on a **Blank** slide (the create default): enables the placeholder, fills it, read back via get_slide_content. |
-| `add_image` | slide_number, image_path, x?, y?, doc_name? | verified | `make new image with properties {file:alias}` | Insert + `images:1` read-back + delete. |
+| `add_image` | slide_number, image_path, x?, y?, doc_name? | verified | `make new image with properties {file:alias}`; identity loop for the returned index | Insert + `images:1` read-back + delete; reply reports index and final geometry, matching `get_slide_content`. |
 | `get_slide_content` | slide_number, doc_name? | verified *(re-verified P8)* | element counts + per-element details, **phantom-filtered by identity** against default title/body items and their visibility | Five adds report exactly five items, none empty; indices stay live for edit/move/resize/delete. Phase 3 accepted the raw enumeration, which surfaced hidden placeholders as 0x0 empties and showing ones twice. |
 | `edit_text_item` | slide_number, item_index, new_text, doc_name? | verified | `set object text of text item N` | Edit + read-back, addressing indices returned by add_*. |
 | `delete_element` | slide_number, element_type, element_index, doc_name? | verified | `delete <class> N` (guarded by `exists`) | Image delete + count read-back. |
@@ -70,7 +71,7 @@ only are marked *(re-verified P8)*.
 | `add_build_in` | slide_number, element_type, element_index, effect?, delivery? | verified live | System Events UI scripting (Animate inspector) — no AppleScript API exists | Add + remove on a real element. UI scripting is timing-sensitive; a popover can occasionally miss (seen once across runs) — the response reports per-element success. |
 | `remove_build_in` | same | verified live | UI scripting | Paired with add. |
 | `add_builds_to_slide` | slide_number, element_indices, element_type?, effect? | verified live (2 elements) | UI scripting loop, bullet-dot auto-skip | Batch apply; per-element OK/FAILED status in the response (UI timing flake possible per element). |
-| `add_shape` | slide_number, x?, y?, width?, height?, opacity?, doc_name? | verified | `make new shape with properties {position, width, height}`; `set opacity` | Insert with opacity + read-back. |
+| `add_shape` | slide_number, x?, y?, width?, height?, opacity?, doc_name? | verified | `make new shape with properties {position, width, height}`; `set opacity`; identity loop for the returned index | Insert with opacity + read-back; reply reports index and final geometry, matching `get_slide_content`. |
 
 ## Export tools
 
