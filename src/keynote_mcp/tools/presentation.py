@@ -85,7 +85,11 @@ class PresentationTools:
             Tool(
                 name="create_presentation",
                 description=(
-                    "Create a new Keynote presentation and save it immediately. The "
+                    "Create a new, EMPTY one-slide Keynote presentation and save it "
+                    "immediately. If you already know what the slides should "
+                    "contain, use build_deck instead - it creates the document AND "
+                    "every slide in the same single call; come here only when you "
+                    "want to start from a blank document. The "
                     "document is always saved: to save_path if given, otherwise to "
                     "<title>.key in ~/Documents (override the directory with the "
                     "KEYNOTE_MCP_SAVE_DIR environment variable). The response includes "

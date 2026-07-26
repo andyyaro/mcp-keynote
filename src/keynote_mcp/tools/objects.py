@@ -55,6 +55,15 @@ _RANGE_UNIT_MAP = {
 }
 
 
+# One consistent routing signal on every element-creating primitive: with 59
+# tools on the surface, a model asked for a 15-slide deck will otherwise chain
+# ~5 of these per slide. They stay for editing; build_deck authors.
+_EDIT_TAG = (
+    " Edits an existing deck one element at a time; to author a deck (or add "
+    "several slides at once) use build_deck, which builds all of them in one call."
+)
+
+
 class ObjectTools:
     """Native object tools built on the Phase A probe results."""
 
@@ -72,7 +81,7 @@ class ObjectTools:
                     "Keynote requires at least 2 rows and 2 columns. Header row "
                     "styling (background/text color, font) comes from the resolved "
                     "style unless overridden. Returns the table's index and settled "
-                    "geometry. The table is fully editable in Keynote afterwards."
+                    "geometry. The table is fully editable in Keynote afterwards." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -138,7 +147,7 @@ class ObjectTools:
                     "slices come from the axis you group by (one slice per "
                     "entry, using its first value); when only one axis has "
                     "multiple entries the tool groups by that axis "
-                    "automatically."
+                    "automatically." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -188,7 +197,7 @@ class ObjectTools:
                 description=(
                     "Add a straight line from (x1,y1) to (x2,y2) in points. "
                     "Returns the line's index and settled geometry. (Keynote has "
-                    "no scriptable connectors - endpoints are fixed coordinates.)"
+                    "no scriptable connectors - endpoints are fixed coordinates.)" + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -213,7 +222,7 @@ class ObjectTools:
                     "not recolorable inside Keynote afterwards, only "
                     "moved/resized/deleted like any image. Add panels BEFORE the "
                     "text that sits on them: z-order follows creation order and "
-                    "cannot be changed via AppleScript."
+                    "cannot be changed via AppleScript." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",

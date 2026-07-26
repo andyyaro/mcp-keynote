@@ -517,14 +517,18 @@ def _flow_slide(
         el = dict(el)
         etype = el["type"]
         column = el.pop("column", None)
-        explicit = el.get("x") is not None or el.get("y") is not None
-        # An element that names a column always gets that column's x, even
-        # when it also pins one coordinate: `{"column": "left", "y": 550}`
-        # used to fall through to fully-manual placement, which set no x at
-        # all, so both columns rendered on top of each other at x=0 (found by
-        # a rendered check; every structural check passed). Explicit values
-        # still win per axis - the setdefault calls below never overwrite one.
-        if etype in ("panel", "line", "shape") or (column is None and explicit):
+        # Only a FULLY placed element skips the flow. Pinning one coordinate
+        # used to opt out of layout entirely, which left the other coordinate
+        # unset - so `{"column": "left", "y": 550}` and `{"column": "right",
+        # "y": 550}` both drew at x=0, on top of each other, and a plain
+        # `{"type": "title", "y": 60}` drew flush against the slide edge while
+        # every other element sat at the style margin. Both cases built with
+        # zero errors and round-tripped cleanly through describe_deck; the
+        # first was caught by a rendered check, the second by watching a model
+        # use the tool. Pinned values still win: the setdefault calls below
+        # never overwrite one.
+        fully_placed = el.get("x") is not None and el.get("y") is not None
+        if etype in ("panel", "line", "shape") or fully_placed:
             placed.append(el)
             continue
 
@@ -768,9 +772,19 @@ class DeckTools:
             Tool(
                 name="build_deck",
                 description=(
-                    "Build an ENTIRE deck from one declarative spec in one call "
-                    "- the fast path for multi-slide decks (one AppleScript "
-                    "session per slide instead of one per element). Pass either "
+                    "START HERE to create a presentation, or to rebuild an "
+                    "existing one substantially. Builds the WHOLE deck - "
+                    "document, slides, text, bullets, tables, charts, panels, "
+                    "images, speaker notes, transitions - from one declarative "
+                    "spec in ONE call. The alternative is roughly five "
+                    "primitive calls per slide (measured on a 20-slide deck: 1 "
+                    "call here vs 81 with create_presentation + add_slide + "
+                    "add_title + add_bullet_list + ...), and every one of those "
+                    "calls is a place to lose a returned index, mis-place an "
+                    "element, or half-build a deck. Use the add_* primitives to "
+                    "EDIT a deck that already exists; use this to author one. "
+                    "To revise a deck you built: describe_deck to get its spec "
+                    "back, edit the spec, build_deck again. Pass either "
                     "`spec` (JSON) or `markdown` (dialect: --- frontmatter with "
                     "title/theme/style/width/height/save_path; # title slide; "
                     "## new slide; bullets/numbered/quotes/code fences/images/"
@@ -783,16 +797,34 @@ class DeckTools:
                     "width?, height?, save_path?, on_exists?, slides: [{layout?, "
                     "title?/body? (theme placeholders), notes?, skipped?, "
                     "transition? {effect, duration?, delay?, automatic?}, "
-                    "elements?: [{type: title|subtitle|text|bullets|numbered|"
-                    "code|quote|image|shape|panel|table|chart|line, ...}]}]}. "
-                    "Elements without x/y auto-flow inside style margins; "
+                    "elements?: [{type: <one of the types below>, ...}]}]}. "
+                    "Every element object carries `type`. Element types and "
+                    "their required fields: title/subtitle/text/code/quote need `text`; "
+                    "bullets/numbered need `items` (a list of strings); image "
+                    "needs `path`; table needs `data` (2-D array, min 2x2); "
+                    "chart needs `chart_type`, `row_names`, `column_names`, "
+                    "`data` (rows x columns), optional `group_by`; panel needs "
+                    "`x`,`y`,`width`,`height` (optional `color`, `radius`); "
+                    "line needs `x1`,`y1`,`x2`,`y2`; shape needs nothing. "
+                    "Any element also takes x/y/width/height, font_size, "
+                    "font_name, and color as `#RRGGBB` or `r,g,b`. `style` is "
+                    "a built-in name (plain, boardroom, midnight, editorial) or "
+                    "a path to a .toml style file; the markdown ```chart fence "
+                    "takes the same fields as a JSON chart element. "
+                    "Elements without x/y auto-flow inside style margins "
+                    "(pin one coordinate and the other still comes from the "
+                    "flow); "
                     "column:'left'/'right' makes two-column layouts. The whole "
                     "spec is validated before anything is created; per-element "
                     "failures are reported individually with the rest of the "
                     "deck still built. Element order = z-order (panels before "
                     "text). Returns per-slide element indices and settled "
-                    "geometry. Re-running replaces the same file by default "
-                    "(on_exists: replace|error|unique)."
+                    "geometry. This CREATES a document at save_path (`~` is "
+                    "expanded); it never edits the front document. Re-running "
+                    "replaces the same file by default (on_exists: "
+                    "replace|error|unique). If a spec will not validate, the "
+                    "add_* primitives still work - the guidance above is about "
+                    "round trips, not a prohibition."
                 ),
                 inputSchema={
                     "type": "object",
@@ -829,7 +861,10 @@ class DeckTools:
                     "with file names, shapes, tables with cell values, charts "
                     "geometry-only - Keynote exposes no chart data, lines). "
                     "Decks round-trip: feed the result back to build_deck, or "
-                    "diff two describe_deck outputs in git."
+                    "diff two describe_deck outputs in git. This is the first "
+                    "step for reworking an existing deck: describe_deck -> edit "
+                    "the spec -> build_deck, instead of a long chain of "
+                    "per-element edits."
                 ),
                 inputSchema={
                     "type": "object",

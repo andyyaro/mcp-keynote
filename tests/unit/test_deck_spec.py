@@ -361,6 +361,25 @@ class TestFlowSlide:
         assert left["y"] == right["y"] == 550  # the pinned y is honored
         assert left["width"] == right["width"] < PLAIN.content_width(1920) / 2
 
+    def test_pinning_only_y_still_gets_the_flow_x(self):
+        """Half-placed elements must not lose the other coordinate.
+
+        A model asked for a 15-slide deck pinned `y` on two slides' titles
+        and got x=0 (flush to the slide edge) while every other title sat at
+        the style margin — the element had opted out of layout entirely.
+        """
+        slide = {
+            "elements": [
+                {"type": "title", "text": "T", "y": 60},
+                {"type": "text", "text": "body", "x": 400},
+            ]
+        }
+        title, body = _flow_slide(slide, PLAIN, 1920, 1080)[0]
+        assert title["x"] == PLAIN.margin_x(1920)
+        assert title["y"] == 60
+        assert body["x"] == 400
+        assert body["y"] > 60  # flowed below the pinned title, not left unset
+
     def test_explicit_position_passes_through_unflowed(self):
         slide = {"elements": [{"type": "text", "text": "t", "x": 10, "y": 20}]}
         placed, _ = _flow_slide(slide, PLAIN, 1920, 1080)

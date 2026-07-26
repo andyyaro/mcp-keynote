@@ -18,6 +18,15 @@ _RESOLVE_DOC = """
         end if"""
 
 
+# One consistent routing signal on every element-creating primitive: with 59
+# tools on the surface, a model asked for a 15-slide deck will otherwise chain
+# ~5 of these per slide. They stay for editing; build_deck authors.
+_EDIT_TAG = (
+    " Edits an existing deck one element at a time; to author a deck (or add "
+    "several slides at once) use build_deck, which builds all of them in one call."
+)
+
+
 class SlideTools:
     """Slide management tools class"""
 
@@ -29,7 +38,7 @@ class SlideTools:
         return [
             Tool(
                 name="add_slide",
-                description="Add a new slide to the presentation",
+                description=("Add one empty slide to an existing presentation." + _EDIT_TAG),
                 inputSchema={
                     "type": "object",
                     "properties": {

@@ -44,6 +44,15 @@ _RESOLVE_DOC = """
 _UI_SCRIPT_TIMEOUT = 60.0
 
 
+# One consistent routing signal on every element-creating primitive: with 59
+# tools on the surface, a model asked for a 15-slide deck will otherwise chain
+# ~5 of these per slide. They stay for editing; build_deck authors.
+_EDIT_TAG = (
+    " Edits an existing deck one element at a time; to author a deck (or add "
+    "several slides at once) use build_deck, which builds all of them in one call."
+)
+
+
 class ContentTools:
     """Content management tools class"""
 
@@ -55,7 +64,11 @@ class ContentTools:
         return [
             Tool(
                 name="add_text_box",
-                description="Add a text box to a slide. Returns the item's index and its final position/size after Keynote's auto-fit settles; x/y land exactly as given.",
+                description=(
+                    "Add a text box to a slide. Returns the item's index and its final "
+                    "position/size after Keynote's auto-fit settles; x/y land exactly as "
+                    "given." + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -100,7 +113,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_title",
-                description="Add a title text box to a slide (default 36pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a title text box to a slide (default 36pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -132,7 +148,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_subtitle",
-                description="Add a subtitle text box to a slide (default 24pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a subtitle text box to a slide (default 24pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -164,7 +183,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_bullet_list",
-                description="Add a bullet list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a bullet list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -188,7 +210,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_numbered_list",
-                description="Add a numbered list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a numbered list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -212,7 +237,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_code_block",
-                description="Add a monospaced code block to a slide (default 14pt Monaco). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a monospaced code block to a slide (default 14pt Monaco). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -239,7 +267,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_quote",
-                description="Add a quote text box to a slide (default 20pt, wrapped in quotes). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a quote text box to a slide (default 20pt, wrapped in quotes). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -264,7 +295,7 @@ class ContentTools:
                     "theme's own fonts and colors, so styling stays consistent - prefer "
                     "this over manual text boxes on themed layouts. Works on Blank "
                     "slides too (new presentations default to Blank): the placeholder "
-                    "is enabled (title/body showing) before its text is set."
+                    "is enabled (title/body showing) before its text is set." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -285,7 +316,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_image",
-                description="Add an image from a local file to a slide. Returns the image's index and final position/size.",
+                description=(
+                    "Add an image from a local file to a slide. Returns the image's index and final position/size."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -581,7 +615,7 @@ class ContentTools:
                 description=(
                     "Create a rectangle shape with optional position, size, and opacity. "
                     "Note: fill color cannot be set via AppleScript; use opacity over "
-                    "themed backgrounds instead."
+                    "themed backgrounds instead." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
