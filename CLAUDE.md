@@ -72,7 +72,7 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
    guard. A garbage tool call must leave the server serving (tested).
 5. **Tool schemas** live inline in each `get_tools()`. New tool = schema in
    `get_tools()` + method + routing case in `server._dispatch()` + a row in
-   `docs/TOOL_MATRIX.md` (verify against `.scratch/keynote.sdef` and a real
+   `docs/TOOL_MATRIX.md` (verify against `docs/keynote-14.5.sdef` and a real
    Keynote first).
 
 ## Keynote facts learned by verification (don't re-litigate)

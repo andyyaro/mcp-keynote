@@ -1,9 +1,9 @@
 # Tool matrix — every tool verified against Keynote 14.5
 
 Verified 2026-07-25/26 on macOS 26.5.1, Keynote 14.5 (see `docs/ENVIRONMENT.md`).
-Every AppleScript verb/property was checked against `.scratch/keynote.sdef`
-(the authoritative dictionary), then executed against a live Keynote via
-`.scratch/verify_tools.py` — 57 live checks. "Verified" below means the tool
+Every AppleScript verb/property was checked against the Keynote scripting
+dictionary (tracked at `docs/keynote-14.5.sdef`), then executed against a
+live Keynote via `scripts/verify_tools.py` — 57 live checks. "Verified" below means the tool
 ran against a real document and its effect was confirmed by reading state back
 (`get_slide_content`, file existence, round-trips), not just a non-error exit.
 

@@ -2,8 +2,8 @@
 
 Captured 2026-07-25 on the machine where every claim in this repo was verified.
 All AppleScript property/command claims are validated against the Keynote
-scripting dictionary dumped to `.scratch/keynote.sdef` (gitignored; regenerate
-with the command below).
+scripting dictionary, tracked at `docs/keynote-14.5.sdef` (regenerate for a
+newer Keynote with the command below).
 
 ## Host
 

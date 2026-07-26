@@ -4,7 +4,7 @@ Branch `modernize`, 2026-07-25/26. Environment ground truth in
 [ENVIRONMENT.md](ENVIRONMENT.md); per-tool verification in
 [TOOL_MATRIX.md](TOOL_MATRIX.md). Every claim below was verified by running
 something — the sdef dump, 277 tests, a 57-check live driver
-(`.scratch/verify_tools.py`), or the end-to-end `claude mcp add` cycle.
+(`scripts/verify_tools.py`), or the end-to-end `claude mcp add` cycle.
 
 ## What was broken, and how I know
 
