@@ -200,3 +200,42 @@ async def test_build_deck_strings_via_argv(deck_tools, mock_subprocess_run, payl
     }
     await deck_tools.build_deck(spec=spec)
     _assert_string_safe(mock_subprocess_run, payload)
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_build_deck_run_font_via_argv(deck_tools, mock_subprocess_run, payload, tmp_path):
+    """A run's font_name is the newest user string to reach AppleScript.
+
+    ``runs`` writes `set font of characters N thru M ... to <name>` inside the
+    batched build session - a new place for a string to be spliced into source,
+    and the one furthest from the argv allocator by eye.
+    """
+
+    def fake_run(cmd, **kwargs):
+        script = kwargs.get("input", "")
+        if "make new document" in script:
+            stdout = "deck.key\x1ftheme: White\x1fBlank"
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+
+    mock_subprocess_run.side_effect = fake_run
+    spec = {
+        "save_path": str(tmp_path / "runs.key"),
+        "slides": [
+            {
+                "elements": [
+                    {
+                        "type": "title",
+                        "text": "Building A Secure Hub",
+                        "runs": [
+                            {"start": 1, "end": 8, "color": "#000000"},
+                            {"start": 10, "end": 21, "font_name": payload},
+                        ],
+                    }
+                ]
+            }
+        ],
+    }
+    await deck_tools.build_deck(spec=spec)
+    _assert_string_safe(mock_subprocess_run, payload)

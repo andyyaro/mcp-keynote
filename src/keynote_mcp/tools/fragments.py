@@ -19,6 +19,8 @@ per-element tools in ``content.py``/``objects.py`` and the batched
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..utils import AppleScriptRunner, ParameterError, validate_number, validate_slide_number
 
 # docName always arrives CONCRETE: callers resolve it in Python via
@@ -312,6 +314,45 @@ def _emit_result(tag: str, var: str) -> list[str]:
     ]
 
 
+def text_run_lines(
+    argv: Argv,
+    item_var: str,
+    runs: list[dict[str, Any]],
+    *,
+    offset: int = 0,
+) -> list[str]:
+    """Per-run styling for an already-created text item.
+
+    ``style_text_range`` could always WRITE runs and ``describe_deck`` (4.0.0)
+    could read them, but nothing could AUTHOR them: a tri-colour title took the
+    element plus three follow-up calls, and a described deck lost its runs the
+    moment it was rebuilt. The write itself is cheap - the item is still in
+    scope here, so a run costs AppleScript lines, not Apple events.
+
+    Offsets are 1-based and INCLUSIVE, matching both ``style_text_range`` and
+    what ``describe_deck`` reports, so a description's ``runs`` feed straight
+    back. ``offset`` shifts them for text the builder wraps (a quote gains a
+    leading curly quote, so the caller's character 1 is Keynote's character 2).
+    """
+    lines: list[str] = []
+    for run in runs:
+        start = int(run["start"]) + offset
+        end = int(run["end"]) + offset
+        target = f"characters {start} thru {end} of object text of {item_var}"
+        name = str(run.get("font_name") or "")
+        if name:
+            lines.append(f"set font of {target} to {argv.ref(name)}")
+        size = run.get("font_size")
+        if size is not None:
+            validate_number(float(size), "run.font_size", minimum=1, maximum=500)
+            lines.append(f"set size of {target} to {_fmt_num(float(size))}")
+        rgb = run.get("color_rgb")
+        if rgb:
+            r, g, b = rgb
+            lines.append(f"set color of {target} to {{{r}, {g}, {b}}}")
+    return lines
+
+
 def text_item_fragment(
     argv: Argv,
     tag: str,
@@ -325,6 +366,8 @@ def text_item_fragment(
     width: float | None = None,
     height: float | None = None,
     centered: bool = False,
+    runs: list[dict[str, Any]] | None = None,
+    run_offset: int = 0,
 ) -> list[str]:
     """Create a text item. Mirrors the verified single-call flow: natural
     auto-fit box (never pre-widened - load-bearing for ``centered``), text
@@ -344,6 +387,14 @@ def text_item_fragment(
     if color_rgb:
         r, g, b = color_rgb
         lines.append(f"set color of object text of newItem to {{{r}, {g}, {b}}}")
+    if runs:
+        # AFTER the box-level font/size/colour (which would otherwise flatten
+        # every run) and after the re-set of `object text` (which discards
+        # them entirely), but BEFORE position: a run that changes size
+        # re-triggers auto-fit, and auto-fit keeps the box's vertical CENTRE
+        # fixed, so any position set earlier would drift. Same invariant the
+        # box-level sizing above obeys.
+        lines += text_run_lines(argv, "newItem", runs, offset=run_offset)
     if x is not None or y is not None:
         lines.append(f"set position of newItem to {{{_fmt_num(x or 0)}, {_fmt_num(y or 0)}}}")
     if centered:

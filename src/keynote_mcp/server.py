@@ -30,70 +30,10 @@ from .utils import (
     FileOperationError,
     KeynoteError,
     ParameterError,
+    explain_unsupported,
 )
 
 logger = logging.getLogger(__name__)
-
-# Arguments a caller plausibly invents for capabilities Keynote's AppleScript
-# dictionary does not have. Silently dropping these is how a caller concludes
-# the server can do something it cannot: PHASE 9 Task 0 traced the field
-# report's "set_element_style CAN write shape fill" to exactly that - an
-# unknown argument accepted, ignored, and reported as success. Each entry maps
-# the invented argument to what the caller should actually reach for.
-_UNSUPPORTED_ARG_HINTS: dict[str, str] = {
-    "fill": "shape/text fill color is not writable by AppleScript",
-    "fill_color": "shape/text fill color is not writable by AppleScript",
-    "background_color": "shape/text fill color is not writable by AppleScript",
-    "background_fill": "shape/text fill color is not writable by AppleScript",
-    "color_fill": "shape/text fill color is not writable by AppleScript",
-    "shape_type": "only rectangles exist; there is no `shape type` term",
-    "corner_radius": "shapes have no corner-radius property",
-    "stroke": "lines and shapes have no stroke properties at all",
-    "stroke_color": "lines and shapes have no stroke properties at all",
-    "stroke_width": "lines and shapes have no stroke properties at all",
-    "line_color": "lines and shapes have no stroke properties at all",
-    "line_width": "lines and shapes have no stroke properties at all",
-    "dash": "lines and shapes have no stroke properties at all",
-    "dash_pattern": "lines and shapes have no stroke properties at all",
-    "arrowhead": "lines and shapes have no stroke properties at all",
-    "start_arrow": "lines and shapes have no stroke properties at all",
-    "end_arrow": "lines and shapes have no stroke properties at all",
-    "shadow": "there is no shadow term on any iWork class",
-    "border": "there is no border term on any iWork class",
-    "z_order": "z-order is creation order and cannot be changed",
-    "group": "grouping is a silent no-op in AppleScript",
-    "alignment": "text alignment exists only on table ranges",
-    "text_align": "text alignment exists only on table ranges",
-    "bold": "there is no bold attribute; pass the bold face name as font_name",
-    "italic": "there is no italic attribute; pass the italic face name as font_name",
-}
-
-# Where to send a caller whose invented argument names a real design need.
-_UNSUPPORTED_ARG_ALTERNATIVES: dict[str, str] = {
-    "fill": "add_colored_panel (rendered PNG, exact color) or set_element_opacity",
-    "fill_color": "add_colored_panel (rendered PNG, exact color) or set_element_opacity",
-    "background_color": "add_colored_panel, or add_table range styling for cell fills",
-    "background_fill": "add_colored_panel (rendered PNG, exact color)",
-    "color_fill": "add_colored_panel (rendered PNG, exact color)",
-    "shape_type": "add_colored_panel for rectangles/rounded rectangles, or add_image",
-    "corner_radius": "add_colored_panel, which takes a `radius`",
-    "stroke": "styled_line, which renders the stroke to a transparent PNG",
-    "stroke_color": "styled_line, which renders the stroke to a transparent PNG",
-    "stroke_width": "styled_line, which renders the stroke to a transparent PNG",
-    "line_color": "styled_line, which renders the stroke to a transparent PNG",
-    "line_width": "styled_line, which renders the stroke to a transparent PNG",
-    "dash": "styled_line, which takes a `dash` pattern",
-    "dash_pattern": "styled_line, which takes a `dash` pattern",
-    "arrowhead": "styled_line, which takes `start_arrow`/`end_arrow`",
-    "start_arrow": "styled_line, which takes `start_arrow`/`end_arrow`",
-    "end_arrow": "styled_line, which takes `start_arrow`/`end_arrow`",
-    "z_order": "build_deck, where spec order IS paint order",
-    "group": "build_deck, composing elements in paint order",
-    "alignment": "add_title/add_subtitle `centered`, or add_table range styling",
-    "text_align": "add_title/add_subtitle `centered`, or add_table range styling",
-    "bold": "style_text_range with the bold PostScript face name",
-    "italic": "style_text_range with the italic PostScript face name",
-}
 
 
 def _echo_resolved_document(
@@ -199,9 +139,9 @@ class KeynoteMCPServer:
             "silently ignores an argument, because that reads as success."
         ]
         for arg in unknown:
-            hint = _UNSUPPORTED_ARG_HINTS.get(arg)
-            if hint:
-                alt = _UNSUPPORTED_ARG_ALTERNATIVES.get(arg)
+            explained = explain_unsupported(arg, argument_boundary=True)
+            if explained:
+                hint, alt = explained
                 lines.append(
                     f"  - `{arg}`: not a capability of Keynote's AppleScript "
                     f"dictionary ({hint})." + (f" Use {alt}." if alt else "")
@@ -496,12 +436,14 @@ class KeynoteMCPServer:
                 element_index=arguments["element_index"],
                 effect=arguments.get("effect", "Appear"),
                 delivery=arguments.get("delivery", "By Paragraph"),
+                doc_name=arguments.get("doc_name", ""),
             )
         elif name == "remove_build_in":
             return await self.content_tools.remove_build_in(
                 slide_number=arguments["slide_number"],
                 element_type=arguments["element_type"],
                 element_index=arguments["element_index"],
+                doc_name=arguments.get("doc_name", ""),
             )
         elif name == "add_builds_to_slide":
             return await self.content_tools.add_builds_to_slide(
@@ -509,6 +451,7 @@ class KeynoteMCPServer:
                 element_indices=arguments["element_indices"],
                 element_type=arguments.get("element_type", "text"),
                 effect=arguments.get("effect", "Appear"),
+                doc_name=arguments.get("doc_name", ""),
             )
         elif name == "add_shape":
             return await self.content_tools.add_shape(
@@ -663,6 +606,7 @@ class KeynoteMCPServer:
                 element_types=arguments.get("element_types"),
                 detail=arguments.get("detail", "full"),
                 round_coordinates=arguments.get("round_coordinates", True),
+                include_text_runs=arguments.get("include_text_runs", True),
             )
 
         # Export and screenshot tools

@@ -153,7 +153,8 @@ reported"** without guessing. What IS newly readable:
   character` and `size of every character` each return the WHOLE list in ONE
   Apple event (probed). Three events per text item buys full run fidelity;
   the naive read would be one event per character. Runs are coalesced in
-  AppleScript so the payload stays small.
+  AppleScript so the payload stays small. **Runs are now also AUTHORABLE** —
+  see "Runs, which turned out not to be a ceiling at all" below.
 - `background fill type` — the KIND of fill (`no fill` / `color fill` /
   `gradient fill` / `advanced gradient fill` / `image fill` /
   `advanced image fill`). Never the colour.
@@ -176,15 +177,57 @@ described deck rebuilt from its own output will paint in class order, which
 for a layered diagram means panels landing on top of their own labels unless
 the spec is reordered by hand.
 
+## Runs, which turned out not to be a ceiling at all (Phase 10)
+
+`build_deck` used to state, in its own tool description, "NO PER-RUN COLOR
+HERE. An element has one font/size/color." That was true of the code and false
+of Keynote. It was never probed — it was inferred from the spec format not
+having a field for it, which is not evidence about the application.
+
+The write route always existed and `style_text_range` had been using it since
+3.0.0: `set color of characters S thru E of object text of <item>`. Inside
+`build_deck` the created item is still in scope, so a run costs **AppleScript
+lines, not Apple events** — the tri-colour title below adds four lines to a
+session that was already running. `runs` is now a field on every text-bearing
+element, in the same shape `describe_deck` reports, so a mixed-colour heading
+survives describe → build.
+
+Two things worth keeping:
+
+1. **Keynote renders text through a colour profile.** An authored `#830041`
+   lands at ~(138,37,82) on the canvas, not (131,0,65). This is not a write
+   error, and the way to know that is that the ORIGINAL hand-made deck renders
+   the same maroon at (138,32,82) — five levels away on one channel. A rendered
+   check comparing against the value it *sent* will fail on a correct write;
+   compare against what the application actually paints.
+2. **Runs must be written after the element's own text and colour, and before
+   its position.** Re-setting `object text` discards every run, a box-level
+   `set color of object text` flattens them, and a run that changes size
+   re-triggers auto-fit — which keeps the box's vertical CENTRE fixed, so a
+   position set earlier drifts. Same invariant the box-level sizing already
+   obeyed, now with a third thing sequenced inside it.
+
+The general lesson is the one this file exists for and got wrong in its own
+pages: **a limit of the code is not a limit of the application**, and only the
+CANNOT list here is probe-backed. Anything asserted as impossible without a
+probe belongs in a TODO, not in a ceiling.
+
 ## Theme placeholder geometry (Phase 9 Task 8)
 
 A slide's `title`/`body` fill the theme's placeholders **wherever the layout
 puts them**. Their position and size cannot be read or set — layouts are
 opaque. This produced the single largest visual difference when reproducing a
-real deck: the design centres its H1 at y=817, the theme placeholder puts it at
-the top, and on a diagram slide a title placeholder runs straight through the
-diagram. **If a design places its heading at a specific point, author it as a
-positioned text element, not as `title`.**
+real deck: the design centres its H1 at **y≈543** — just past the vertical
+middle of a 1080pt canvas — while the theme placeholder puts it at the top, and
+on a diagram slide a title placeholder runs straight through the diagram. **If
+a design places its heading at a specific point, author it as a positioned text
+element, not as `title`.**
+
+The 543 is measured, twice: the H1's ink occupies rows 480–607 of the reference
+export (1920×1080, so 1px = 1pt), centre 543.5; `describe_deck` reports the box
+as `y=461, h=158`, centre 540. The ~3pt gap is the box's internal leading, not
+disagreement. (Earlier revisions of this file and FIDELITY_REPORT.md cited
+y=817, which was never measured from anything.)
 
 ## Scriptable but deliberately unexposed
 

@@ -56,6 +56,18 @@ _EDIT_TAG = (
     "several slides at once) use build_deck, which builds all of them in one call."
 )
 
+# Every index-addressed WRITE carries this. Keynote does not fail on a stale
+# index - it addresses a different object - so an unguarded write edited the
+# wrong element and reported success (fixed in 4.0.0 by an `exists` guard on
+# each of these tools). The guard cannot tell stale from wrong, hence the
+# instruction to re-read rather than to retry.
+_INDEX_TAG = (
+    " The index comes from get_slide_content or describe_deck. An index that is "
+    "not on the slide is REJECTED (-1719) rather than applied, but an index that "
+    "is merely STALE still addresses a real - and different - element, so re-read "
+    "the slide after anything that deletes or adds elements."
+)
+
 
 class ContentTools(DocumentTargetedTools):
     """Content management tools class"""
@@ -354,10 +366,18 @@ class ContentTools(DocumentTargetedTools):
             Tool(
                 name="get_slide_content",
                 description=(
-                    "Get all elements on a slide - returns counts and details (index, text, "
-                    "position, size) for text items, images, shapes, and tables. Use the "
-                    "indices with edit_text_item / delete_element / move_element / "
-                    "resize_element."
+                    "Get all elements on a slide - counts, then one line per element. "
+                    "Use the indices with edit_text_item / delete_element / "
+                    "move_element / resize_element; they are the same indices "
+                    "describe_deck reports (docs/INDEX_CONTRACT.md). Each text line is "
+                    "`TEXT:<index>:::<text>:::x,y:::w,h:::role:<role>`, where role is "
+                    "'title' or 'body' for a THEME PLACEHOLDER and empty for an "
+                    "ordinary text box - worth checking before editing, since a "
+                    "placeholder's geometry cannot be set. The text_items count "
+                    "EXCLUDES Keynote's phantom placeholder slots (`count of text "
+                    "items` is untruthful), so indices are not contiguous - never "
+                    "derive one by counting. For font, colour, per-run styling, "
+                    "rotation/opacity or a whole deck at once, use describe_deck."
                 ),
                 inputSchema={
                     "type": "object",
@@ -370,7 +390,12 @@ class ContentTools(DocumentTargetedTools):
             ),
             Tool(
                 name="edit_text_item",
-                description="Edit a text item's content by index on a slide",
+                description=(
+                    "Replace a text item's content by index, keeping its position, "
+                    "size and box-level styling. Any per-run styling is lost - the new "
+                    "text takes the box's font/size/colour throughout, so re-apply "
+                    "style_text_range afterwards." + _INDEX_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -387,7 +412,11 @@ class ContentTools(DocumentTargetedTools):
             ),
             Tool(
                 name="delete_element",
-                description="Delete an element by type and index from a slide",
+                description=(
+                    "Delete an element by type and index from a slide. Deleting shifts "
+                    "every HIGHER index of that type down by one, so delete in "
+                    "descending index order or re-read between calls." + _INDEX_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -408,7 +437,11 @@ class ContentTools(DocumentTargetedTools):
             ),
             Tool(
                 name="move_element",
-                description="Move an element to new coordinates on a slide",
+                description=(
+                    "Move an element to new coordinates (points, top-left origin) on a "
+                    "slide. Theme placeholders cannot be moved - their geometry is "
+                    "owned by the layout." + _INDEX_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -431,7 +464,12 @@ class ContentTools(DocumentTargetedTools):
             ),
             Tool(
                 name="resize_element",
-                description="Resize an element on a slide",
+                description=(
+                    "Resize an element (points) on a slide. On a TEXT item this snaps "
+                    "back to auto-fit and keeps the box's vertical CENTRE fixed, so "
+                    "the top edge moves; set the position afterwards if it "
+                    "matters." + _INDEX_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -500,7 +538,12 @@ class ContentTools(DocumentTargetedTools):
             ),
             Tool(
                 name="set_element_opacity",
-                description="Set opacity (0-100) on any element",
+                description=(
+                    "Set opacity (0-100) on any element. On a shape this is the only "
+                    "way to affect its interior at all - fill COLOUR is not writable "
+                    "by AppleScript; use add_colored_panel for an exact "
+                    "colour." + _INDEX_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -525,11 +568,18 @@ class ContentTools(DocumentTargetedTools):
                 description=(
                     "Add a Build In animation to an element so it appears step-by-step "
                     "(e.g. bullets one by one on click). Uses UI scripting - requires "
-                    "Accessibility permission. Do not add builds to container shapes."
+                    "Accessibility permission, Keynote frontmost and an unlocked "
+                    "screen. Do not add builds to container shapes. This tool brings "
+                    "`doc_name`'s window forward and verifies it arrived before typing "
+                    "at it, then restores the Format pane it had to leave. NOTHING A "
+                    "BUILD DOES IS VISIBLE IN A RENDER: an exported slide shows the "
+                    "final state, so the reply reports what the inspector accepted, "
+                    "not that the animation plays."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "doc_name": _DOC_ARG,
                         "slide_number": {"type": "integer", "description": "Slide number"},
                         "element_type": {
                             "type": "string",
@@ -562,10 +612,16 @@ class ContentTools(DocumentTargetedTools):
             ),
             Tool(
                 name="remove_build_in",
-                description="Remove Build In animation from an element. Uses UI scripting.",
+                description=(
+                    "Remove Build In animation from an element. Uses UI scripting "
+                    "(Accessibility permission, Keynote frontmost); brings "
+                    "`doc_name`'s window forward first and restores the Format pane "
+                    "afterwards."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "doc_name": _DOC_ARG,
                         "slide_number": {"type": "integer", "description": "Slide number"},
                         "element_type": {
                             "type": "string",
@@ -586,11 +642,16 @@ class ContentTools(DocumentTargetedTools):
                     "Add Build In animations to multiple elements on a slide in one call. "
                     "Applies builds in order so elements appear sequentially on click. "
                     "Auto-skips bullet dots (text items containing only a bullet). Uses UI "
-                    "scripting - requires Accessibility permission."
+                    "scripting - requires Accessibility permission, Keynote frontmost "
+                    "and an unlocked screen; brings `doc_name`'s window forward first "
+                    "and restores the Format pane afterwards. Builds do not show up in "
+                    "any export, so the reply reports what the inspector accepted "
+                    "rather than a rendered result."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "doc_name": _DOC_ARG,
                         "slide_number": {"type": "integer", "description": "Slide number"},
                         "element_type": {
                             "type": "string",

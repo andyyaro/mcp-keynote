@@ -227,7 +227,11 @@ class ObjectTools(DocumentTargetedTools):
                     "not recolorable inside Keynote afterwards, only "
                     "moved/resized/deleted like any image. Add panels BEFORE the "
                     "text that sits on them: z-order follows creation order and "
-                    "cannot be changed via AppleScript." + _EDIT_TAG
+                    "cannot be changed via AppleScript. The colour, radius and "
+                    "opacity are encoded in the PNG's filename, so describe_deck "
+                    "reports it back as type:'panel' with those values rather "
+                    "than as an anonymous image, and build_deck re-renders it - "
+                    "the round trip needs no durable file." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -335,7 +339,16 @@ class ObjectTools(DocumentTargetedTools):
                     "and/or size of characters, words, or paragraphs start..end "
                     "(1-based, inclusive). Bold/italic = pass the bold/italic "
                     "font face name (e.g. 'Helvetica-Bold') - Keynote's "
-                    "dictionary has no style attribute, only the font name."
+                    "dictionary has no style attribute, only the font name. "
+                    "describe_deck reads the result back as the text item's "
+                    "`runs`, and build_deck accepts `runs` on a text element - so "
+                    "when you are AUTHORING a mixed-colour heading, put the runs "
+                    "in the spec instead of calling this three times afterwards; "
+                    "this tool is for editing text that already exists. The item "
+                    "index comes from get_slide_content or describe_deck; an "
+                    "index that is not on the slide is rejected (-1719) rather "
+                    "than applied to a different element. Re-setting the item's "
+                    "text (edit_text_item) discards every run."
                 ),
                 inputSchema={
                     "type": "object",
