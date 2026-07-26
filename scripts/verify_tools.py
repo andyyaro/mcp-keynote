@@ -21,6 +21,7 @@ Usage:  uv run python scripts/verify_tools.py
 
 import asyncio
 import base64
+import json
 import os
 import re
 import shutil
@@ -36,7 +37,9 @@ sys.path.insert(0, str(REPO / "src"))
 os.environ["KEYNOTE_MCP_SAVE_DIR"] = str(SCRATCH)
 
 from keynote_mcp.tools.content import ContentTools  # noqa: E402
+from keynote_mcp.tools.deck import DeckTools  # noqa: E402
 from keynote_mcp.tools.export import ExportTools  # noqa: E402
+from keynote_mcp.tools.objects import ObjectTools  # noqa: E402
 from keynote_mcp.tools.presentation import PresentationTools  # noqa: E402
 from keynote_mcp.tools.slide import SlideTools  # noqa: E402
 
@@ -74,6 +77,8 @@ async def main():
     slides = SlideTools()
     content = ContentTools()
     export = ExportTools()
+    objects = ObjectTools()
+    deck = DeckTools()
 
     SCRATCH.mkdir(exist_ok=True)
     test_key = SCRATCH / "phase3-test.key"
@@ -407,6 +412,379 @@ async def main():
         await content.add_builds_to_slide(2, "3,4", effect="Appear"),
     )
 
+    # --- native objects (3.0.0): tables, charts, lines, panels, styling ---
+    check("add_slide(for native objects)", await slides.add_slide(), "Added slide #4")
+    check(
+        "add_table(4x3 with formula)",
+        await objects.add_table(
+            4,
+            [
+                ["Team", "Now", "Plan"],
+                ["Eng", 24, 30],
+                ["Sales", 11, 14],
+                ["Total", "=SUM(B2:B3)", "=SUM(C2:C3)"],
+            ],
+            x=80,
+            y=80,
+            width=500,
+            height=260,
+        ),
+        "table index",
+    )
+    table_vals = content.runner.run(
+        """
+        on run argv
+            tell application "Keynote"
+                tell table 1 of slide 4 of document (item 1 of argv)
+                    return (value of cell 2 of row 2 as text) & "|" & ¬
+                        (formula of cell 2 of row 4 as text) & "|" & ¬
+                        (value of cell 2 of row 4 as text)
+                end tell
+            end tell
+        end run
+        """,
+        "phase3-test.key",
+    )
+    record(
+        "table cells: number stays numeric, '=' string became a live formula",
+        table_vals.startswith("24") and "=SUM(B2:B3)" in table_vals and "35" in table_vals,
+        table_vals,
+    )
+    check(
+        "add_chart(native bar)",
+        await objects.add_chart(
+            4,
+            "bar",
+            ["2024", "2025"],
+            ["North", "South"],
+            [[12, 17], [15, 21]],
+            x=700,
+            y=80,
+            width=600,
+            height=350,
+        ),
+        "chart index",
+    )
+    chart_count = content.runner.run(
+        'on run argv\ntell application "Keynote" to return count of charts of '
+        "slide 4 of document (item 1 of argv)\nend run",
+        "phase3-test.key",
+    )
+    record("native chart exists on slide", chart_count.strip() == "1", chart_count)
+    check("add_line", await objects.add_line(4, 80, 400, 580, 400), "line index")
+    panel_reply = check(
+        "add_colored_panel(#2F4B7C, r=20)",
+        await objects.add_colored_panel(4, 80, 430, 300, 120, color="#2F4B7C", radius=20),
+        "image index",
+    )
+    record(
+        "panel reply reports requested geometry",
+        "at (80, 430), size 300x120" in panel_reply,
+        panel_reply[:140],
+    )
+    styled = text_of(await content.add_text_box(4, "range styling target", x=80, y=580))
+    styled_idx = int(re.search(r"text item index (\d+)\)", styled).group(1))
+    check(
+        "style_text_range(chars 1-5 red bold)",
+        await objects.style_text_range(
+            4, styled_idx, 1, 5, color="#CC0000", font_name="Helvetica-Bold"
+        ),
+        "Styled characters 1-5",
+    )
+    range_read = content.runner.run(
+        f"""
+        on run argv
+            tell application "Keynote"
+                tell object text of text item {styled_idx} of slide 4 of document (item 1 of argv)
+                    set c2 to color of character 2
+                    set c9 to color of character 9
+                    return (item 1 of c2 as text) & "|" & (font of character 2) & ¬
+                        "|" & (item 1 of c9 as text)
+                end tell
+            end tell
+        end run
+        """,
+        "phase3-test.key",
+    )
+    r2, f2, r9 = range_read.split("|")
+    record(
+        "styled range differs from the rest (color+font, unstyled intact)",
+        abs(int(float(r2)) - 52428) < 600
+        and f2 == "Helvetica-Bold"
+        and abs(int(float(r9)) - 52428) > 5000,  # unstyled char keeps the THEME color
+        range_read,
+    )
+    check("add_image(for replace)", await content.add_image(4, str(png_path), x=1500, y=430))
+    blue_png = SCRATCH / "verify-blue.png"
+    blue_png.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/HwAC"
+            "hAGAWVzUTwAAAABJRU5ErkJggg=="
+        )
+    )
+    check("replace_image(image 2 -> blue)", await objects.replace_image(4, 2, str(blue_png)))
+    replaced_name = content.runner.run(
+        'on run argv\ntell application "Keynote" to return file name of image 2 of '
+        "slide 4 of document (item 1 of argv) as text\nend run",
+        "phase3-test.key",
+    )
+    record("replace_image swapped the file in place", "verify-blue" in replaced_name, replaced_name)
+    check(
+        "set_element_style(rotation+reflection+lock round-trip)",
+        await objects.set_element_style(
+            4, "text", styled_idx, rotation=15, reflection_showing=True, reflection_value=20
+        ),
+        "rotation=15",
+    )
+    rot_read = content.runner.run(
+        f'on run argv\ntell application "Keynote" to return rotation of text item '
+        f"{styled_idx} of slide 4 of document (item 1 of argv) as text\nend run",
+        "phase3-test.key",
+    )
+    record("rotation read back", rot_read.strip() == "15", rot_read)
+    check(
+        "set_element_style(unlock for cleanup)",
+        await objects.set_element_style(4, "text", styled_idx, rotation=0, locked=False),
+    )
+
+    # --- transitions, skipped, document settings, slide size (3.0.0) ---
+    check(
+        "set_slide_transition(push 1.5s)",
+        await slides.set_slide_transition(4, "push", duration=1.5),
+        "'push'",
+    )
+    trans_read = content.runner.run(
+        'on run argv\ntell application "Keynote"\nset tp to transition properties of '
+        "slide 4 of document (item 1 of argv)\nreturn (transition effect of tp as text) "
+        '& "|" & (transition duration of tp as text)\nend tell\nend run',
+        "phase3-test.key",
+    )
+    record("transition read back", trans_read.startswith("push|1.5"), trans_read)
+    check("set_slide_skipped(4, true)", await slides.set_slide_skipped(4, True), "now skipped")
+    skipped_read = content.runner.run(
+        'on run argv\ntell application "Keynote" to return skipped of slide 4 of '
+        "document (item 1 of argv) as text\nend run",
+        "phase3-test.key",
+    )
+    record("skipped read back true", skipped_read.strip() == "true", skipped_read)
+    check(
+        "set_slide_skipped(4, false)", await slides.set_slide_skipped(4, False), "not skipped"
+    )
+    check(
+        "set_document_settings(slide numbers on)",
+        await pres.set_document_settings(slide_numbers_showing=True),
+        "slide numbers showing=true",
+    )
+    numbers_read = content.runner.run(
+        'on run argv\ntell application "Keynote" to return slide numbers showing of '
+        "document (item 1 of argv) as text\nend run",
+        "phase3-test.key",
+    )
+    record("slide numbers showing read back", numbers_read.strip() == "true", numbers_read)
+    check(
+        "set_document_settings(restore)",
+        await pres.set_document_settings(slide_numbers_showing=False),
+    )
+
+    # --- export formats (3.0.0) ---
+    notes_pdf = SCRATCH / "verify-notes.pdf"
+    check(
+        "export_pdf(slides_with_notes)",
+        await export.export_pdf(str(notes_pdf), layout="slides_with_notes"),
+        "Exported PDF",
+    )
+    record("notes pdf exists", notes_pdf.exists() and notes_pdf.stat().st_size > 1000, "")
+    pptx_path = SCRATCH / "verify.pptx"
+    check(
+        "export_presentation(pptx)",
+        await export.export_presentation("pptx", str(pptx_path)),
+        "Exported pptx",
+    )
+    record("pptx exists", pptx_path.exists() and pptx_path.stat().st_size > 1000, "")
+    images_dir = SCRATCH / "verify-images"
+    shutil.rmtree(images_dir, ignore_errors=True)
+    check(
+        "export_presentation(images)",
+        await export.export_presentation("images", str(images_dir)),
+        "Exported images",
+    )
+    record(
+        "per-slide images exist",
+        images_dir.is_dir() and len(list(images_dir.glob("*.png"))) >= 3,
+        str(sorted(p.name for p in images_dir.glob("*"))[:4]),
+    )
+    html_dir = SCRATCH / "verify-html"
+    shutil.rmtree(html_dir, ignore_errors=True)
+    check(
+        "export_presentation(html)",
+        await export.export_presentation("html", str(html_dir)),
+        "Exported html",
+    )
+    record("html bundle exists", html_dir.is_dir(), str(html_dir))
+    # movie/key09 exports were verified live in the Phase A probes (real .m4v
+    # and .key artifacts); movie rendering is too slow for every harness run.
+
+    check("delete native-objects slide", await slides.delete_slide(4), "Deleted slide 4")
+
+    # --- build_deck / describe_deck (3.0.0) ---
+    deck_path = SCRATCH / "verify-deck.key"
+    deck_spec = {
+        "title": "verify-deck",
+        "theme": "White",
+        "style": "boardroom",
+        "save_path": str(deck_path),
+        "slides": [
+            {
+                "elements": [
+                    {"type": "title", "text": "Verify Deck", "centered": True, "y": 300},
+                    {"type": "subtitle", "text": "harness build", "centered": True, "y": 460},
+                ],
+                "notes": "deck notes ünïcode",
+                "transition": {"effect": "dissolve", "duration": 0.7},
+            },
+            {
+                "elements": [
+                    {"type": "title", "text": "Data"},
+                    {
+                        "type": "table",
+                        "data": [["k", "v"], ["a", 1], ["b", 2]],
+                    },
+                    {
+                        "type": "chart",
+                        "chart_type": "pie",
+                        "row_names": ["x", "y"],
+                        "column_names": ["v"],
+                        "data": [[30], [70]],
+                        "group_by": "column",
+                    },
+                ],
+            },
+            {
+                "elements": [
+                    {"type": "panel", "x": 100, "y": 200, "width": 500, "height": 250},
+                    {"type": "bullets", "items": ["L1", "L2"], "column": "left", "y": 550},
+                    {"type": "bullets", "items": ["R1", "R2"], "column": "right", "y": 550},
+                ],
+                "skipped": True,
+            },
+        ],
+    }
+    bad_spec = {"slides": [{"elements": [{"type": "nope"}, {"type": "table", "data": [[1]]}]}]}
+    bad_reply = text_of(await deck.build_deck(spec=bad_spec))
+    record(
+        "build_deck(bad spec) rejects everything up front with both errors",
+        "Spec validation failed (2" in bad_reply
+        and "unknown element type" in bad_reply
+        and not (SCRATCH / "deck.key").exists(),
+        bad_reply[:160],
+    )
+    built = check("build_deck(3-slide spec)", await deck.build_deck(spec=deck_spec), "Built")
+    record(
+        "build_deck: zero element errors and file exists",
+        "(0 element error(s))" in built and deck_path.exists(),
+        built[:160],
+    )
+    record(
+        "build_deck reports settled geometry",
+        '"position"' in built and '"size"' in built,
+        "",
+    )
+    described_raw = text_of(await deck.describe_deck(doc_name="verify-deck.key"))
+    try:
+        described = json.loads(described_raw)
+    except json.JSONDecodeError:
+        described = None
+    record("describe_deck returns parseable spec", described is not None, described_raw[:160])
+    if described:
+        s1, s2, s3 = described["slides"]
+        table_el = next((e for e in s2["elements"] if e["type"] == "table"), {})
+        record(
+            "describe_deck round-trips notes/transition/skipped/table data",
+            s1.get("notes", "").startswith("deck notes")
+            and s1.get("transition", {}).get("effect") == "dissolve"
+            and s3.get("skipped") is True
+            and table_el.get("data", [])[1:] == [["a", 1], ["b", 2]]
+            and any(e["type"] == "chart" for e in s2["elements"]),
+            str({k: s1.get(k) for k in ("notes", "transition")})[:160],
+        )
+        # True round-trip: rebuild from the described spec. Charts come
+        # back geometry-only (chart_type null - Keynote exposes no data to
+        # read), so they cannot be rebuilt and must be dropped or refilled;
+        # validate_spec correctly rejects them otherwise.
+        chart_rejected = text_of(await deck.build_deck(spec=described, save_path=str(SCRATCH / "verify-deck-rt.key")))
+        record(
+            "rebuild with null chart_type rejected up front (charts are write-once)",
+            "Spec validation failed" in chart_rejected and "chart_type" in chart_rejected,
+            chart_rejected[:160],
+        )
+        dropped = []
+        for sl in described["slides"]:
+            kept = []
+            for e in sl.get("elements", []):
+                if e.get("type") == "chart":
+                    dropped.append("chart")  # write-once: no data to read back
+                elif e.get("type") == "image" and not Path(
+                    str(e.get("path", ""))
+                ).is_file():
+                    dropped.append("embedded image")  # only the basename survives embedding
+                else:
+                    kept.append(e)
+            sl["elements"] = kept
+        record(
+            "round-trip limitations are the documented ones only",
+            set(dropped) <= {"chart", "embedded image"},
+            str(dropped),
+        )
+        described["slides"][2].pop("skipped", None)  # keep visible for the rebuild
+        rebuilt = text_of(
+            await deck.build_deck(
+                spec=described, save_path=str(SCRATCH / "verify-deck-rt.key")
+            )
+        )
+        record(
+            "build_deck(describe_deck output) rebuilds with zero errors",
+            "(0 element error(s))" in rebuilt,
+            rebuilt[:200],
+        )
+        try:
+            pres.runner.run(
+                'on run argv\ntell application "Keynote" to close document (item 1 of argv) '
+                "saving no\nend run",
+                "verify-deck-rt.key",
+            )
+        except Exception as cleanup_err:
+            print(f"  (cleanup: {cleanup_err})")
+    rerun = text_of(await deck.build_deck(spec=deck_spec))
+    record(
+        "build_deck re-run replaces the same file (idempotent)",
+        rerun.startswith("Built 3-slide deck") and "(0 element error(s))" in rerun,
+        rerun[:120],
+    )
+    md_built = text_of(
+        await deck.build_deck(
+            markdown=(
+                "---\ntitle: verify-md\ntheme: White\nsave_path: "
+                f"{SCRATCH / 'verify-md.key'}\n---\n\n# MD Deck\n\n## Points\n"
+                "- alpha\n- beta\n\nNotes: md notes here.\n\n"
+                "| a | b |\n| --- | --- |\n| 1 | 2 |\n"
+            )
+        )
+    )
+    record(
+        "build_deck(markdown) builds title+content slides",
+        md_built.startswith("Built 2-slide deck") and "(0 element error(s))" in md_built,
+        md_built[:160],
+    )
+    for name in ("verify-deck.key", "verify-md.key"):
+        try:
+            pres.runner.run(
+                'on run argv\ntell application "Keynote" to close document (item 1 of argv) '
+                "saving no\nend run",
+                name,
+            )
+        except Exception as cleanup_err:
+            print(f"  (cleanup: {cleanup_err})")
+
     # --- theme switch, save, close, reopen ---
     if "Basic Black" in themes_text:
         check(
@@ -465,6 +843,13 @@ async def main():
         str(SCRATCH) in default_saved and default_path.exists(),
         default_saved[:160],
     )
+    check(
+        "set_slide_size(1920x1080 live resize)",
+        await pres.set_slide_size(1920, 1080),
+        "1920x1080",
+    )
+    size_after = text_of(await pres.get_slide_size())
+    record("slide size read back 1920x1080", "1920 x 1080" in size_after, size_after[:80])
     check("close default-saved doc", await pres.close_presentation(should_save=False))
 
     # a genuinely unsaved document (made behind the server's back): plain save

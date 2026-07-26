@@ -1266,8 +1266,16 @@ class DeckTools:
                             set p to position of im
                             set fn to ""
                             try
-                                set fn to file name of im as text
+                                set srcFile to file of im
+                                if srcFile is not missing value then
+                                    set fn to POSIX path of srcFile
+                                end if
                             end try
+                            if fn is "" then
+                                try
+                                    set fn to file name of im as text
+                                end try
+                            end if
                             set out to out & "I" & fs & fn & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of im as text) & ¬
                                 fs & (height of im as text) & rs
