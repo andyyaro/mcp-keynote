@@ -137,21 +137,40 @@ Full per-tool verification status: [docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md).
 ### Styles
 
 A deck-wide style — fonts, palette, margins, table header colors — comes
-from a built-in (`plain`, `boardroom`, `midnight`, `editorial`), a
+from a built-in (`plain`, `boardroom`, `midnight`, `editorial`, `sdh`), a
 `.keynote-mcp.toml` next to the deck, or a TOML path passed as `style`.
 `build_deck`, `add_table`, and `add_colored_panel` consult it, so decks stay
 visually consistent without per-call coordinates and font names.
 
+A style can also name the things a design system names — type roles, a
+semantic palette, connector strokes, canvas zones and grid modules — so a spec
+says `role: "label.service"`, `color: "@zone.private"` and
+`connector: "data"` instead of repeating fonts, hexes and hand-computed
+coordinates. See [docs/STYLE_SYSTEM.md](docs/STYLE_SYSTEM.md), which also
+lists what a real design system still could not express, and why.
+
 ### Known Keynote limits
 
 Not fixable via AppleScript — verified by live probes, documented with
-workarounds in [docs/CEILING.md](docs/CEILING.md): shape fill color is
-read-only (colored panels are therefore *rendered images*, not recolorable
-in Keynote), text alignment exists only inside tables, no hyperlinks, no
-grouping, no z-order control (creation order is paint order), no
-movie/audio insertion, chart data is write-once, tables are 2×2 minimum,
-and build-order/"With Previous"/connection-line routing require the
-Keynote UI.
+workarounds in [docs/CEILING.md](docs/CEILING.md):
+
+- **Fill color is not settable, on anything.** Re-probed at 4.0.0 across 12
+  write routes and 5 themes. Colored panels are therefore *rendered images*
+  (colorimetrically exact, but not recolorable in Keynote's inspector).
+- **Lines have no stroke properties at all** — no color, width, dash or
+  arrowheads. `styled_line` renders the stroke to a PNG and round-trips it.
+- **Theme placeholder geometry cannot be read or set.** If a design places its
+  heading at a specific point, author it as a positioned text element rather
+  than as a slide `title`.
+- **Z-order is creation order, permanently**; `describe_deck` therefore cannot
+  report it, and says so.
+- No hyperlinks, no grouping, no underline, no per-slide backgrounds, no
+  movie/audio insertion; chart data is write-once; tables are 2×2 minimum;
+  text alignment exists only inside tables; build-order/"With Previous"/
+  connection-line routing require the Keynote UI.
+
+How much of a real deck this does reproduce, measured in pixels against a
+35-slide source: [docs/FIDELITY_REPORT.md](docs/FIDELITY_REPORT.md).
 
 ## Environment variables
 

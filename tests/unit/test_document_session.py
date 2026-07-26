@@ -143,3 +143,48 @@ class TestSchemaDocumentsTheBehavior:
             if desc:
                 assert "front document" not in desc, tool.name
                 assert "session document" in desc, tool.name
+
+
+class TestStaleSessionDocumentSelfHeals:
+    """Nothing stops a document being closed outside this server - a user
+    closing a window, or code that bypasses close_presentation. A session
+    default pointing at a closed document would then fail EVERY later
+    doc_name-less call with the same -1728, which is worse than the guessing
+    it replaced. Found by the full live suite, where the harness itself closed
+    two build_deck decks via raw AppleScript."""
+
+    def test_missing_session_document_is_forgotten_and_explained(self) -> None:
+        from keynote_mcp.utils.error_handler import AppleScriptError, handle_applescript_error
+
+        SESSION.set_default("Gone.key")
+        with pytest.raises(AppleScriptError) as excinfo:
+            handle_applescript_error(
+                'execution error: Keynote got an error: Can\u2019t get document "Gone.key". (-1728)'
+            )
+        assert SESSION.get_default() == "", "stale default was not cleared"
+        assert "no longer exists" in str(excinfo.value)
+        assert "retry" in str(excinfo.value)
+
+    def test_a_bad_slide_index_does_NOT_throw_the_default_away(self) -> None:
+        """ "Can't get slide 9 of document 1" is a typo, not a closed document.
+        Clearing the default there would make an ordinary mistake expensive."""
+        from keynote_mcp.utils.error_handler import AppleScriptError, handle_applescript_error
+
+        SESSION.set_default("Deck.key")
+        with pytest.raises(AppleScriptError):
+            handle_applescript_error(
+                "execution error: Keynote got an error: Can\u2019t get slide 9 of "
+                "document 1. Invalid index. (-1719)"
+            )
+        assert SESSION.get_default() == "Deck.key"
+
+    def test_a_different_documents_error_leaves_the_default_alone(self) -> None:
+        from keynote_mcp.utils.error_handler import AppleScriptError, handle_applescript_error
+
+        SESSION.set_default("Mine.key")
+        with pytest.raises(AppleScriptError):
+            handle_applescript_error(
+                "execution error: Keynote got an error: Can\u2019t get document "
+                '"SomeoneElse.key". (-1728)'
+            )
+        assert SESSION.get_default() == "Mine.key"

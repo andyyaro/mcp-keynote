@@ -133,7 +133,7 @@ errors probed).
 | 1-row or 1-column tables | (P) "Invalid row/column count" (-10000); floor is 2×2 | 2×2 with blanks |
 | Build animations / order / "With Previous" | (D) no terms | UI-scripting tools (fragile: English UI, Accessibility, unlocked screen, focus) |
 | Connection lines (routed connectors) | (D) `line` has fixed endpoints only | straight `add_line` |
-| Borders, strokes, shadows (incl. table cell borders) | (D) no terms | render into the panel PNG if essential |
+| Borders, strokes, shadows (incl. table cell borders) | (D) no terms; **re-probed Phase 9**: a `line`'s COMPLETE property record is start/end point, position, width, height, rotation, reflection showing/value, locked, parent, class — no colour, thickness, dash or arrowheads | `styled_line` renders the stroke to a transparent PNG and round-trips via its filename; render into the panel PNG for shape borders |
 | Per-slide backgrounds | (D) no term on `slide`; layouts are read-only | pick a theme/layout that has it; full-bleed panel image |
 | Creating/editing layouts or themes | (D) `slide layout` exposes `name` only | author `.kth` themes in Keynote by hand |
 | Line spacing, paragraph spacing, kerning, bullet glyphs/indents | (D) rich text has only color/font/size | accept theme defaults |
@@ -142,6 +142,49 @@ errors probed).
 | Reading chart data (for describe_deck) | (P/D) nothing readable | described charts are geometry-only |
 | Skipped slides in an **image** export | (P) `skipped slides:true` is ignored by the slide-images export — identical file counts either way (probed at the raw-AppleScript level); the same property works for PDF | `export_pdf(include_skipped=true)`, or unskip first; `export_presentation` says so in its reply |
 | Original file path of embedded images | (P) after the source file is gone, only the basename survives | describe_deck falls back to the basename and says so |
+
+## Read-side limits (Phase 9 Task 4, probed)
+
+`describe_deck` emits a `not_reported` block listing exactly these, with every
+full description, so a caller can tell **"no fill"** from **"fill not
+reported"** without guessing. What IS newly readable:
+
+- **Per-run text styling.** `color of every character`, `font of every
+  character` and `size of every character` each return the WHOLE list in ONE
+  Apple event (probed). Three events per text item buys full run fidelity;
+  the naive read would be one event per character. Runs are coalesced in
+  AppleScript so the payload stays small.
+- `background fill type` — the KIND of fill (`no fill` / `color fill` /
+  `gradient fill` / `advanced gradient fill` / `image fill` /
+  `advanced image fill`). Never the colour.
+- `rotation`, `opacity`, `reflection showing`, `locked` on shapes, text items,
+  images and lines; `description` (alt text) on images.
+- `count of groups` per slide — so a group a user made BY HAND is reported
+  rather than silently flattened. Its members remain unenumerable.
+
+What is NOT readable, and is stated in the output rather than omitted: shape
+fill colour, shape type, corner radius, any stroke, line stroke, text
+alignment, underline, chart data, slide background, group membership, and
+z-order.
+
+**Z-order deserves its own note.** `describe_deck` enumerates class by class
+(text, then image, then shape, table, chart, line), so **array position is
+neither an element address nor paint order**. Every element therefore carries
+an explicit `element_class` + `index` (see INDEX_CONTRACT.md). Keynote's real
+z-order is creation order and AppleScript can neither read nor change it — a
+described deck rebuilt from its own output will paint in class order, which
+for a layered diagram means panels landing on top of their own labels unless
+the spec is reordered by hand.
+
+## Theme placeholder geometry (Phase 9 Task 8)
+
+A slide's `title`/`body` fill the theme's placeholders **wherever the layout
+puts them**. Their position and size cannot be read or set — layouts are
+opaque. This produced the single largest visual difference when reproducing a
+real deck: the design centres its H1 at y=817, the theme placeholder puts it at
+the top, and on a diagram slide a title placeholder runs straight through the
+diagram. **If a design places its heading at a specific point, author it as a
+positioned text element, not as `title`.**
 
 ## Scriptable but deliberately unexposed
 

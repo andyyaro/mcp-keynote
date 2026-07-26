@@ -44,6 +44,38 @@ _NOT_FOUND_FIX = (
 )
 
 
+def _forget_stale_session_document(error_output: str) -> str:
+    """Clear the session default when Keynote says THAT document is gone.
+
+    Nothing stops a document being closed outside this server - a user closing
+    a window, or any code path that does not go through close_presentation.
+    The session default then points at a document that no longer exists and
+    EVERY later doc_name-less call fails with the same -1728, which is worse
+    than the guessing it replaced.
+
+    Deliberately narrow: it fires only on Keynote's "Can't get document "X""
+    for the CURRENT default. A bad slide index ("Can't get slide 9 of document
+    1") must not throw the default away.
+    """
+    from .session import SESSION  # local: session imports this module
+
+    default = SESSION.get_default()
+    if not default:
+        return ""
+    needle = f'document "{default}"'
+    if needle not in error_output:
+        return ""
+    lowered = error_output.lower()
+    if f"get {needle.lower()}" not in lowered:
+        return ""
+    SESSION.clear_default(default)
+    return (
+        f"\nThe session document {default!r} no longer exists (it was closed "
+        "outside this server), so it has been forgotten - retry, and the call "
+        "will resolve again."
+    )
+
+
 def handle_applescript_error(error_output: str) -> None:
     """Translate osascript stderr into a typed, actionable exception.
 
@@ -71,7 +103,8 @@ def handle_applescript_error(error_output: str) -> None:
         or "can’t get" in lowered
         or "invalid index" in lowered
     ):
-        raise AppleScriptError(f"{_NOT_FOUND_FIX}\nOriginal error: {error_output}")
+        stale = _forget_stale_session_document(error_output)
+        raise AppleScriptError(f"{_NOT_FOUND_FIX}{stale}\nOriginal error: {error_output}")
 
     if code == -600 or "isn't running" in lowered or "isn’t running" in lowered:
         raise AppleScriptError(

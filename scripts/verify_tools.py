@@ -644,6 +644,9 @@ async def check_describe_at_scale(pres, deck):
 
     # --- element_types: skipped classes are not READ, not merely omitted ---
     t0 = time.monotonic()
+    text_of(await deck.describe_deck(doc_name=doc, slide_range="1-10"))
+    full_s_for_compare = (time.monotonic() - t0) * 3.5  # 10 slides -> ~35
+    t0 = time.monotonic()
     lines_text = text_of(await deck.describe_deck(doc_name=doc, element_types=["line"]))
     lines_s = time.monotonic() - t0
     lines = json.loads(lines_text)
@@ -655,10 +658,13 @@ async def check_describe_at_scale(pres, deck):
         classes == {"line"},
         f"classes present: {sorted(c for c in classes if c)}",
     )
+    # Asserted RELATIVE to the full read, not against a wall-clock constant:
+    # an absolute threshold measures how busy the machine is. Lines-only skips
+    # every text/table property read, so it must be several times faster.
     record(
         "phase9/scale: filtering is a real SPEEDUP, not just a smaller payload",
-        lines_s < 6.0,
-        f"{lines_s:.2f}s for lines only",
+        lines_s * 3 < full_s_for_compare,
+        f"{lines_s:.2f}s for lines only vs {full_s_for_compare:.2f}s full",
     )
 
     # --- full: must not time out, and must carry no float noise ---
@@ -2283,12 +2289,13 @@ async def main():
         md_built[:160],
     )
     for name in ("verify-deck.key", "verify-md.key"):
+        # Closed through the TOOL, not raw AppleScript: build_deck made these
+        # the session document, and closing one behind the server's back leaves
+        # the session default pointing at a document that no longer exists.
+        # (The server now self-heals that, but the harness should not be the
+        # thing exercising the recovery path by accident.)
         try:
-            pres.runner.run(
-                'on run argv\ntell application "Keynote" to close document (item 1 of argv) '
-                "saving no\nend run",
-                name,
-            )
+            await pres.close_presentation(doc_name=name, should_save=False)
         except Exception as cleanup_err:
             print(f"  (cleanup: {cleanup_err})")
 

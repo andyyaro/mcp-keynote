@@ -480,6 +480,12 @@ class PresentationTools(DocumentTargetedTools):
             _, name, path = result.split("|", 2)
             path = path or save_path
             suffix = f" ({path})" if path else ""
+            # Saving an untitled document to a path RENAMES it ("Untitled 3" ->
+            # "deck.key"), which silently invalidates a session default holding
+            # the old name: every later doc_name-less call then fails with
+            # -1728. Found by the full live suite, not by any unit test.
+            if name and name != doc_name:
+                SESSION.set_default(name)
             return [TextContent(type="text", text=f"Saved presentation: {name}{suffix}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to save presentation: {e}")]
