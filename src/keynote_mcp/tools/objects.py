@@ -29,6 +29,7 @@ from .fragments import (
     RESOLVE_DOC,
     Argv,
     chart_fragment,
+    exists_guard,
     image_fragment,
     line_fragment,
     run_single_fragment,
@@ -609,6 +610,7 @@ class ObjectTools(DocumentTargetedTools):
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {RESOLVE_DOC}
+                        {exists_guard("text item", item_index, slide_number)}
                         tell slide {slide_number} of targetDoc
                             {body}
                         end tell

@@ -44,6 +44,7 @@ from .base import DocumentTargetedTools
 from .fragments import (
     CHART_TYPES,
     RESOLVE_DOC,
+    TEXT_ITEM_FILTER,
     TRANSITION_EFFECTS,
     Argv,
     chart_fragment,
@@ -1237,6 +1238,7 @@ class DeckTools(DocumentTargetedTools):
             return [TextContent(type="text", text=f"Failed to describe deck: {e}")]
 
     def _describe_slide(self, doc_name: str, slide_number: int) -> dict[str, Any]:
+        filter_block = TEXT_ITEM_FILTER
         raw = self.runner.run(
             f"""
             on run argv
@@ -1263,53 +1265,41 @@ class DeckTools(DocumentTargetedTools):
                         set out to out & "N" & fs & noteText & rs
                     end if
                     tell s
-                        set defT to missing value
-                        set defB to missing value
-                        try
-                            set defT to default title item
-                        end try
-                        try
-                            set defB to default body item
-                        end try
+{filter_block}
+                        -- slide.title / slide.body stay for round-trip rebuild,
+                        -- but the placeholder is ALSO emitted as a normal
+                        -- indexed element below, so describe_deck and
+                        -- get_slide_content agree on what "text item i" means.
+                        -- See docs/INDEX_CONTRACT.md.
                         if (title showing) and defT is not missing value then
                             set out to out & "PT" & fs & (object text of defT as text) & rs
                         end if
                         if (body showing) and defB is not missing value then
                             set out to out & "PB" & fs & (object text of defB as text) & rs
                         end if
-                        set seenT to false
-                        set seenB to false
-                        repeat with i from 1 to (count of text items)
+                        repeat with n from 1 to (count of realIndices)
+                            set i to (item n of realIndices) as integer
+                            set role to item n of realRoles
                             set ti to text item i
-                            set phantom to false
-                            if defT is not missing value and ti is defT then
-                                set phantom to true
-                                set seenT to true
-                            else if defB is not missing value and ti is defB then
-                                set phantom to true
-                                set seenB to true
-                            end if
-                            if not phantom then
-                                set p to position of ti
-                                set f to ""
-                                set z to ""
-                                set c to ""
-                                try
-                                    set f to font of object text of ti as text
-                                end try
-                                try
-                                    set z to size of object text of ti as text
-                                end try
-                                try
-                                    set rgb to color of object text of ti
-                                    set c to (item 1 of rgb as text) & "," & ¬
-                                        (item 2 of rgb as text) & "," & (item 3 of rgb as text)
-                                end try
-                                set out to out & "T" & fs & (object text of ti as text) & ¬
-                                    fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
-                                    fs & (width of ti as text) & fs & (height of ti as text) & ¬
-                                    fs & f & fs & z & fs & c & rs
-                            end if
+                            set p to position of ti
+                            set f to ""
+                            set z to ""
+                            set c to ""
+                            try
+                                set f to font of object text of ti as text
+                            end try
+                            try
+                                set z to size of object text of ti as text
+                            end try
+                            try
+                                set rgb to color of object text of ti
+                                set c to (item 1 of rgb as text) & "," & ¬
+                                    (item 2 of rgb as text) & "," & (item 3 of rgb as text)
+                            end try
+                            set out to out & "T" & fs & (object text of ti as text) & ¬
+                                fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
+                                fs & (width of ti as text) & fs & (height of ti as text) & ¬
+                                fs & f & fs & z & fs & c & fs & (i as text) & fs & role & rs
                         end repeat
                         repeat with i from 1 to (count of images)
                             set im to image i
@@ -1328,7 +1318,7 @@ class DeckTools(DocumentTargetedTools):
                             end if
                             set out to out & "I" & fs & fn & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of im as text) & ¬
-                                fs & (height of im as text) & rs
+                                fs & (height of im as text) & fs & (i as text) & rs
                         end repeat
                         repeat with i from 1 to (count of shapes)
                             set sh to shape i
@@ -1343,7 +1333,8 @@ class DeckTools(DocumentTargetedTools):
                                 end try
                                 set out to out & "S" & fs & shTxt & fs & (item 1 of p as text) & ¬
                                     fs & (item 2 of p as text) & fs & (width of sh as text) & ¬
-                                    fs & (height of sh as text) & fs & (opacity of sh as text) & rs
+                                    fs & (height of sh as text) & fs & (opacity of sh as text) & ¬
+                                    fs & (i as text) & rs
                             end if
                         end repeat
                         repeat with i from 1 to (count of tables)
@@ -1373,14 +1364,14 @@ class DeckTools(DocumentTargetedTools):
                                 fs & (header column count of tb as text) & ¬
                                 fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
                                 fs & (width of tb as text) & fs & (height of tb as text) & ¬
-                                fs & rowsOut & rs
+                                fs & rowsOut & fs & (i as text) & rs
                         end repeat
                         repeat with i from 1 to (count of charts)
                             set ch to chart i
                             set p to position of ch
                             set out to out & "C" & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of ch as text) & ¬
-                                fs & (height of ch as text) & rs
+                                fs & (height of ch as text) & fs & (i as text) & rs
                         end repeat
                         repeat with i from 1 to (count of lines)
                             set ln to line i
@@ -1388,7 +1379,7 @@ class DeckTools(DocumentTargetedTools):
                             set ep to end point of ln
                             set out to out & "G" & fs & (item 1 of sp as text) & ¬
                                 fs & (item 2 of sp as text) & fs & (item 1 of ep as text) & ¬
-                                fs & (item 2 of ep as text) & rs
+                                fs & (item 2 of ep as text) & fs & (i as text) & rs
                         end repeat
                     end tell
                     return out
@@ -1427,6 +1418,8 @@ class DeckTools(DocumentTargetedTools):
             elif kind == "T":
                 el: dict[str, Any] = {
                     "type": "text",
+                    "element_class": "text item",
+                    "index": int(fields[9]),
                     "text": fields[1],
                     "x": float(fields[2]),
                     "y": float(fields[3]),
@@ -1439,11 +1432,19 @@ class DeckTools(DocumentTargetedTools):
                     el["font_size"] = float(fields[7])
                 if fields[8]:
                     el["color"] = fields[8]
+                if len(fields) > 10 and fields[10]:
+                    # A theme placeholder, emitted as an ordinary indexed
+                    # element so this listing and get_slide_content agree on
+                    # what "text item i" addresses. slide.title / slide.body
+                    # carry the same text for round-trip rebuild.
+                    el["placeholder"] = fields[10]
                 slide["elements"].append(el)
             elif kind == "I":
                 slide["elements"].append(
                     {
                         "type": "image",
+                        "element_class": "image",
+                        "index": int(fields[6]),
                         "path": fields[1],
                         "x": float(fields[2]),
                         "y": float(fields[3]),
@@ -1454,6 +1455,8 @@ class DeckTools(DocumentTargetedTools):
             elif kind == "S":
                 el = {
                     "type": "shape",
+                    "element_class": "shape",
+                    "index": int(fields[7]),
                     "x": float(fields[2]),
                     "y": float(fields[3]),
                     "width": float(fields[4]),
@@ -1472,6 +1475,8 @@ class DeckTools(DocumentTargetedTools):
                 slide["elements"].append(
                     {
                         "type": "table",
+                        "element_class": "table",
+                        "index": int(fields[8]),
                         "header_row": int(fields[1]) > 0,
                         "header_column": int(fields[2]) > 0,
                         "x": float(fields[3]),
@@ -1485,6 +1490,8 @@ class DeckTools(DocumentTargetedTools):
                 slide["elements"].append(
                     {
                         "type": "chart",
+                        "element_class": "chart",
+                        "index": int(fields[5]),
                         "chart_type": None,
                         "note": ("chart data is not readable via AppleScript; geometry only"),
                         "x": float(fields[1]),
@@ -1497,6 +1504,8 @@ class DeckTools(DocumentTargetedTools):
                 slide["elements"].append(
                     {
                         "type": "line",
+                        "element_class": "line",
+                        "index": int(fields[5]),
                         "x1": float(fields[1]),
                         "y1": float(fields[2]),
                         "x2": float(fields[3]),

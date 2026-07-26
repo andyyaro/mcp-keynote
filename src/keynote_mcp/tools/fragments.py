@@ -28,6 +28,95 @@ from ..utils import AppleScriptRunner, ParameterError, validate_number, validate
 RESOLVE_DOC = """
         set targetDoc to document docName"""
 
+# --- THE text-item index filter: one definition, every reader -----------------
+#
+# Keynote's `count of text items` is untruthful. The slide's `default title
+# item` / `default body item` objects occupy slots in the text-item space, and
+# probing (Phase 9 Task 2, three visibility configurations) pins the exact
+# shape:
+#
+#   both hidden : real-A(1) real-B(2) [hidden title](3) [hidden body](4)
+#   title shown : TITLE(1)  real-C(2) TITLE-again(3)    [hidden body](4)
+#   both shown  : TITLE(1)  BODY(2)   real-D(3) TITLE-again(4) BODY-again(5)
+#
+# Two consequences the codebase previously got wrong in two different ways:
+#
+# 1. A SHOWING placeholder takes a LEADING slot, so real indices shift by the
+#    number of showing placeholders. CLAUDE.md's "real items always come first,
+#    so real indices are stable" holds only while both placeholders are hidden.
+# 2. A showing placeholder appears TWICE - once in z-order, once trailing. The
+#    first occurrence is the addressable object; the repeat is a phantom.
+#
+# The canonical rule, used by EVERY reader so they cannot disagree:
+#   first occurrence of a SHOWING placeholder -> REAL, flagged with its role
+#   repeat occurrence, or any occurrence while hidden -> PHANTOM, skipped
+#   anything else -> REAL, role ""
+#
+# `get_slide_content` implemented this; `describe_deck` marked every occurrence
+# phantom and surfaced the text as slide.title instead. Same slide, two
+# numberings, and the offset changed with the layout - so an index taken from
+# one tool addressed a different element in the other. See docs/INDEX_CONTRACT.md.
+TEXT_ITEM_FILTER = """
+                    set defT to missing value
+                    set defB to missing value
+                    try
+                        set defT to default title item
+                    end try
+                    try
+                        set defB to default body item
+                    end try
+                    set titleShown to title showing
+                    set bodyShown to body showing
+                    set seenTitle to false
+                    set seenBody to false
+                    set realIndices to {}
+                    set realRoles to {}
+                    repeat with i from 1 to (count of text items)
+                        set ti to text item i
+                        set phantom to false
+                        set role to ""
+                        if defT is not missing value and ti is defT then
+                            if seenTitle or (not titleShown) then
+                                set phantom to true
+                            else
+                                set role to "title"
+                            end if
+                            set seenTitle to true
+                        else if defB is not missing value and ti is defB then
+                            if seenBody or (not bodyShown) then
+                                set phantom to true
+                            else
+                                set role to "body"
+                            end if
+                            set seenBody to true
+                        end if
+                        if not phantom then
+                            set end of realIndices to i
+                            set end of realRoles to role
+                        end if
+                    end repeat"""
+
+
+def exists_guard(as_type: str, index: int, slide_number: int) -> str:
+    """AppleScript that fails loudly if ``as_type index`` is not on the slide.
+
+    Keynote silently no-ops several operations against a nonexistent element,
+    and an index that is merely STALE addresses a different object rather than
+    none - so a caller working from an out-of-date listing edits the wrong
+    element and is told it succeeded. delete_element, replace_image and
+    set_element_style always guarded; edit_text_item, move_element,
+    resize_element, set_element_opacity and style_text_range did not.
+
+    ``as_type`` comes from a trusted map, ``index``/``slide_number`` from
+    validators, so interpolation here is safe.
+    """
+    return (
+        f"if not (exists {as_type} {index} of slide {slide_number} of targetDoc) then\n"
+        f'    error "No {as_type} {index} on slide {slide_number}. Invalid index." number -1719\n'
+        f"end if"
+    )
+
+
 # Trusted literal maps - ONLY values from these dicts may reach script source.
 CHART_TYPES: dict[str, str] = {
     "bar": "vertical_bar_2d",

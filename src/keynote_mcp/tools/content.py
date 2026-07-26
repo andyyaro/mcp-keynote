@@ -20,7 +20,9 @@ from ..utils import (
 )
 from .base import DocumentTargetedTools
 from .fragments import (
+    TEXT_ITEM_FILTER,
     Argv,
+    exists_guard,
     image_fragment,
     run_single_fragment,
     shape_fragment,
@@ -1079,6 +1081,7 @@ class ContentTools(DocumentTargetedTools):
         try:
             validate_slide_number(slide_number)
             doc_name = self._doc(doc_name)
+            filter_block = TEXT_ITEM_FILTER
             result = self.runner.run(
                 f"""
                 on run argv
@@ -1091,50 +1094,25 @@ class ContentTools(DocumentTargetedTools):
                             set shapeCount to count of shapes
                             set tableCount to count of tables
 
-                            -- Keynote counts the slide's default title/body
-                            -- placeholder objects among "text items" even when
-                            -- hidden (0x0 phantom entries), and counts them
-                            -- TWICE when showing (in z-order and again
-                            -- trailing). Report only entries a caller can see
-                            -- and address; their i stays valid for
-                            -- edit_text_item / move_element / delete_element.
-                            set defT to missing value
-                            set defB to missing value
-                            try
-                                set defT to default title item
-                            end try
-                            try
-                                set defB to default body item
-                            end try
-                            set titleShown to title showing
-                            set bodyShown to body showing
-                            set seenTitle to false
-                            set seenBody to false
-                            set realIndices to {{}}
-                            repeat with i from 1 to rawTextCount
-                                set ti to text item i
-                                set phantom to false
-                                if defT is not missing value and ti is defT then
-                                    if seenTitle or (not titleShown) then set phantom to true
-                                    set seenTitle to true
-                                else if defB is not missing value and ti is defB then
-                                    if seenBody or (not bodyShown) then set phantom to true
-                                    set seenBody to true
-                                end if
-                                if not phantom then set end of realIndices to i
-                            end repeat
+                            -- Placeholder filtering is defined ONCE, in
+                            -- fragments.TEXT_ITEM_FILTER, so this reader and
+                            -- describe_deck cannot disagree about which text
+                            -- item is number i. See docs/INDEX_CONTRACT.md.
+{filter_block}
 
                             set output to "text_items:" & (count of realIndices) & ¬
                                 "|images:" & imageCount ¬
                                 & "|shapes:" & shapeCount & "|tables:" & tableCount
 
-                            repeat with idx in realIndices
-                                set i to idx as integer
+                            repeat with n from 1 to (count of realIndices)
+                                set i to (item n of realIndices) as integer
+                                set role to item n of realRoles
                                 set ti to text item i
                                 set pos to position of ti
                                 set output to output & "|||TEXT:" & i & ":::" & ¬
                                     (object text of ti) & ":::" & (item 1 of pos) & "," & ¬
-                                    (item 2 of pos) & ":::" & (width of ti) & "," & (height of ti)
+                                    (item 2 of pos) & ":::" & (width of ti) & "," & ¬
+                                    (height of ti) & ":::role:" & role
                             end repeat
 
                             repeat with i from 1 to imageCount
@@ -1188,6 +1166,7 @@ class ContentTools(DocumentTargetedTools):
                     set newText to item 2 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard("text item", item_index, slide_number)}
                         set object text of text item {item_index} of ¬
                             slide {slide_number} of targetDoc to newText
                     end tell
@@ -1265,6 +1244,7 @@ class ContentTools(DocumentTargetedTools):
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard(as_type, element_index, slide_number)}
                         set position of {as_type} {element_index} of ¬
                             slide {slide_number} of targetDoc to {{{x_pos}, {y_pos}}}
                     end tell
@@ -1307,6 +1287,7 @@ class ContentTools(DocumentTargetedTools):
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard(as_type, element_index, slide_number)}
                         tell slide {slide_number} of targetDoc
                             set width of {as_type} {element_index} to {w}
                             set height of {as_type} {element_index} to {h}
@@ -1386,16 +1367,6 @@ class ContentTools(DocumentTargetedTools):
                     tell application "Keynote"
                         {_RESOLVE_DOC}
                         tell slide {slide_number} of targetDoc
-                            set shapeCount to count of shapes
-                            repeat with i from shapeCount to 1 by -1
-                                delete shape i
-                            end repeat
-
-                            -- Delete text items from highest to lowest, keeping
-                            -- the theme's default title/body placeholder objects
-                            -- (Keynote also surfaces them as phantom trailing
-                            -- "text items"; deleting those entries would destroy
-                            -- the placeholders)
                             set defT to missing value
                             set defB to missing value
                             try
@@ -1404,6 +1375,35 @@ class ContentTools(DocumentTargetedTools):
                             try
                                 set defB to default body item
                             end try
+
+                            -- The sdef types default title/body items as
+                            -- SHAPES (keynote-14.5.sdef: "default body item
+                            -- ... type=shape"). Probing Keynote 14.5 found
+                            -- them surfacing only among text items, never in
+                            -- `shapes` - but describe_deck already guards the
+                            -- shape loop by identity, so guarding here too
+                            -- keeps the two readers honest and costs nothing.
+                            -- Unguarded, this loop would delete a theme
+                            -- placeholder outright on any build where they do
+                            -- surface as shapes.
+                            set shapeCount to count of shapes
+                            repeat with i from shapeCount to 1 by -1
+                                set sh to shape i
+                                set keepShape to false
+                                if defT is not missing value and sh is defT then
+                                    set keepShape to true
+                                end if
+                                if defB is not missing value and sh is defB then
+                                    set keepShape to true
+                                end if
+                                if not keepShape then delete sh
+                            end repeat
+
+                            -- Delete text items from highest to lowest, keeping
+                            -- the theme's default title/body placeholder objects
+                            -- (Keynote also surfaces them as phantom trailing
+                            -- "text items"; deleting those entries would destroy
+                            -- the placeholders)
                             set textCount to count of text items
                             repeat with i from textCount to 1 by -1
                                 set ti to text item i
@@ -1448,6 +1448,7 @@ class ContentTools(DocumentTargetedTools):
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard(as_type, element_index, slide_number)}
                         set opacity of {as_type} {element_index} of ¬
                             slide {slide_number} of targetDoc to {int(opacity)}
                     end tell

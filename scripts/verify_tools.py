@@ -222,6 +222,168 @@ def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
 
 
+async def check_index_contract(pres, slides, content, export, objects, deck):
+    """PHASE 9 Task 2 — one numbering, proven ACROSS tools.
+
+    Every check here runs on a slide with `title showing`, because that is the
+    only configuration in which the bug exists and the only one the Phase 3 and
+    Phase 8 harnesses never ran: a showing placeholder takes text-item slot 1
+    and shifts every real index. Both tools were marked "verified" while
+    disagreeing, because both were only ever tested on Blank slides.
+
+    See docs/INDEX_CONTRACT.md.
+    """
+    key = SCRATCH / "phase9-index.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    doc = "phase9-index.key"
+    check(
+        "phase9/idx: create doc",
+        await pres.create_presentation("phase9-index", save_path=str(key)),
+        "Created presentation",
+    )
+    # Turn ON the title placeholder - this is the whole point.
+    check(
+        "phase9/idx: set_slide_content fills the TITLE placeholder",
+        await content.set_slide_content(1, title="PLACEHOLDER TITLE", doc_name=doc),
+    )
+    added = check(
+        "phase9/idx: add_text_box on the same slide",
+        await content.add_text_box(1, "REAL BOX", x=100, y=600, doc_name=doc),
+    )
+    m = re.search(r"text item index (\d+)", added)
+    emitted_index = int(m.group(1)) if m else -1
+    record(
+        "phase9/idx: add_text_box emitted an index at all",
+        emitted_index > 0,
+        added.replace("\n", " | ")[:120],
+    )
+
+    # 1. add_* -> edit_text_item: the emitted index must address the box we
+    #    just added, NOT the placeholder now sitting in slot 1.
+    check(
+        "phase9/idx: edit_text_item(add_* index) targets the added box",
+        await content.edit_text_item(1, emitted_index, "EDITED BOX", doc_name=doc),
+    )
+    listing = text_of(await content.get_slide_content(1, doc_name=doc))
+    record(
+        "phase9/idx: the EDIT landed on the added box, not the placeholder",
+        "EDITED BOX" in listing and "PLACEHOLDER TITLE" in listing,
+        listing.replace("\n", " | ")[:200],
+    )
+
+    # 2. get_slide_content and describe_deck must AGREE on the index.
+    gsc_indices = {
+        int(i): txt
+        for i, txt in re.findall(r"TEXT:(\d+):::([^:]*):::", listing)
+    }
+    described = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    dd_texts = [
+        el
+        for el in described["slides"][0]["elements"]
+        if el.get("element_class") == "text item"
+    ]
+    dd_indices = {el["index"]: el.get("text", "") for el in dd_texts}
+    record(
+        "phase9/idx: describe_deck emits element_class + index on every element",
+        all("index" in el and "element_class" in el for el in described["slides"][0]["elements"]),
+        str([(el.get("element_class"), el.get("index")) for el in described["slides"][0]["elements"]]),
+    )
+    record(
+        "phase9/idx: get_slide_content and describe_deck agree on text-item indices",
+        gsc_indices == dd_indices,
+        f"get_slide_content={gsc_indices} describe_deck={dd_indices}",
+    )
+
+    # 3. The placeholder is REPRESENTED, not hidden - and flagged.
+    placeholders = [el for el in dd_texts if el.get("placeholder")]
+    record(
+        "phase9/idx: describe_deck emits the showing placeholder as a flagged element",
+        len(placeholders) == 1 and placeholders[0]["placeholder"] == "title",
+        str(placeholders)[:200],
+    )
+    record(
+        "phase9/idx: slide.title still carries the same text (round-trip rebuild)",
+        described["slides"][0].get("title") == "PLACEHOLDER TITLE",
+        str(described["slides"][0].get("title")),
+    )
+
+    # 4. describe_deck index -> style_text_range. This is the pair the field
+    #    report says silently restyled the wrong element on ~half a deck.
+    target = next(el for el in dd_texts if el.get("text") == "EDITED BOX")
+    check(
+        "phase9/idx: style_text_range(describe_deck index) is accepted",
+        await objects.style_text_range(
+            1, target["index"], 1, 6, color="#CC0000", doc_name=doc
+        ),
+    )
+    # RENDERED: the styled text must be the added box, not the placeholder.
+    size_text = text_of(await pres.get_slide_size(doc_name=doc))
+    mm = re.search(r"(\d+)\s*x\s*(\d+)", size_text)
+    slide_w = int(mm.group(1)) if mm else 1024
+    img, scale = await render_slide(export, 1, "phase9-index", slide_w, doc_name=doc)
+    if img is not None:
+        box = next(el for el in dd_texts if el.get("text") == "EDITED BOX")
+        title_el = placeholders[0] if placeholders else None
+        red_in_box = _red_fraction(img, scale, box)
+        red_in_title = _red_fraction(img, scale, title_el) if title_el else 0.0
+        record(
+            "phase9/idx: RENDERED the red styling landed on the described element, "
+            "not the placeholder",
+            red_in_box > 0.001 and red_in_box > red_in_title,
+            f"red in target={red_in_box:.4f} red in placeholder={red_in_title:.4f}",
+        )
+
+    # 5. describe_deck index -> move_element, read back by get_slide_content.
+    before = next(el for el in dd_texts if el.get("text") == "EDITED BOX")
+    check(
+        "phase9/idx: move_element(describe_deck index)",
+        await content.move_element(1, "text", before["index"], 300, 500, doc_name=doc),
+    )
+    after = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    moved = next(
+        el
+        for el in after["slides"][0]["elements"]
+        if el.get("element_class") == "text item" and el.get("text") == "EDITED BOX"
+    )
+    record(
+        "phase9/idx: the MOVE landed on the described element",
+        abs(moved["x"] - 300) < 2 and abs(moved["y"] - 500) < 2,
+        f"moved to ({moved['x']}, {moved['y']}), expected (300, 500)",
+    )
+    still_title = after["slides"][0].get("title")
+    record(
+        "phase9/idx: the placeholder was NOT moved or rewritten by any of it",
+        still_title == "PLACEHOLDER TITLE",
+        str(still_title),
+    )
+
+    # 6. A stale index must FAIL, not silently address a different object.
+    stale = text_of(await content.edit_text_item(1, 99, "should not land", doc_name=doc))
+    record(
+        "phase9/idx: a stale index is rejected, not silently applied",
+        stale.startswith("Failed") and ("-1719" in stale or "Invalid index" in stale),
+        stale.replace("\n", " | ")[:160],
+    )
+
+    check(
+        "phase9/idx: close index doc",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
+def _red_fraction(image, scale, el):
+    """Share of pixels in an element's box that read as red-dominant."""
+    if not el:
+        return 0.0
+    crop = _crop(image, scale, (el["x"], el["y"], el["width"], el["height"]))
+    px = list(crop.convert("RGB").getdata())
+    if not px:
+        return 0.0
+    red = sum(1 for r, g, b in px if r > 110 and r - g > 45 and r - b > 45)
+    return red / len(px)
+
+
 async def check_document_resolution(pres, slides, content, export, objects):
     """PHASE 9 Task 1 — the right document, named in the reply.
 
@@ -1761,6 +1923,8 @@ async def main():
     record("rescued file exists", rescue_path.exists(), str(rescue_path))
     check("close rescued doc", await pres.close_presentation(should_save=False))
 
+    await check_index_contract(pres, slides, content, export, objects, deck)
+    await check_document_resolution(pres, slides, content, export, objects)
     await check_fill_is_unwritable(pres, slides, content, export, objects)
 
     failed = [r for r in RESULTS if not r[1]]
