@@ -400,9 +400,35 @@ class SlideTools:
                         try
                             set layoutName to name of base layout of targetSlide
                         end try
+                        -- Count only real text items: Keynote's raw count
+                        -- includes the default title/body placeholder objects
+                        -- even when hidden, and twice when showing
                         set textCount to 0
                         try
-                            set textCount to count of text items of targetSlide
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item of targetSlide
+                            end try
+                            try
+                                set defB to default body item of targetSlide
+                            end try
+                            set titleShown to title showing of targetSlide
+                            set bodyShown to body showing of targetSlide
+                            set seenTitle to false
+                            set seenBody to false
+                            repeat with i from 1 to (count of text items of targetSlide)
+                                set ti to text item i of targetSlide
+                                set phantom to false
+                                if defT is not missing value and ti is defT then
+                                    if seenTitle or (not titleShown) then set phantom to true
+                                    set seenTitle to true
+                                else if defB is not missing value and ti is defB then
+                                    if seenBody or (not bodyShown) then set phantom to true
+                                    set seenBody to true
+                                end if
+                                if not phantom then set textCount to textCount + 1
+                            end repeat
                         end try
                         return (slide number of targetSlide as text) & "|||" & ¬
                             layoutName & "|||" & (textCount as text)

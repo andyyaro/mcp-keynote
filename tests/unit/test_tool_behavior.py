@@ -112,6 +112,19 @@ class TestSlideTools:
         assert "Failed to delete slide" in result[0].text
         assert "get_slide_count" in result[0].text
 
+    async def test_get_slide_info_counts_only_real_text_items(
+        self, slide_tools, mock_subprocess_run
+    ):
+        # The raw `count of text items` includes hidden placeholder phantoms;
+        # get_slide_info must apply the same identity filter get_slide_content
+        # uses.
+        mock_subprocess_run.return_value.stdout = "1|||Blank|||0"
+        result = await slide_tools.get_slide_info(1)
+        script = last_script(mock_subprocess_run)
+        assert "default title item" in script
+        assert "set textCount to count of text items" not in script
+        assert "Text item count: 0" in result[0].text
+
 
 class TestContentTools:
     async def test_large_font_autosizes_box_and_restores_text(
