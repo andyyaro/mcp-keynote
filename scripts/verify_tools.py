@@ -13,6 +13,7 @@ Usage:  uv run python scripts/verify_tools.py
 import asyncio
 import base64
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -199,6 +200,52 @@ async def main():
     cleared = text_of(await content.get_slide_content(4))
     record("clear_slide leaves zero text items", "text_items:0" in cleared, cleared[:100])
     check("delete leak-check slide", await slides.delete_slide(4), "Deleted slide 4")
+
+    # --- index round-trip per add_* tool (field test 8.2) ---
+    # The index each add_* returns must be addressable by move_element and
+    # come back from get_slide_content as the created element.
+    check("add_slide(blank, for round-trip)", await slides.add_slide(), "Added slide #4")
+    adders = [
+        ("add_text_box", "rt-textbox", lambda: content.add_text_box(4, "rt-textbox", x=60, y=40)),
+        ("add_title", "rt-title", lambda: content.add_title(4, "rt-title", x=60, y=110)),
+        (
+            "add_subtitle",
+            "rt-subtitle",
+            lambda: content.add_subtitle(4, "rt-subtitle", x=60, y=180),
+        ),
+        (
+            "add_bullet_list",
+            "• rt-b1",
+            lambda: content.add_bullet_list(4, ["rt-b1", "rt-b2"], x=60, y=250),
+        ),
+        (
+            "add_numbered_list",
+            "1. rt-n1",
+            lambda: content.add_numbered_list(4, ["rt-n1"], x=60, y=340),
+        ),
+        ("add_code_block", "rt_code = 1", lambda: content.add_code_block(4, "rt_code = 1", x=60, y=410)),
+        ("add_quote", "“rt-quote”", lambda: content.add_quote(4, "rt-quote", x=60, y=480)),
+    ]
+    for offset, (name, expected_text, call) in enumerate(adders):
+        reply = text_of(await call())
+        m = re.search(r"text item index (\d+)\)", reply)
+        if not m:
+            record(f"{name} returns an index", False, reply[:140])
+            continue
+        idx = int(m.group(1))
+        target_x, target_y = 700, 40 + 60 * offset
+        await content.move_element(4, "text", idx, target_x, target_y)
+        after = text_of(await content.get_slide_content(4))
+        entry = next((e for e in after.split("|||") if e.startswith(f"TEXT:{idx}:::")), "")
+        parts = entry.split(":::") if entry else []
+        text_ok = len(parts) > 1 and parts[1].startswith(expected_text)
+        pos_ok = len(parts) > 2 and parts[2] == f"{target_x},{target_y}"
+        record(
+            f"{name} index round-trip (returned {idx})",
+            text_ok and pos_ok,
+            entry[:120] or after[:120],
+        )
+    check("delete round-trip slide", await slides.delete_slide(4), "Deleted slide 4")
 
     # --- export tools ---
     shot = SCRATCH / "slide2.png"

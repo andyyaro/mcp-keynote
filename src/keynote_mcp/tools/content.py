@@ -585,6 +585,12 @@ class ContentTools:
     ) -> str:
         """Create a text item; returns its 1-based index on the slide.
 
+        The index is located by object identity, NOT via ``count of text
+        items``: Keynote's count includes the slide's hidden default
+        title/body placeholder objects, so the count over-reports and the new
+        item is not the last entry. The identity loop returns the index that
+        get_slide_content / move_element / edit_text_item actually address.
+
         Absorbs the Keynote font-clipping bug (fonts > 48pt land in a tiny
         auto-sized box that truncates text to 1-2 characters): the box is
         sized BEFORE the font size is applied - auto-computed from the text
@@ -658,7 +664,18 @@ class ContentTools:
                         {set_size}
                         {restore_text}
                         {set_color}
-                        return count of text items
+                        set newIndex to 0
+                        repeat with i from 1 to (count of text items)
+                            if text item i is newItem then
+                                set newIndex to i
+                                exit repeat
+                            end if
+                        end repeat
+                        if newIndex is 0 then
+                            error "Created text item could not be located on the slide" ¬
+                                number -1728
+                        end if
+                        return newIndex
                     end tell
                 end tell
             end run

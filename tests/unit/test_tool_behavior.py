@@ -200,6 +200,20 @@ class TestContentTools:
         assert "(item 1 of pos) is 0" not in script
         assert "delete image" not in script
 
+    async def test_add_returns_identity_located_index_not_count(
+        self, content_tools, mock_subprocess_run
+    ):
+        # `count of text items` over-reports (hidden placeholders count) and
+        # the new item is not last, so the returned index must come from an
+        # identity search - the same space get_slide_content/move_element use.
+        mock_subprocess_run.return_value.stdout = "1"
+        result = await content_tools.add_title(1, "T")
+        script = last_script(mock_subprocess_run)
+        assert "if text item i is newItem then" in script
+        assert "return newIndex" in script
+        assert "return count of text items" not in script
+        assert "text item index 1" in result[0].text
+
     async def test_get_slide_content_filters_phantom_placeholder_entries(
         self, content_tools, mock_subprocess_run
     ):
