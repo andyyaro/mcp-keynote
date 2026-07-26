@@ -31,10 +31,25 @@ that sits on them). `describe_deck` reads any open deck back as the same
 JSON. Native `add_table` (live `=SUM(…)` formulas, min 2×2) and `add_chart`
 (17 native types; data is write-once — delete and re-add to change it) beat
 drawing tables/charts out of text boxes. Colored panels are RENDERED
-IMAGES (fill color is not scriptable) — not recolorable in Keynote after
-placement. What the server cannot do at all is listed in docs/CEILING.md —
-don't attempt hyperlinks, grouping, z-reordering, movie/audio insertion, or
-per-text alignment.
+IMAGES (fill color is not scriptable, re-probed at 4.0.0) — not recolorable
+in Keynote after placement, but their color survives a describe_deck round
+trip. When a connector's color or dash MEANS something, use `styled_line`
+rather than `line`: Keynote has no stroke API at all, so it renders the
+stroke and round-trips it. What the server cannot do at all is listed in
+docs/CEILING.md — don't attempt hyperlinks, grouping, z-reordering,
+movie/audio insertion, underline, or per-text alignment.
+
+Two things worth knowing before laying out a deck:
+* A slide's `title`/`body` fill the THEME's placeholders, wherever the layout
+  puts them; that geometry cannot be read or set. If the design needs its
+  heading at a particular point, author it as a text element with x/y.
+* An element has one font/size/color. For a heading that mixes colors
+  mid-line, build it and then call `style_text_range` (describe_deck reads
+  the runs back).
+
+On a deck you did not build, call `describe_deck` with `detail="summary"`
+first — a full description of a 35-slide deck is ~125,000 characters. Then
+pull what you need with `slide_range` / `element_types`.
 
 The per-element workflow below remains correct for touch-ups of existing
 decks.

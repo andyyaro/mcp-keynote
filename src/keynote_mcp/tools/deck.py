@@ -37,12 +37,25 @@ from typing import Any
 
 from mcp.types import TextContent, Tool
 
-from ..utils import AppleScriptRunner, ParameterError, parse_color
+from ..utils import (
+    SESSION,
+    AppleScriptRunner,
+    ParameterError,
+    parse_color,
+    rgb65535_to_hex,
+    split_font_name,
+)
 from ..utils.render import render_panel_png
+from ..utils.rendered_assets import decode_rendered_asset, panel_filename, stroke_filename
+from ..utils.stroke import render_stroke_png
 from ..utils.styles import DeckStyle, resolve_style
+from .base import DocumentTargetedTools
 from .fragments import (
+    _RUN_SEP,
     CHART_TYPES,
     RESOLVE_DOC,
+    TEXT_ITEM_FILTER,
+    TEXT_RUNS_FRAGMENT,
     TRANSITION_EFFECTS,
     Argv,
     chart_fragment,
@@ -60,7 +73,7 @@ from .presentation import _default_save_path, _normalize_key_path
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
 _ELEMENT_TYPES = {
@@ -77,6 +90,7 @@ _ELEMENT_TYPES = {
     "table",
     "chart",
     "line",
+    "styled_line",
 }
 
 # ASCII unit/record separators for structured readbacks (never appear in
@@ -89,6 +103,195 @@ _AS_RS = "(character id 30)"
 
 _SLIDE_SESSION_TIMEOUT = 120.0
 _SLIDES_PER_SESSION = 5
+
+# describe_deck batches its full reads. Profiled on a 35-slide/735-element
+# deck: one osascript call per slide cost 31.2 s, of which ~4.5 s was pure
+# process + AppleEvent overhead (0.125 s x 36 calls). Batching removes that;
+# the remainder is per-property reads, which only filtering can avoid.
+_DESCRIBE_SLIDES_PER_SESSION = 10
+
+# Beyond this, a full description is likely to blow a tool-output limit.
+_LARGE_DESCRIPTION_CHARS = 60_000
+
+_DASH_STYLES = frozenset({"solid", "dash", "dashed", "dot", "dotted", "dashdot", "dash-dot"})
+
+_ALL_ELEMENT_CLASSES = frozenset({"text", "image", "shape", "table", "chart", "line"})
+
+
+# What Keynote's AppleScript dictionary genuinely cannot report. Emitted with
+# every full description, because a caller must be able to tell "this shape has
+# no fill" from "this server did not look at the fill" - the field report had to
+# recover five brand colours by screenshotting and eyeballing pixels, not
+# knowing which of the two it was facing.
+_UNREADABLE_NOTE: dict[str, str] = {
+    "shape.fill_color": (
+        "Not readable OR writable. `background fill type` gives the KIND of "
+        "fill (color/gradient/image/none) and is reported as fill_type; the "
+        "colour itself has no property. Probed across 5 themes and 12 routes."
+    ),
+    "shape.type": (
+        "Not readable. There is no `shape type` term - a rounded rect, arrow, "
+        "callout and circle are all just `shape`. AppleScript can only create "
+        "rectangles."
+    ),
+    "shape.corner_radius": "Not readable. No corner-radius property exists.",
+    "shape.stroke": "Not readable. No stroke/border term exists on any iWork class.",
+    "line.stroke": (
+        "Not readable. A line's complete property record is start/end point, "
+        "position, width, height, rotation, reflection, locked - no colour, "
+        "thickness, dash or arrowheads. Use styled_line to AUTHOR strokes; "
+        "they are rendered PNGs and round-trip via their sidecar."
+    ),
+    "text.alignment": "Not readable. Alignment exists only on table ranges.",
+    "text.underline": "Not readable. Rich text exposes only font, size and colour.",
+    "chart.data": "Not readable. The chart class exposes only geometry.",
+    "slide.background": "Not readable. No background term on `slide`; it lives in the layout.",
+    "group.membership": (
+        "Not readable. Groups are counted per slide but their members cannot "
+        "be enumerated, and groups cannot be created at all."
+    ),
+    "z_order": (
+        "NOT reported and NOT recoverable. Elements are enumerated class by "
+        "class (text, then image, then shape, table, chart, line), so array "
+        "position is neither an address nor paint order. Keynote's real "
+        "z-order is creation order and AppleScript cannot read or change it."
+    ),
+}
+
+
+def _set_color(node: dict[str, Any], triple: str) -> None:
+    """Report colour as hex, keeping Keynote's raw 16-bit triple alongside.
+
+    `color` is hex because that is what humans and CSS use, and because
+    build_deck's parse_color accepts it verbatim, so round-trips still work.
+    `color_65535` keeps the exact values Keynote gave, since the 16-bit->8-bit
+    conversion is only exact for multiples of 257.
+    """
+    node["color"] = rgb65535_to_hex(triple) or triple
+    node["color_65535"] = triple
+
+
+def _as_bool(value: str) -> bool:
+    return value == "true"
+
+
+def _set_optional(el: dict[str, Any], key: str, fields: list[str], idx: int, cast: Any) -> None:
+    """Copy fields[idx] onto the element if the read produced anything.
+
+    An absent value means Keynote refused the property, not that it is zero.
+    """
+    if len(fields) > idx and fields[idx] != "":
+        try:
+            el[key] = cast(fields[idx])
+        except (ValueError, TypeError):
+            el[key] = fields[idx]
+
+
+def _parse_runs(raw: str) -> list[dict[str, Any]]:
+    """Parse the coalesced per-character styling into runs.
+
+    A text box reports one font and colour; a title mixing three colours
+    under-reports the palette entirely. `style_text_range` could always write
+    runs - this is the missing read path.
+    """
+    runs: list[dict[str, Any]] = []
+    for chunk in raw.split(_RUN_SEP):
+        if not chunk:
+            continue
+        parts = chunk.split("|")
+        if len(parts) < 5:
+            continue
+        run: dict[str, Any] = {"start": int(parts[0]), "end": int(parts[1])}
+        if parts[2]:
+            run.update(split_font_name(parts[2]))
+        if parts[3]:
+            try:
+                run["font_size"] = float(parts[3])
+            except ValueError:
+                pass
+        if parts[4]:
+            _set_color(run, parts[4])
+        runs.append(run)
+    return runs
+
+
+def _chunks(items: list[int], size: int) -> list[list[int]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _parse_element_types(requested: list[str] | None) -> frozenset[str]:
+    """Validate an element_types filter, or return every class."""
+    if not requested:
+        return _ALL_ELEMENT_CLASSES
+    if isinstance(requested, str):  # tolerate a bare string
+        requested = [requested]
+    unknown = sorted(set(requested) - _ALL_ELEMENT_CLASSES)
+    if unknown:
+        raise ParameterError(
+            f"Unknown element_types {unknown}; valid: {sorted(_ALL_ELEMENT_CLASSES)}."
+        )
+    return frozenset(requested)
+
+
+def _parse_slide_range(spec: str, total: int) -> list[int]:
+    """Parse "5", "1-10", "1-10,20,25-30" into a sorted list of slide numbers.
+
+    Bounds are clamped to the deck and an empty result is an error rather than
+    a silently empty description.
+    """
+    if not spec or not spec.strip():
+        return list(range(1, total + 1))
+    wanted: set[int] = set()
+    for part in spec.split(","):
+        piece = part.strip()
+        if not piece:
+            continue
+        if "-" in piece:
+            lo_s, _, hi_s = piece.partition("-")
+            try:
+                lo, hi = int(lo_s), int(hi_s)
+            except ValueError:
+                raise ParameterError(
+                    f"Invalid slide_range segment {piece!r}; use forms like "
+                    "'3', '1-10', or '1-10,20,25-30'."
+                ) from None
+            if lo > hi:
+                raise ParameterError(f"slide_range {piece!r} runs backwards.")
+            wanted.update(range(max(1, lo), min(total, hi) + 1))
+        else:
+            try:
+                n = int(piece)
+            except ValueError:
+                raise ParameterError(
+                    f"Invalid slide_range segment {piece!r}; use forms like "
+                    "'3', '1-10', or '1-10,20,25-30'."
+                ) from None
+            if 1 <= n <= total:
+                wanted.add(n)
+    if not wanted:
+        raise ParameterError(f"slide_range {spec!r} selects no slides; the deck has {total}.")
+    return sorted(wanted)
+
+
+def _round_slide_numbers(node: Any) -> None:
+    """Round whole-valued floats to ints, in place.
+
+    Keynote reports every coordinate as a float, so a real deck's description
+    carried thousands of trailing '.0' - 2,415 of them in the 35-slide
+    profiling deck - for no information at all.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, float) and value.is_integer():
+                node[key] = int(value)
+            else:
+                _round_slide_numbers(value)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            if isinstance(value, float) and value.is_integer():
+                node[i] = int(value)
+            else:
+                _round_slide_numbers(value)
 
 
 def _err(path: str, message: str) -> str:
@@ -107,7 +310,36 @@ def _num(value: Any, path: str, errors: list[str], minimum: float = -1e9) -> flo
     return float(value)
 
 
-def _validate_element(el: Any, path: str, errors: list[str]) -> None:
+def _validate_named_refs(el: dict[str, Any], path: str, errors: list[str], style: Any) -> None:
+    """Check a spec's names against the style that will resolve them."""
+    checks = (
+        ("role", style.type, "type role"),
+        ("connector", style.connectors, "connector"),
+        ("zone", style.zones, "zone"),
+        ("module", style.modules, "grid module"),
+    )
+    for key, table, label in checks:
+        name = el.get(key)
+        if name is not None and str(name) not in table:
+            errors.append(
+                _err(
+                    f"{path}.{key}",
+                    f"unknown {label} {name!r}; style {style.name!r} defines: "
+                    f"{sorted(table) or '(none)'}",
+                )
+            )
+    color = el.get("color", "")
+    if isinstance(color, str) and color.startswith("@") and color[1:] not in style.palette:
+        errors.append(
+            _err(
+                f"{path}.color",
+                f"unknown palette colour {color!r}; style {style.name!r} defines: "
+                f"{sorted(style.palette) or '(none)'}",
+            )
+        )
+
+
+def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) -> None:
     if not isinstance(el, dict):
         errors.append(_err(path, "element must be an object"))
         return
@@ -119,14 +351,22 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
         return
     for key in ("x", "y", "width", "height", "font_size"):
         _num(el.get(key), f"{path}.{key}", errors, minimum=0)
+    if el.get("index") is not None and (
+        not isinstance(el.get("index"), int) or int(el["index"]) < 1
+    ):
+        errors.append(_err(f"{path}.index", "grid module index must be an integer >= 1"))
     if el.get("column") not in (None, "left", "right"):
         errors.append(_err(path, "column must be 'left' or 'right'"))
     color = el.get("color", "")
-    if color:
+    if color and not str(color).startswith("@"):
+        # "@name" is a palette reference resolved against the style; its
+        # existence is checked by _validate_named_refs, not by parse_color.
         try:
             parse_color(str(color))
         except ParameterError as e:
             errors.append(_err(f"{path}.color", str(e)))
+    if style is not None:
+        _validate_named_refs(el, path, errors, style)
 
     if etype in ("title", "subtitle", "text", "code", "quote"):
         if not isinstance(el.get("text"), str) or not el.get("text"):
@@ -142,9 +382,18 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
         elif not os.path.isfile(os.path.expanduser(p)):
             errors.append(_err(path, f"image file does not exist: {p}"))
     elif etype == "panel":
-        for key in ("x", "y", "width", "height"):
-            if el.get(key) is None:
-                errors.append(_err(path, f"panel needs explicit '{key}'"))
+        # A named zone or grid module supplies the geometry at flow time, so
+        # only a panel with neither needs all four spelled out.
+        if not el.get("zone") and not el.get("module"):
+            for key in ("x", "y", "width", "height"):
+                if el.get(key) is None:
+                    errors.append(
+                        _err(
+                            path,
+                            f"panel needs explicit '{key}' (or a 'zone'/'module' "
+                            "naming one of the style's)",
+                        )
+                    )
     elif etype == "table":
         data = el.get("data")
         if not isinstance(data, list) or len(data) < 2:
@@ -182,14 +431,26 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
             errors.append(_err(path, "each chart data row needs one number per column_name"))
         if el.get("group_by") not in (None, "row", "column"):
             errors.append(_err(path, "chart group_by must be 'row' or 'column'"))
-    elif etype == "line":
+    elif etype in ("line", "styled_line"):
         for key in ("x1", "y1", "x2", "y2"):
             if _num(el.get(key), f"{path}.{key}", errors, minimum=0) is None:
-                errors.append(_err(path, f"line needs numeric '{key}'"))
+                errors.append(_err(path, f"{etype} needs numeric '{key}'"))
+        if etype == "styled_line":
+            dash = el.get("dash", "solid")
+            if dash not in _DASH_STYLES:
+                errors.append(
+                    _err(f"{path}.dash", f"{dash!r} invalid; valid: {sorted(_DASH_STYLES)}")
+                )
+            _num(el.get("stroke_width"), f"{path}.stroke_width", errors, minimum=0.1)
 
 
-def validate_spec(spec: Any) -> list[str]:
-    """Validate a whole deck spec; returns ALL problems, not just the first."""
+def validate_spec(spec: Any, style: DeckStyle | None = None) -> list[str]:
+    """Validate a whole deck spec; returns ALL problems, not just the first.
+
+    ``style`` is optional so existing callers and tests keep working, but when
+    it IS given, every named reference (role, palette colour, connector, zone,
+    grid module) is checked here rather than failing mid-build on slide 23.
+    """
     errors: list[str] = []
     if not isinstance(spec, dict):
         return ["spec must be a JSON object"]
@@ -230,7 +491,7 @@ def validate_spec(spec: Any) -> list[str]:
             errors.append(_err(f"{path}.elements", "must be an array"))
             continue
         for j, el in enumerate(elements):
-            _validate_element(el, f"{path}.elements[{j}]", errors)
+            _validate_element(el, f"{path}.elements[{j}]", errors, style)
     return errors
 
 
@@ -516,6 +777,24 @@ def _flow_slide(
     for el in slide.get("elements", []):
         el = dict(el)
         etype = el["type"]
+        # A named ZONE or grid MODULE resolves to coordinates before the flow
+        # engine runs, so a spec can say "the 3rd account column" instead of
+        # hand-computing x = 429 / 785 / 1141. Explicit x/y still win.
+        if el.get("zone"):
+            zone = style.zones.get(str(el["zone"]))
+            if zone is None:
+                raise ParameterError(
+                    f"Unknown zone {el['zone']!r}. "
+                    f"Style {style.name!r} defines: {sorted(style.zones) or '(none)'}"
+                )
+            for key in ("x", "y", "width", "height"):
+                if key in zone and el.get(key) is None:
+                    el[key] = float(zone[key])
+        if el.get("module"):
+            mx, my, mw, mh = style.module_origin(str(el["module"]), int(el.get("index", 1)))
+            for key, value in (("x", mx), ("y", my), ("width", mw), ("height", mh)):
+                if el.get(key) is None and value:
+                    el[key] = value
         column = el.pop("column", None)
         # Only a FULLY placed element skips the flow. Pinning one coordinate
         # used to opt out of layout entirely, which left the other coordinate
@@ -528,7 +807,7 @@ def _flow_slide(
         # use the tool. Pinned values still win: the setdefault calls below
         # never overwrite one.
         fully_placed = el.get("x") is not None and el.get("y") is not None
-        if etype in ("panel", "line", "shape") or fully_placed:
+        if etype in ("panel", "line", "styled_line", "shape") or fully_placed:
             placed.append(el)
             continue
 
@@ -616,12 +895,23 @@ def _element_fragment(
     el: dict[str, Any], tag: str, argv: Argv, style: DeckStyle, panels_dir: str
 ) -> list[str]:
     etype = el["type"]
-    color = str(el.get("color", ""))
+    # A "@name" colour is a reference into the style's palette, so a spec can
+    # say what a colour MEANS ("@zone.private") instead of repeating a hex.
+    color = style.resolve_color(str(el.get("color", "")))
     if etype in ("title", "subtitle", "text", "code", "quote"):
+        # `role` names one of the style's own type styles (label.service,
+        # chip.badge, ...). 22 named roles against 5 element-keyed slots was
+        # the single largest source of duplication in a real spec.
+        named: dict[str, Any] = dict(style.type_role(str(el["role"]))) if el.get("role") else {}
         role = {"text": "body"}.get(etype, etype)
-        font = el.get("font_name") or getattr(style, f"{role}_font")
-        size = el.get("font_size") or getattr(style, f"{role}_size")
-        rgb = parse_color(color or getattr(style, f"{role}_color"))
+        font = str(el.get("font_name") or named.get("font") or getattr(style, f"{role}_font"))
+        raw_size = el.get("font_size") or named.get("size") or getattr(style, f"{role}_size")
+        size = float(raw_size) if raw_size is not None else None
+        rgb = parse_color(
+            color
+            or style.resolve_color(str(named.get("color", "")))
+            or getattr(style, f"{role}_color")
+        )
         text = el["text"]
         if etype == "quote":
             text = f"“{text}”"
@@ -672,7 +962,17 @@ def _element_fragment(
     if etype == "panel":
         rgb = parse_color(color or style.panel_color) or (60000, 60000, 60000)
         radius = el.get("radius", style.panel_radius)
-        png_path = os.path.join(panels_dir, f"{tag}.png")
+        # Parameters live in the FILENAME so the panel round-trips - see
+        # utils/rendered_assets.py. `tag` keeps it unique within the deck.
+        png_path = os.path.join(
+            panels_dir,
+            panel_filename(
+                rgb65535_to_hex(",".join(str(c) for c in rgb)),
+                radius,
+                el.get("opacity", 100),
+                tag.lower().replace(".", ""),
+            ),
+        )
         render_panel_png(
             png_path,
             el["width"],
@@ -736,6 +1036,60 @@ def _element_fragment(
         )
     if etype == "line":
         return line_fragment(tag, x1=el["x1"], y1=el["y1"], x2=el["x2"], y2=el["y2"])
+    if etype == "styled_line":
+        # Keynote has no stroke API at all, so a connector whose colour/dash
+        # carries meaning is a rendered PNG. Its parameters go in the filename
+        # so describe_deck reports it back as a styled_line, not an anonymous
+        # image - see utils/rendered_assets.py.
+        # `connector` names one of the style's semantic strokes ("data",
+        # "denied", "logStream"), so a diagram declares MEANING and the style
+        # owns what that looks like.
+        conn = style.connector(str(el["connector"])) if el.get("connector") else {}
+        srgb = parse_color(
+            color or style.resolve_color(str(conn.get("color", ""))) or "#000000"
+        ) or (0, 0, 0)
+        hex_color = rgb65535_to_hex(",".join(str(c) for c in srgb))
+        stroke_w = float(el.get("stroke_width", conn.get("width", 2.0)))
+        dash = str(el.get("dash", conn.get("dash", "solid")))
+        start_arrow = bool(el.get("start_arrow", conn.get("start_arrow", False)))
+        end_arrow = bool(el.get("end_arrow", conn.get("end_arrow", False)))
+        scratch_png = os.path.join(panels_dir, f"{tag}-stroke.png")
+        ox, oy, box_w, box_h, _pw, _ph = render_stroke_png(
+            scratch_png,
+            el["x1"],
+            el["y1"],
+            el["x2"],
+            el["y2"],
+            rgb_65535=srgb,
+            width_pt=stroke_w,
+            dash=dash,
+            start_arrow=start_arrow,
+            end_arrow=end_arrow,
+            opacity=float(el.get("opacity", 100)),
+        )
+        png_path = os.path.join(
+            panels_dir,
+            stroke_filename(
+                hex_color,
+                stroke_w,
+                dash,
+                start_arrow,
+                end_arrow,
+                tag.lower().replace(".", ""),
+                offsets=(el["x1"] - ox, el["y1"] - oy, el["x2"] - ox, el["y2"] - oy),
+            ),
+        )
+        os.rename(scratch_png, png_path)
+        return image_fragment(
+            argv,
+            tag,
+            png_path,
+            x=ox,
+            y=oy,
+            width=box_w,
+            height=box_h,
+            description=f"styled line ({dash}, {hex_color})",
+        )
     raise ParameterError(f"Unhandled element type {etype!r}")  # pragma: no cover
 
 
@@ -761,7 +1115,7 @@ def _wrap_try(fragment: list[str], tag: str) -> list[str]:
     ]
 
 
-class DeckTools:
+class DeckTools(DocumentTargetedTools):
     """build_deck / describe_deck."""
 
     def __init__(self) -> None:
@@ -804,13 +1158,50 @@ class DeckTools:
                     "needs `path`; table needs `data` (2-D array, min 2x2); "
                     "chart needs `chart_type`, `row_names`, `column_names`, "
                     "`data` (rows x columns), optional `group_by`; panel needs "
-                    "`x`,`y`,`width`,`height` (optional `color`, `radius`); "
-                    "line needs `x1`,`y1`,`x2`,`y2`; shape needs nothing. "
+                    "`x`,`y`,`width`,`height` (or a `zone`/`module` naming the "
+                    "style's) plus optional `color`, `radius`; "
+                    "line needs `x1`,`y1`,`x2`,`y2`; styled_line needs the same "
+                    "plus optional `connector`/`color`/`stroke_width`/`dash`/"
+                    "`start_arrow`/`end_arrow`; shape needs nothing. "
                     "Any element also takes x/y/width/height, font_size, "
-                    "font_name, and color as `#RRGGBB` or `r,g,b`. `style` is "
-                    "a built-in name (plain, boardroom, midnight, editorial) or "
-                    "a path to a .toml style file; the markdown ```chart fence "
+                    "font_name, and color as `#RRGGBB` or `r,g,b`, plus `role` "
+                    "(a named type style), `zone`/`module`+`index` (named "
+                    "layout) and `@name` colors from the style's palette. "
+                    "`style` is a built-in name (plain, boardroom, midnight, "
+                    "editorial, sdh) or a path to a .toml style file; the "
+                    "markdown ```chart fence "
                     "takes the same fields as a JSON chart element. "
+                    "\n\nLIMITS THAT SHAPE A SPEC - all probed, see "
+                    "docs/CEILING.md. Read these BEFORE laying out a deck; "
+                    "several cannot be corrected after the fact:\n"
+                    "* NO FILL. Keynote's AppleScript cannot set a shape's fill "
+                    "color at all. Every colored zone, card or container must be "
+                    "type:'panel' (a rendered PNG, exact color, supports "
+                    "`radius`). type:'shape' gives you the THEME's fill and only "
+                    "`opacity` on top of it.\n"
+                    "* NO STROKE. Lines have no color/width/dash/arrowhead "
+                    "property. type:'line' is a plain native line; use "
+                    "type:'styled_line' when the stroke carries meaning - it "
+                    "renders a PNG and round-trips.\n"
+                    "* Z-ORDER IS SPEC ORDER, permanently. AppleScript cannot "
+                    "reorder. Emit background panels BEFORE the text and icons "
+                    "on them. A mis-ordered element means rebuilding the slide.\n"
+                    "* NO GROUPING. `make new group` is a silent no-op, so a "
+                    "'component' is always several loose elements emitted in "
+                    "order.\n"
+                    "* THEME PLACEHOLDER GEOMETRY IS FIXED. A slide's `title`/"
+                    "`body` fill the theme's placeholders, wherever the layout "
+                    "puts them; their position and size cannot be read or set. "
+                    "If your design places its heading somewhere specific, author "
+                    "it as a text ELEMENT with x/y instead of as `title`.\n"
+                    "* NO PER-RUN COLOR HERE. An element has one font/size/color. "
+                    "For a heading that mixes colors mid-line, build it, then "
+                    "call style_text_range (describe_deck reads runs back).\n"
+                    "* ALSO ABSENT: text alignment (use `centered`), underline, "
+                    "bold/italic as attributes (pass the bold FACE name as "
+                    "font_name), per-slide backgrounds, shadows, gradients, "
+                    "non-rectangular shapes, routed connectors, and chart data "
+                    "editing after creation.\n"
                     "Elements without x/y auto-flow inside style margins "
                     "(pin one coordinate and the other still comes from the "
                     "flow); "
@@ -864,11 +1255,58 @@ class DeckTools:
                     "diff two describe_deck outputs in git. This is the first "
                     "step for reworking an existing deck: describe_deck -> edit "
                     "the spec -> build_deck, instead of a long chain of "
-                    "per-element edits."
+                    "per-element edits. "
+                    "ON A REAL DECK, START WITH detail='summary' (one fast call: "
+                    "per-slide counts and titles), then pull the slides you care "
+                    "about with slide_range. A full description of a 35-slide "
+                    "deck is ~125,000 characters and can exceed a tool-output "
+                    "limit. Every element carries element_class + index - the "
+                    "index other tools consume; ARRAY POSITION IS NOT AN ADDRESS "
+                    "and is not z-order (see docs/INDEX_CONTRACT.md)."
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {"doc_name": _DOC_ARG},
+                    "properties": {
+                        "doc_name": _DOC_ARG,
+                        "slide_range": {
+                            "type": "string",
+                            "description": (
+                                "Slides to describe, e.g. '3', '1-10', or "
+                                "'1-10,20,25-30'. Default: every slide."
+                            ),
+                        },
+                        "element_types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["text", "image", "shape", "table", "chart", "line"],
+                            },
+                            "description": (
+                                "Only read these element classes. Skipped classes "
+                                "are not read at all, so this is a speedup as well "
+                                "as a smaller payload. Default: all."
+                            ),
+                        },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["full", "summary"],
+                            "description": (
+                                "'full' (default) = geometry and styling for every "
+                                "element. 'summary' = per-slide element counts and "
+                                "titles only, in ONE osascript call (0.3s vs 31s on "
+                                "a 35-slide deck). Start here on an unfamiliar deck."
+                            ),
+                        },
+                        "round_coordinates": {
+                            "type": "boolean",
+                            "description": (
+                                "Round whole-valued coordinates to integers "
+                                "(default true). Keynote reports every coordinate "
+                                "as a float; the trailing '.0' was ~2% of the "
+                                "payload and carried no information."
+                            ),
+                        },
+                    },
                 },
             ),
         ]
@@ -892,7 +1330,13 @@ class DeckTools:
             if spec is None:  # pragma: no cover - guarded above
                 raise ParameterError("No spec resolved.")
 
-            errors = validate_spec(spec)
+            # The style is resolved BEFORE validation so every named reference
+            # (role, palette colour, connector, zone, grid module) is checked
+            # up front, with the rest of the spec, instead of failing mid-build.
+            style_name = style or str(spec.get("style", ""))
+            deck_style = resolve_style(style_name, near_path=save_path or spec.get("save_path", ""))
+
+            errors = validate_spec(spec, deck_style)
             if errors:
                 listing = "\n".join(f"- {e}" for e in errors)
                 return [
@@ -905,8 +1349,6 @@ class DeckTools:
                     )
                 ]
 
-            style_name = style or str(spec.get("style", ""))
-            deck_style = resolve_style(style_name, near_path=save_path or spec.get("save_path", ""))
             theme = str(spec.get("theme", "") or deck_style.keynote_theme)
             width = int(spec.get("width") or deck_style.width)
             height = int(spec.get("height") or deck_style.height)
@@ -983,6 +1425,9 @@ class DeckTools:
             )
             doc_name, theme_note, layouts_joined = setup.split(_FS)
             layouts = {name.strip() for name in layouts_joined.split("|||")}
+            # The deck a caller just built is what the next call means, exactly
+            # as for create_presentation/open_presentation.
+            SESSION.set_default(doc_name)
 
             # Validate every slide's layout against the live theme; a miss
             # deletes the fresh document so nothing half-built remains.
@@ -1199,8 +1644,20 @@ class DeckTools:
 
     # ------------------------------------------------------------- describe
 
-    async def describe_deck(self, doc_name: str = "") -> list[TextContent]:
+    async def describe_deck(
+        self,
+        doc_name: str = "",
+        slide_range: str = "",
+        element_types: list[str] | None = None,
+        detail: str = "full",
+        round_coordinates: bool = True,
+        include_text_runs: bool = True,
+    ) -> list[TextContent]:
         try:
+            doc_name = self._doc(doc_name)
+            if detail not in ("full", "summary"):
+                raise ParameterError(f"detail must be 'full' or 'summary', got {detail!r}.")
+            want = _parse_element_types(element_types)
             head = self.runner.run(
                 f"""
                 on run argv
@@ -1218,30 +1675,174 @@ class DeckTools:
                 doc_name,
             )
             name, theme, width, height, slide_count = head.split(_FS)
+            total = int(slide_count)
+            numbers = _parse_slide_range(slide_range, total)
             spec: dict[str, Any] = {
                 "title": name.removesuffix(".key"),
                 "theme": theme,
                 "width": int(float(width)),
                 "height": int(float(height)),
+                "slide_count": total,
                 "slides": [],
             }
-            for n in range(1, int(slide_count) + 1):
-                spec["slides"].append(self._describe_slide(doc_name, n))
-            return [TextContent(type="text", text=json.dumps(spec, indent=1))]
+            if numbers != list(range(1, total + 1)):
+                spec["slide_range"] = slide_range or f"{numbers[0]}-{numbers[-1]}"
+            if want != _ALL_ELEMENT_CLASSES:
+                spec["element_types"] = sorted(want)
+
+            if detail == "summary":
+                spec["detail"] = "summary"
+                spec["slides"] = self._summarize_slides(doc_name, numbers)
+                spec["note"] = (
+                    "Summary detail: per-slide element counts and titles only. "
+                    "Call again with detail='full' (optionally with slide_range) "
+                    "for geometry and styling."
+                )
+            else:
+                slides: list[dict[str, Any]] = []
+                for chunk in _chunks(numbers, _DESCRIBE_SLIDES_PER_SESSION):
+                    slides.extend(self._describe_slides(doc_name, chunk, want, include_text_runs))
+                if round_coordinates:
+                    for sl in slides:
+                        _round_slide_numbers(sl)
+                spec["slides"] = slides
+                spec["not_reported"] = dict(_UNREADABLE_NOTE)
+            payload = json.dumps(spec, indent=1)
+            if detail == "full" and len(payload) > _LARGE_DESCRIPTION_CHARS:
+                # Say so in the payload rather than letting the caller discover
+                # it by blowing a tool-output limit, which is how the field
+                # report found out (137,091 characters, hard-failed).
+                spec["note"] = (
+                    f"This description is {len(payload):,} characters. If that is "
+                    "too large for one tool result, call again with "
+                    "detail='summary' for the map, then slide_range='1-10' (and "
+                    "optionally element_types) for the parts you need."
+                )
+                payload = json.dumps(spec, indent=1)
+            return [TextContent(type="text", text=payload)]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to describe deck: {e}")]
 
-    def _describe_slide(self, doc_name: str, slide_number: int) -> dict[str, Any]:
+    def _summarize_slides(self, doc_name: str, numbers: list[int]) -> list[dict[str, Any]]:
+        """Per-slide counts and titles for the whole deck in ONE call.
+
+        Measured on the 35-slide/735-element profiling deck: 0.3 s, against
+        31.2 s for the full read. This is the path that makes describe_deck
+        usable on a real deck at all - the field report's deck blew both the
+        tool-output limit (137,091 chars) and the 120 s timeout.
+        """
+        slide_list = ", ".join(str(n) for n in numbers)  # validated ints only
+        filter_block = TEXT_ITEM_FILTER
         raw = self.runner.run(
             f"""
             on run argv
                 set docName to item 1 of argv
                 set fs to character id 31
                 set rs to character id 30
+                set runsep to character id 29
+                set out to ""
                 tell application "Keynote"
                     {RESOLVE_DOC}
-                    set s to slide {slide_number} of targetDoc
-                    set out to "L" & fs & (name of base layout of s) & rs
+                    repeat with slideNum in {{{slide_list}}}
+                        tell slide slideNum of targetDoc
+{filter_block}
+                            set titleText to ""
+                            try
+                                if title showing then ¬
+                                    set titleText to (object text of default title item as text)
+                            end try
+                            if titleText is "" then
+                                repeat with n from 1 to (count of realIndices)
+                                    set cand to (object text of ¬
+                                        text item ((item n of realIndices) as integer) as text)
+                                    if cand is not "" then
+                                        set titleText to cand
+                                        exit repeat
+                                    end if
+                                end repeat
+                            end if
+                            set out to out & (slideNum as text) & fs & ¬
+                                (count of realIndices as text) & fs & ¬
+                                (count of images as text) & fs & ¬
+                                (count of shapes as text) & fs & ¬
+                                (count of tables as text) & fs & ¬
+                                (count of charts as text) & fs & ¬
+                                (count of lines as text) & fs & ¬
+                                (skipped of slide slideNum of targetDoc as text) & fs & ¬
+                                titleText & rs
+                        end tell
+                    end repeat
+                    return out
+                end tell
+            end run
+            """,
+            doc_name,
+            timeout=_SLIDE_SESSION_TIMEOUT,
+        )
+        out: list[dict[str, Any]] = []
+        for record in raw.split(_RS):
+            if not record:
+                continue
+            f = record.split(_FS)
+            counts = {
+                "text": int(f[1]),
+                "image": int(f[2]),
+                "shape": int(f[3]),
+                "table": int(f[4]),
+                "chart": int(f[5]),
+                "line": int(f[6]),
+            }
+            entry: dict[str, Any] = {
+                "slide": int(f[0]),
+                "elements": sum(counts.values()),
+                "counts": {k: v for k, v in counts.items() if v},
+            }
+            if f[7] == "true":
+                entry["skipped"] = True
+            if len(f) > 8 and f[8]:
+                entry["title"] = f[8]
+            out.append(entry)
+        return out
+
+    def _describe_slides(
+        self,
+        doc_name: str,
+        numbers: list[int],
+        element_types: frozenset[str] | None = None,
+        include_text_runs: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Describe several slides in ONE osascript session.
+
+        Profiled on a 35-slide/735-element deck: the old one-call-per-slide
+        shape spent 31.2 s, of which ~4.5 s was pure process/AppleEvent
+        overhead (0.125 s x 36 calls) and the rest per-property reads. Batching
+        removes the overhead; `element_types` removes whole read loops, which
+        is a real speedup rather than just a smaller payload.
+        """
+        want = element_types or _ALL_ELEMENT_CLASSES
+        filter_block = TEXT_ITEM_FILTER
+        # Three extra AppleEvents per text item buys full per-run styling; the
+        # naive per-character read would be one event per CHARACTER.
+        runs_block = (
+            TEXT_RUNS_FRAGMENT
+            if include_text_runs
+            else '                            set runsOut to ""'
+        )
+        slide_list = ", ".join(str(n) for n in numbers)  # validated ints only
+        raw = self.runner.run(
+            f"""
+            on run argv
+                set docName to item 1 of argv
+                set fs to character id 31
+                set rs to character id 30
+                set runsep to character id 29
+                set out to ""
+                tell application "Keynote"
+                    {RESOLVE_DOC}
+                  repeat with slideNum in {{{slide_list}}}
+                    set s to slide slideNum of targetDoc
+                    set out to out & "D" & fs & (slideNum as text) & rs
+                    set out to out & "L" & fs & (name of base layout of s) & rs
                     set out to out & "K" & fs & (skipped of s as text) & rs
                     try
                         set tp to transition properties of s
@@ -1258,55 +1859,57 @@ class DeckTools:
                         set out to out & "N" & fs & noteText & rs
                     end if
                     tell s
-                        set defT to missing value
-                        set defB to missing value
-                        try
-                            set defT to default title item
-                        end try
-                        try
-                            set defB to default body item
-                        end try
+{filter_block}
+                        -- slide.title / slide.body stay for round-trip rebuild,
+                        -- but the placeholder is ALSO emitted as a normal
+                        -- indexed element below, so describe_deck and
+                        -- get_slide_content agree on what "text item i" means.
+                        -- See docs/INDEX_CONTRACT.md.
                         if (title showing) and defT is not missing value then
                             set out to out & "PT" & fs & (object text of defT as text) & rs
                         end if
                         if (body showing) and defB is not missing value then
                             set out to out & "PB" & fs & (object text of defB as text) & rs
                         end if
-                        set seenT to false
-                        set seenB to false
-                        repeat with i from 1 to (count of text items)
+                        repeat with n from 1 to {"(count of realIndices)" if "text" in want else "0"}
+                            set i to (item n of realIndices) as integer
+                            set role to item n of realRoles
                             set ti to text item i
-                            set phantom to false
-                            if defT is not missing value and ti is defT then
-                                set phantom to true
-                                set seenT to true
-                            else if defB is not missing value and ti is defB then
-                                set phantom to true
-                                set seenB to true
-                            end if
-                            if not phantom then
-                                set p to position of ti
-                                set f to ""
-                                set z to ""
-                                set c to ""
-                                try
-                                    set f to font of object text of ti as text
-                                end try
-                                try
-                                    set z to size of object text of ti as text
-                                end try
-                                try
-                                    set rgb to color of object text of ti
-                                    set c to (item 1 of rgb as text) & "," & ¬
-                                        (item 2 of rgb as text) & "," & (item 3 of rgb as text)
-                                end try
-                                set out to out & "T" & fs & (object text of ti as text) & ¬
-                                    fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
-                                    fs & (width of ti as text) & fs & (height of ti as text) & ¬
-                                    fs & f & fs & z & fs & c & rs
-                            end if
+                            set p to position of ti
+                            set f to ""
+                            set z to ""
+                            set c to ""
+                            try
+                                set f to font of object text of ti as text
+                            end try
+                            try
+                                set z to size of object text of ti as text
+                            end try
+                            try
+                                set rgb to color of object text of ti
+                                set c to (item 1 of rgb as text) & "," & ¬
+                                    (item 2 of rgb as text) & "," & (item 3 of rgb as text)
+                            end try
+                            set rot to ""
+                            set opa to ""
+                            set fillT to ""
+                            try
+                                set rot to rotation of ti as text
+                            end try
+                            try
+                                set opa to opacity of ti as text
+                            end try
+                            try
+                                set fillT to background fill type of ti as text
+                            end try
+{runs_block}
+                            set out to out & "T" & fs & (object text of ti as text) & ¬
+                                fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
+                                fs & (width of ti as text) & fs & (height of ti as text) & ¬
+                                fs & f & fs & z & fs & c & fs & (i as text) & fs & role & ¬
+                                fs & rot & fs & opa & fs & fillT & fs & runsOut & rs
                         end repeat
-                        repeat with i from 1 to (count of images)
+                        repeat with i from 1 to {"(count of images)" if "image" in want else "0"}
                             set im to image i
                             set p to position of im
                             set fn to ""
@@ -1321,11 +1924,24 @@ class DeckTools:
                                     set fn to file name of im as text
                                 end try
                             end if
+                            set irot to ""
+                            set iopa to ""
+                            set idesc to ""
+                            try
+                                set irot to rotation of im as text
+                            end try
+                            try
+                                set iopa to opacity of im as text
+                            end try
+                            try
+                                set idesc to description of im as text
+                            end try
                             set out to out & "I" & fs & fn & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of im as text) & ¬
-                                fs & (height of im as text) & rs
+                                fs & (height of im as text) & fs & (i as text) & ¬
+                                fs & irot & fs & iopa & fs & idesc & rs
                         end repeat
-                        repeat with i from 1 to (count of shapes)
+                        repeat with i from 1 to {"(count of shapes)" if "shape" in want else "0"}
                             set sh to shape i
                             set isPh to false
                             if defT is not missing value and sh is defT then set isPh to true
@@ -1336,12 +1952,30 @@ class DeckTools:
                                 try
                                     set shTxt to object text of sh as text
                                 end try
+                                set srot to ""
+                                set sfill to ""
+                                set srefl to ""
+                                set slock to ""
+                                try
+                                    set srot to rotation of sh as text
+                                end try
+                                try
+                                    set sfill to background fill type of sh as text
+                                end try
+                                try
+                                    set srefl to reflection showing of sh as text
+                                end try
+                                try
+                                    set slock to locked of sh as text
+                                end try
                                 set out to out & "S" & fs & shTxt & fs & (item 1 of p as text) & ¬
                                     fs & (item 2 of p as text) & fs & (width of sh as text) & ¬
-                                    fs & (height of sh as text) & fs & (opacity of sh as text) & rs
+                                    fs & (height of sh as text) & fs & (opacity of sh as text) & ¬
+                                    fs & (i as text) & fs & srot & fs & sfill & fs & srefl & ¬
+                                    fs & slock & rs
                             end if
                         end repeat
-                        repeat with i from 1 to (count of tables)
+                        repeat with i from 1 to {"(count of tables)" if "table" in want else "0"}
                             set tb to table i
                             set p to position of tb
                             set rowsOut to ""
@@ -1368,24 +2002,34 @@ class DeckTools:
                                 fs & (header column count of tb as text) & ¬
                                 fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
                                 fs & (width of tb as text) & fs & (height of tb as text) & ¬
-                                fs & rowsOut & rs
+                                fs & rowsOut & fs & (i as text) & rs
                         end repeat
-                        repeat with i from 1 to (count of charts)
+                        repeat with i from 1 to {"(count of charts)" if "chart" in want else "0"}
                             set ch to chart i
                             set p to position of ch
                             set out to out & "C" & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of ch as text) & ¬
-                                fs & (height of ch as text) & rs
+                                fs & (height of ch as text) & fs & (i as text) & rs
                         end repeat
-                        repeat with i from 1 to (count of lines)
+                        repeat with i from 1 to {"(count of lines)" if "line" in want else "0"}
                             set ln to line i
                             set sp to start point of ln
                             set ep to end point of ln
+                            set lrot to ""
+                            try
+                                set lrot to rotation of ln as text
+                            end try
                             set out to out & "G" & fs & (item 1 of sp as text) & ¬
                                 fs & (item 2 of sp as text) & fs & (item 1 of ep as text) & ¬
-                                fs & (item 2 of ep as text) & rs
+                                fs & (item 2 of ep as text) & fs & (i as text) & fs & lrot & rs
                         end repeat
+                        -- Groups cannot be CREATED by AppleScript (make new
+                        -- group is a silent no-op), but a group the user made
+                        -- by hand IS countable, so report it rather than
+                        -- silently flattening.
+                        set out to out & "GRP" & fs & (count of groups as text) & rs
                     end tell
+                  end repeat
                     return out
                 end tell
             end run
@@ -1393,13 +2037,19 @@ class DeckTools:
             doc_name,
             timeout=_SLIDE_SESSION_TIMEOUT,
         )
+        slides: list[dict[str, Any]] = []
         slide: dict[str, Any] = {"elements": []}
         for record in raw.split(_RS):
             if not record:
                 continue
             fields = record.split(_FS)
             kind = fields[0]
-            if kind == "L":
+            if kind == "D":
+                # Slide delimiter: one batched session returns every requested
+                # slide, in order.
+                slide = {"slide": int(fields[1]), "elements": []}
+                slides.append(slide)
+            elif kind == "L":
                 slide["layout"] = fields[1]
             elif kind == "K":
                 if fields[1] == "true":
@@ -1422,6 +2072,8 @@ class DeckTools:
             elif kind == "T":
                 el: dict[str, Any] = {
                     "type": "text",
+                    "element_class": "text item",
+                    "index": int(fields[9]),
                     "text": fields[1],
                     "x": float(fields[2]),
                     "y": float(fields[3]),
@@ -1429,16 +2081,34 @@ class DeckTools:
                     "height": float(fields[5]),
                 }
                 if fields[6]:
-                    el["font_name"] = fields[6]
+                    el.update(split_font_name(fields[6]))
                 if fields[7]:
                     el["font_size"] = float(fields[7])
                 if fields[8]:
-                    el["color"] = fields[8]
+                    _set_color(el, fields[8])
+                if len(fields) > 10 and fields[10]:
+                    # A theme placeholder, emitted as an ordinary indexed
+                    # element so this listing and get_slide_content agree on
+                    # what "text item i" addresses. slide.title / slide.body
+                    # carry the same text for round-trip rebuild.
+                    el["placeholder"] = fields[10]
+                _set_optional(el, "rotation", fields, 11, float)
+                _set_optional(el, "opacity", fields, 12, float)
+                _set_optional(el, "fill_type", fields, 13, str)
+                if len(fields) > 14 and fields[14]:
+                    runs = _parse_runs(fields[14])
+                    # Only worth reporting when the box is NOT uniform - a
+                    # single run says nothing the top-level font/size/color
+                    # does not already say.
+                    if len(runs) > 1:
+                        el["runs"] = runs
                 slide["elements"].append(el)
             elif kind == "I":
                 slide["elements"].append(
                     {
                         "type": "image",
+                        "element_class": "image",
+                        "index": int(fields[6]),
                         "path": fields[1],
                         "x": float(fields[2]),
                         "y": float(fields[3]),
@@ -1446,9 +2116,36 @@ class DeckTools:
                         "height": float(fields[5]),
                     }
                 )
+                _set_optional(slide["elements"][-1], "rotation", fields, 7, float)
+                _set_optional(slide["elements"][-1], "opacity", fields, 8, float)
+                _set_optional(slide["elements"][-1], "description", fields, 9, str)
+                # A panel or styled stroke this server rendered carries its
+                # parameters in its filename, so report it as what it IS rather
+                # than as an anonymous image. build_deck re-renders from these,
+                # which is also what makes the round trip work at all - the
+                # original PNG lived in a temp directory that is long gone.
+                decoded = decode_rendered_asset(os.path.basename(fields[1]))
+                if decoded:
+                    el_img = slide["elements"][-1]
+                    offsets = decoded.pop("_endpoint_offsets", None)
+                    el_img.update(decoded)
+                    el_img.pop("path", None)
+                    if offsets and len(offsets) == 4:
+                        # The rendered box is padded by half a stroke width plus
+                        # the arrowhead, so the image's x/y is NOT the line's
+                        # start point. Recover the real endpoints from the box.
+                        ox_, oy_ = el_img["x"], el_img["y"]
+                        el_img["x1"] = ox_ + offsets[0]
+                        el_img["y1"] = oy_ + offsets[1]
+                        el_img["x2"] = ox_ + offsets[2]
+                        el_img["y2"] = oy_ + offsets[3]
+                        for key in ("x", "y", "width", "height"):
+                            el_img.pop(key, None)
             elif kind == "S":
                 el = {
                     "type": "shape",
+                    "element_class": "shape",
+                    "index": int(fields[7]),
                     "x": float(fields[2]),
                     "y": float(fields[3]),
                     "width": float(fields[4]),
@@ -1457,6 +2154,12 @@ class DeckTools:
                 }
                 if fields[1]:
                     el["text"] = fields[1]
+                _set_optional(el, "rotation", fields, 8, float)
+                # Keynote reports the KIND of fill but never its colour, so a
+                # caller can tell "no fill" from "fill not reported".
+                _set_optional(el, "fill_type", fields, 9, str)
+                _set_optional(el, "reflection_showing", fields, 10, _as_bool)
+                _set_optional(el, "locked", fields, 11, _as_bool)
                 slide["elements"].append(el)
             elif kind == "B":
                 data = (
@@ -1467,6 +2170,8 @@ class DeckTools:
                 slide["elements"].append(
                     {
                         "type": "table",
+                        "element_class": "table",
+                        "index": int(fields[8]),
                         "header_row": int(fields[1]) > 0,
                         "header_column": int(fields[2]) > 0,
                         "x": float(fields[3]),
@@ -1480,6 +2185,8 @@ class DeckTools:
                 slide["elements"].append(
                     {
                         "type": "chart",
+                        "element_class": "chart",
+                        "index": int(fields[5]),
                         "chart_type": None,
                         "note": ("chart data is not readable via AppleScript; geometry only"),
                         "x": float(fields[1]),
@@ -1492,10 +2199,25 @@ class DeckTools:
                 slide["elements"].append(
                     {
                         "type": "line",
+                        "element_class": "line",
+                        "index": int(fields[5]),
                         "x1": float(fields[1]),
                         "y1": float(fields[2]),
                         "x2": float(fields[3]),
                         "y2": float(fields[4]),
                     }
                 )
-        return slide
+                _set_optional(slide["elements"][-1], "rotation", fields, 6, float)
+            elif kind == "GRP":
+                count = int(fields[1])
+                if count:
+                    slide["groups"] = {
+                        "count": count,
+                        "note": (
+                            "This slide contains groups the user made by hand. "
+                            "AppleScript cannot report which elements belong to "
+                            "which group, and cannot create groups at all, so "
+                            "the elements above are listed flat."
+                        ),
+                    }
+        return slides

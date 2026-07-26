@@ -52,6 +52,8 @@ class DeckStyle:
     quote_font: str = ""
     quote_size: float = 34
     quote_color: str = ""
+    # Superseded by [style.palette]: a design system names 9 accents, not 1.
+    # Kept so existing style files keep loading; nothing reads it.
     accent_color: str = "#3B6ECC"
     # Layout metrics as fractions of slide width/height.
     margin_x_frac: float = 0.07
@@ -67,6 +69,36 @@ class DeckStyle:
     # Rendered-image panels (add_colored_panel).
     panel_color: str = "#EDF1F7"
     panel_radius: int = 24
+
+    # --- named vocabularies (Phase 9 Task 9) --------------------------------
+    #
+    # Added after trying to express a REAL design system (a 35-slide technical
+    # architecture deck) as a style file and finding the flat 27-scalar schema
+    # could carry 3 of its ~60 concepts. Each of these is a map, because the
+    # design system names things - and the names ARE the design:
+    #
+    #   type       role -> {font, size, color}. 22 named type styles against 5
+    #              element-keyed slots meant every text element re-specified a
+    #              font/size/color triple that a role name carries once.
+    #   palette    name -> hex. The deck's colours are referents ("zone.private",
+    #              "accent.crimson"), not decoration; a single accent_color
+    #              could not hold 20 of them.
+    #   connectors name -> {color, width, dash}. Stroke style IS the semantics
+    #              in an architecture diagram. Only expressible now that
+    #              styled_line can render one.
+    #   zones      name -> {x, y, width, height}. Named canvas bands (title,
+    #              canvas, legend) that content must respect.
+    #   modules    name -> {width, height, pitch, origin_x, origin_y}. An n-up
+    #              grid with a real gutter, so "the 3rd account column" is a
+    #              name rather than a hand-computed x.
+    type: dict[str, dict[str, object]] = dataclasses.field(default_factory=dict)
+    palette: dict[str, str] = dataclasses.field(default_factory=dict)
+    connectors: dict[str, dict[str, object]] = dataclasses.field(default_factory=dict)
+    zones: dict[str, dict[str, float]] = dataclasses.field(default_factory=dict)
+    modules: dict[str, dict[str, float]] = dataclasses.field(default_factory=dict)
+    # Identity metadata, so a built deck can record which revision made it.
+    version: str = ""
+    description: str = ""
 
     # --- derived metrics -----------------------------------------------------
 
@@ -84,6 +116,56 @@ class DeckStyle:
 
     def content_width(self, slide_width: float) -> float:
         return slide_width - 2 * self.margin_x(slide_width)
+
+    # --- named-vocabulary lookups -------------------------------------------
+
+    def resolve_color(self, value: str) -> str:
+        """Resolve a '@name' palette reference; pass anything else through.
+
+        Lets an element say ``"color": "@zone.private"`` so the meaning is in
+        the spec and the hex lives in one place.
+        """
+        if value.startswith("@"):
+            key = value[1:]
+            if key not in self.palette:
+                raise ParameterError(
+                    f"Unknown palette colour {value!r}. "
+                    f"Style {self.name!r} defines: {sorted(self.palette) or '(none)'}"
+                )
+            return self.palette[key]
+        return value
+
+    def type_role(self, role: str) -> dict[str, object]:
+        if role not in self.type:
+            raise ParameterError(
+                f"Unknown type role {role!r}. "
+                f"Style {self.name!r} defines: {sorted(self.type) or '(none)'}"
+            )
+        return self.type[role]
+
+    def connector(self, name: str) -> dict[str, object]:
+        if name not in self.connectors:
+            raise ParameterError(
+                f"Unknown connector {name!r}. "
+                f"Style {self.name!r} defines: {sorted(self.connectors) or '(none)'}"
+            )
+        return self.connectors[name]
+
+    def module_origin(self, name: str, index: int) -> tuple[float, float, float, float]:
+        """(x, y, width, height) of the index-th cell of a named grid module."""
+        if name not in self.modules:
+            raise ParameterError(
+                f"Unknown grid module {name!r}. "
+                f"Style {self.name!r} defines: {sorted(self.modules) or '(none)'}"
+            )
+        mod = self.modules[name]
+        pitch = float(mod.get("pitch", mod.get("width", 0)))
+        return (
+            float(mod.get("origin_x", 0)) + pitch * (index - 1),
+            float(mod.get("origin_y", 0)),
+            float(mod.get("width", 0)),
+            float(mod.get("height", 0)),
+        )
 
 
 _FIELD_NAMES = {f.name for f in dataclasses.fields(DeckStyle)}
@@ -171,6 +253,71 @@ BUILTIN_STYLES: dict[str, DeckStyle] = {
 }
 
 
+# Fields whose TOML value is a table of named entries, not a scalar.
+_MAP_FIELDS = {"type", "palette", "connectors", "zones", "modules"}
+
+# What each named entry may contain. Keys outside these are rejected, so a
+# misspelt "colour" fails loudly instead of being silently ignored - the same
+# principle as the server's unknown-argument guard.
+_MAP_ENTRY_KEYS: dict[str, set[str]] = {
+    "type": {"font", "size", "color"},
+    "connectors": {"color", "width", "dash", "start_arrow", "end_arrow", "meaning"},
+    "zones": {"x", "y", "width", "height", "align"},
+    "modules": {"width", "height", "pitch", "origin_x", "origin_y"},
+}
+
+
+def _validated_map(key: str, value: object, source: str) -> dict[str, object]:
+    """Validate one named-vocabulary table."""
+    if not isinstance(value, dict):
+        raise ParameterError(
+            f"Style {source}: [{key}] must be a table of named entries, got {type(value).__name__}"
+        )
+    if key == "palette":
+        out: dict[str, object] = {}
+        for name, hex_value in value.items():
+            if not isinstance(hex_value, str):
+                raise ParameterError(
+                    f"Style {source}: palette.{name} must be a colour string, "
+                    f"got {type(hex_value).__name__}"
+                )
+            out[name] = hex_value
+        return out
+    allowed = _MAP_ENTRY_KEYS[key]
+    result: dict[str, object] = {}
+    for name, entry in value.items():
+        if not isinstance(entry, dict):
+            raise ParameterError(
+                f"Style {source}: [{key}.{name}] must be a table, got {type(entry).__name__}"
+            )
+        unknown = sorted(set(entry) - allowed)
+        if unknown:
+            raise ParameterError(
+                f"Style {source}: [{key}.{name}] has unknown keys {unknown}; "
+                f"valid: {sorted(allowed)}"
+            )
+        result[name] = dict(entry)
+    return result
+
+
+# Styles shipped as TOML rather than as Python literals, because they are large
+# enough that a literal would be unreadable - and because shipping the same file
+# format users write is the honest test of it.
+_SHIPPED_STYLE_DIR = Path(__file__).resolve().parent.parent / "styles"
+
+
+def _load_shipped_styles() -> None:
+    """Register every .keynote-mcp.toml shipped inside the package."""
+    if not _SHIPPED_STYLE_DIR.is_dir():
+        return
+    for path in sorted(_SHIPPED_STYLE_DIR.glob("*.keynote-mcp.toml")):
+        try:
+            style = load_style_file(path)
+        except ParameterError:  # pragma: no cover - a shipped style is tested
+            continue
+        BUILTIN_STYLES[style.name or path.name.split(".")[0]] = style
+
+
 def _style_from_mapping(data: dict[str, object], source: str) -> DeckStyle:
     """Build a DeckStyle from a TOML mapping, validating keys and colors."""
     if "style" in data and isinstance(data["style"], dict):
@@ -192,6 +339,13 @@ def _style_from_mapping(data: dict[str, object], source: str) -> DeckStyle:
     for key, value in data.items():
         if key == "extends":
             continue
+        # Named vocabularies are TABLES, not scalars. The loader only accepted
+        # str/float/int before, which is why a real design system could not be
+        # expressed: its type roles, palette, connectors, zones and grid
+        # modules are all maps.
+        if key in _MAP_FIELDS:
+            values[key] = _validated_map(key, value, source)
+            continue
         expected: type = str if annotations[key] == "str" else float
         if annotations[key] == "int":
             expected = int
@@ -206,6 +360,25 @@ def _style_from_mapping(data: dict[str, object], source: str) -> DeckStyle:
     style = DeckStyle(**values)
     for color_field in _COLOR_FIELDS:
         parse_color(getattr(style, color_field))  # raises ParameterError if bad
+    # Every colour in a named vocabulary is validated too, so a typo surfaces
+    # when the style loads rather than mid-build on slide 23.
+    for name, hex_value in style.palette.items():
+        try:
+            parse_color(hex_value)
+        except ParameterError as e:
+            raise ParameterError(f"Style {source}: palette.{name}: {e}") from None
+    for role, spec in style.type.items():
+        if "color" in spec:
+            try:
+                parse_color(style.resolve_color(str(spec["color"])))
+            except ParameterError as e:
+                raise ParameterError(f"Style {source}: type.{role}.color: {e}") from None
+    for name, spec in style.connectors.items():
+        if "color" in spec:
+            try:
+                parse_color(style.resolve_color(str(spec["color"])))
+            except ParameterError as e:
+                raise ParameterError(f"Style {source}: connectors.{name}.color: {e}") from None
     return style
 
 
@@ -247,3 +420,7 @@ def resolve_style(style: str = "", near_path: str | Path = "") -> DeckStyle:
 def style_color(style: DeckStyle, field_name: str) -> tuple[int, int, int] | None:
     """Parsed RGB for a style color field (None when deferred to the theme)."""
     return parse_color(getattr(style, field_name))
+
+
+# Shipped TOML styles register after the loader is defined.
+_load_shipped_styles()

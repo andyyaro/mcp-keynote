@@ -12,6 +12,7 @@ from keynote_mcp.tools.objects import ObjectTools
 from keynote_mcp.tools.presentation import PresentationTools
 from keynote_mcp.tools.slide import SlideTools
 from keynote_mcp.utils.applescript_runner import AppleScriptRunner
+from keynote_mcp.utils.session import SESSION
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +21,20 @@ def _reset_wedge_flag():
     AppleScriptRunner._queue_wedged = False
     yield
     AppleScriptRunner._queue_wedged = False
+
+
+@pytest.fixture(autouse=True)
+def _reset_document_session():
+    """The session default document is process-global, like the real server's.
+
+    Without this, a test that creates or opens a presentation leaves its name
+    as the default and later tests resolve to it instead of doing their own
+    lookup - which showed up as build-tool tests passing alone and failing in
+    the suite.
+    """
+    SESSION.reset()
+    yield
+    SESSION.reset()
 
 
 @pytest.fixture

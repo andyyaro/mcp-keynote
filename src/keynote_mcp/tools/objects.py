@@ -17,17 +17,22 @@ from ..utils import (
     AppleScriptRunner,
     ParameterError,
     parse_color,
+    rgb65535_to_hex,
     validate_coordinates,
     validate_index,
     validate_number,
     validate_slide_number,
 )
 from ..utils.render import render_panel_png
+from ..utils.rendered_assets import panel_filename, stroke_filename
+from ..utils.stroke import render_stroke_png
 from ..utils.styles import resolve_style
+from .base import DocumentTargetedTools
 from .fragments import (
     RESOLVE_DOC,
     Argv,
     chart_fragment,
+    exists_guard,
     image_fragment,
     line_fragment,
     run_single_fragment,
@@ -36,7 +41,7 @@ from .fragments import (
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
 # Element classes addressable by the styling tools. Values are trusted
@@ -64,7 +69,7 @@ _EDIT_TAG = (
 )
 
 
-class ObjectTools:
+class ObjectTools(DocumentTargetedTools):
     """Native object tools built on the Phase A probe results."""
 
     def __init__(self) -> None:
@@ -257,6 +262,73 @@ class ObjectTools:
                 },
             ),
             Tool(
+                name="styled_line",
+                description=(
+                    "Draw a connector whose COLOR, WIDTH, DASH PATTERN and "
+                    "ARROWHEADS carry meaning - dotted black for an invocation, "
+                    "solid maroon for a data path, dotted pink for a denied path. "
+                    "Use this instead of add_line whenever the stroke means "
+                    "something. Keynote's AppleScript has NO stroke API at all "
+                    "(a line's whole property record is its two endpoints, "
+                    "geometry, rotation, reflection and locked), so this renders "
+                    "the stroke to a transparent PNG and places it, the same way "
+                    "add_colored_panel handles fills. The result is an IMAGE, not "
+                    "an editable Keynote line - but its parameters are encoded in "
+                    "its filename, so describe_deck reports it back as a "
+                    "styled_line and build_deck re-renders it. Use add_line for a "
+                    "plain native divider you want to be editable in Keynote."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "slide_number": {"type": "integer", "description": "Slide number"},
+                        "x1": {"type": "number", "description": "Start X in points"},
+                        "y1": {"type": "number", "description": "Start Y in points"},
+                        "x2": {"type": "number", "description": "End X in points"},
+                        "y2": {"type": "number", "description": "End Y in points"},
+                        "color": {
+                            "type": "string",
+                            "description": "Stroke color as #RRGGBB or 'r,g,b' 0-65535 (default black)",
+                        },
+                        "stroke_width": {
+                            "type": "number",
+                            "description": (
+                                "Stroke thickness in points (default 2). Below ~0.5pt "
+                                "cannot be resolved at the 2 px/pt render scale and is "
+                                "clamped to a hairline rather than vanishing."
+                            ),
+                        },
+                        "dash": {
+                            "type": "string",
+                            "enum": [
+                                "solid",
+                                "dash",
+                                "dashed",
+                                "dot",
+                                "dotted",
+                                "dashdot",
+                                "dash-dot",
+                            ],
+                            "description": "Dash pattern (default solid). Scales with stroke_width.",
+                        },
+                        "start_arrow": {
+                            "type": "boolean",
+                            "description": "Arrowhead at the start point (default false)",
+                        },
+                        "end_arrow": {
+                            "type": "boolean",
+                            "description": "Arrowhead at the end point (default false)",
+                        },
+                        "opacity": {
+                            "type": "number",
+                            "description": "0-100 (default 100)",
+                        },
+                        "doc_name": _DOC_ARG,
+                    },
+                    "required": ["slide_number", "x1", "y1", "x2", "y2"],
+                },
+            ),
+            Tool(
                 name="style_text_range",
                 description=(
                     "Style a sub-range of an existing text item: color, font, "
@@ -381,7 +453,7 @@ class ObjectTools:
             x_pos, y_pos = validate_coordinates(x, y)
             deck_style = resolve_style(style)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = table_fragment(
                 argv,
                 "TB",
@@ -399,6 +471,11 @@ class ObjectTools:
                 header_color=parse_color(deck_style.table_header_color),
                 column_widths=column_widths,
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             rows, cols = len(data), len(data[0])
             return [
@@ -431,7 +508,7 @@ class ObjectTools:
         try:
             validate_slide_number(slide_number)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = chart_fragment(
                 argv,
                 "CH",
@@ -445,6 +522,11 @@ class ObjectTools:
                 width=width,
                 height=height,
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
@@ -472,8 +554,13 @@ class ObjectTools:
         try:
             validate_slide_number(slide_number)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = line_fragment("LN", x1=x1, y1=y1, x2=x2, y2=y2)
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, _pos, _size = run_single_fragment(
                 self.runner, doc_name, slide_number, argv, lines
             )
@@ -512,10 +599,18 @@ class ObjectTools:
             validate_number(corner, "radius", minimum=0, maximum=500)
             validate_number(opacity, "opacity", minimum=0, maximum=100)
             tmp_dir = tempfile.mkdtemp(prefix="keynote-mcp-panel-")
-            png_path = os.path.join(tmp_dir, "panel.png")
+            # The filename carries the panel's parameters, so describe_deck can
+            # report `type: panel` with its colour instead of an anonymous
+            # image, and build_deck can RE-RENDER it. Keynote keeps only the
+            # basename once the bitmap is embedded, which is exactly why the
+            # basename is where this has to live.
+            png_path = os.path.join(
+                tmp_dir,
+                panel_filename(rgb65535_to_hex(",".join(str(c) for c in rgb)), corner, opacity),
+            )
             render_panel_png(png_path, width, height, rgb, corner, opacity)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = image_fragment(
                 argv,
                 "PN",
@@ -526,6 +621,11 @@ class ObjectTools:
                 height=height,
                 description="colored panel",
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
@@ -540,6 +640,113 @@ class ObjectTools:
             ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to add colored panel: {e}")]
+
+    async def styled_line(
+        self,
+        slide_number: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        color: str = "#000000",
+        stroke_width: float = 2.0,
+        dash: str = "solid",
+        start_arrow: bool = False,
+        end_arrow: bool = False,
+        opacity: float = 100,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        """Draw a line whose colour/width/dash/arrowheads carry meaning.
+
+        `add_line` makes a native Keynote line but takes four coordinates and
+        nothing else, because a line's ENTIRE property record is start/end
+        point, position, width, height, rotation, reflection and locked - there
+        is no stroke colour, thickness, dash or arrowhead anywhere in the
+        dictionary (probed). In a real architecture diagram the stroke IS the
+        semantics, so build_deck could produce correct geometry and then leave a
+        human to hand-style every connector.
+
+        This renders the stroke to a transparent PNG and places it, the same
+        trick add_colored_panel uses for fills. The result is an image, not an
+        editable line - but its parameters live in its filename, so
+        describe_deck reports it back as a styled_line rather than losing it.
+        """
+        try:
+            validate_slide_number(slide_number)
+            rgb = parse_color(color)
+            if rgb is None:
+                raise ParameterError("styled_line needs a color.")
+            validate_number(stroke_width, "stroke_width", minimum=0.1, maximum=200)
+            validate_number(opacity, "opacity", minimum=0, maximum=100)
+            hex_color = rgb65535_to_hex(",".join(str(c) for c in rgb))
+            tmp_dir = tempfile.mkdtemp(prefix="keynote-mcp-stroke-")
+            # Rendered to a scratch name first: the endpoint offsets are only
+            # known once the renderer has computed the padded box, and they
+            # have to be in the final filename for the round trip.
+            scratch_png = os.path.join(tmp_dir, "stroke.png")
+            ox, oy, box_w, box_h, _pw, _ph = render_stroke_png(
+                scratch_png,
+                x1,
+                y1,
+                x2,
+                y2,
+                rgb_65535=rgb,
+                width_pt=stroke_width,
+                dash=dash,
+                start_arrow=start_arrow,
+                end_arrow=end_arrow,
+                opacity=opacity,
+            )
+            png_path = os.path.join(
+                tmp_dir,
+                stroke_filename(
+                    hex_color,
+                    stroke_width,
+                    dash,
+                    start_arrow,
+                    end_arrow,
+                    offsets=(x1 - ox, y1 - oy, x2 - ox, y2 - oy),
+                ),
+            )
+            os.rename(scratch_png, png_path)
+            argv = Argv()
+            doc_slot = argv.reserve_doc()
+            lines = image_fragment(
+                argv,
+                "SL",
+                png_path,
+                x=ox,
+                y=oy,
+                width=box_w,
+                height=box_h,
+                description=f"styled line ({dash}, {hex_color})",
+            )
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
+            index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
+            arrows = []
+            if start_arrow:
+                arrows.append("start")
+            if end_arrow:
+                arrows.append("end")
+            arrow_note = f", arrow at {' and '.join(arrows)}" if arrows else ""
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Added styled line to slide {slide_number} (image index "
+                        f"{index}) from ({x1:g}, {y1:g}) to ({x2:g}, {y2:g}): "
+                        f"{hex_color}, {stroke_width:g}pt, {dash}{arrow_note}. "
+                        f"Placed at ({pos.replace(',', ', ')}), size "
+                        f"{size.replace(',', 'x')}. Rendered PNG, not a native "
+                        "line - Keynote has no stroke API at all. Its parameters "
+                        "are in its filename, so describe_deck reports it back as "
+                        "a styled_line."
+                    ),
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to add styled line: {e}")]
 
     async def style_text_range(
         self,
@@ -581,12 +788,14 @@ class ObjectTools:
             if rgb:
                 ops.append(f"set color of {range_expr} to {{{rgb[0]}, {rgb[1]}, {rgb[2]}}}")
             body = "\n".join(ops)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {RESOLVE_DOC}
+                        {exists_guard("text item", item_index, slide_number)}
                         tell slide {slide_number} of targetDoc
                             {body}
                         end tell
@@ -637,6 +846,7 @@ class ObjectTools:
                 ]
             # The bare-text form of `file name` raises -1703; POSIX file works
             # and preserves geometry (probed live).
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -712,6 +922,7 @@ class ObjectTools:
                     "reflection_showing/reflection_value/locked."
                 )
             body = "\n".join(ops)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv

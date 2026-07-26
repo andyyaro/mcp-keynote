@@ -5,6 +5,110 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [4.0.0] - 2026-07-26
+
+Fidelity and correctness pass, driven by an external field report from
+reverse-engineering a real 35-slide, ~800-element technical architecture deck
+([MCP-CONNECTOR-FEEDBACK.md](MCP-CONNECTOR-FEEDBACK.md)). 59 → 61 tools.
+
+Major, because three fixes change behavior a caller could depend on: unknown
+arguments are now rejected rather than ignored, an ambiguous document target is
+now an error rather than a guess, and `describe_deck`'s element records gained
+required addressing fields.
+
+### The report's central claim was wrong, and finding out why exposed a real bug
+
+The report stated `set_element_style` CAN write shape fill — which would have
+made `add_colored_panel`'s PNG workaround obsolete. This repo has twice shipped
+a workaround that outlived its cause, so the claim was treated as probably true
+until probed. It is false: 12 write routes × 5 themes, all -10006/-2740, raw
+four-char-code chevrons included, with the shape's rendered interior
+byte-identical before and after. `properties of shape 1` returns the complete
+record and it matches the sdef exactly — no fill, no shape type, no corner
+radius, no stroke.
+
+What produced the belief was a genuine defect: **every tool schema accepted
+unknown arguments and the dispatcher read only the names it knew**, so
+`set_element_style(fill_color="#EFA3A0")` was dropped and reported as success.
+Unknown arguments are now rejected before dispatch, naming the accepted
+arguments and the right alternative; 25 invented capability arguments
+(`stroke_color`, `corner_radius`, `bold`, `z_order`, …) get a targeted pointer.
+`additionalProperties: false` is stamped on every schema centrally, so a new
+tool cannot forget it.
+
+### Fixed
+
+- **Document resolution (the report's highest-severity item).** Tools that
+  omitted `doc_name` resolved to Keynote's `front document` INSIDE the
+  AppleScript, so a call after `open_presentation` could land on whichever deck
+  the user had clicked last, and no reply said which document was used.
+  Resolution now happens in Python: `create_presentation` / `open_presentation`
+  / `build_deck` set a session default, every reply echoes its target, and an
+  ambiguous target is an error that NAMES the open documents. `front document`
+  is gone from the tool layer entirely — asserted by a test. Build animations
+  gained `doc_name` too, bringing the requested window forward and verifying it
+  arrived rather than animating the wrong deck.
+- **One element numbering.** `describe_deck` and `get_slide_content` numbered
+  text items differently, and only on slides using the title placeholder — so
+  the offset was not even constant, and edits planned from a `describe_deck`
+  dump silently hit the wrong element on ~half a deck. Probing pinned why: a
+  SHOWING placeholder takes a LEADING slot and shifts every real index, which
+  corrects CLAUDE.md's "real items always come first". The placeholder
+  predicate now lives in ONE place (`fragments.TEXT_ITEM_FILTER`), every
+  element carries `element_class` + `index`, and placeholders are represented
+  as flagged elements rather than hidden. See [docs/INDEX_CONTRACT.md].
+- **Missing `exists` guards** on `edit_text_item`, `style_text_range`,
+  `move_element`, `resize_element` and `set_element_opacity`. A stale index
+  addresses a DIFFERENT object rather than none, so an unguarded write edited
+  the wrong element and reported success.
+- **`clear_slide` deleted shapes with no identity guard** while its text loop
+  guarded. The sdef types theme placeholders as shapes, so this could destroy
+  one.
+- **Panels did not round-trip at all.** They rendered into a temp directory
+  that no longer existed by read-back time, so any deck containing a panel
+  rebuilt to `image file does not exist`.
+
+### Added
+
+- **`styled_line`** — connectors whose colour, width, dash and arrowheads carry
+  meaning. Keynote has no stroke API whatsoever, so the stroke is rendered to a
+  transparent PNG. Available as a tool and as a `build_deck` element type,
+  since the point is authoring 165 connectors in one call.
+- **Round-trippable rendered elements.** Panel and stroke parameters are
+  encoded in the FILENAME, the one piece of metadata Keynote keeps once a
+  bitmap is embedded. `describe_deck` decodes them back into
+  `{"type": "panel", "color": "#EFA3A0"}` and `build_deck` re-renders — so the
+  round trip needs no durable file.
+- **`export_assets`** — extracts a saved bundle's `Data/` folder, because
+  `describe_deck` can only report an embedded image's basename once its source
+  is gone (the report saw 61 elements all named `pasted-movie.png`).
+- **`describe_deck` at scale.** Profiled first: 31.2 s / 125,509 chars / 2,415
+  trailing `.0` on a 35-slide deck, making one osascript call PER SLIDE. Now
+  `detail="summary"` (0.47 s), `slide_range`, `element_types` (skipped classes
+  are never READ), batched full reads, and integer coordinates.
+- **Per-run text styling on the read side.** A title mixing three colours
+  reported one. `color/font/size of every character` each return the whole list
+  in ONE Apple event, so three events per text item buys full run fidelity.
+- Shape/text/image/line `rotation`, `opacity`, `fill_type`, `reflection`,
+  `locked`; image `description`; per-slide group counts.
+- **A `not_reported` block** on every full description, so a caller can tell
+  "no fill" from "fill not reported" — including z-order, called out as
+  unrecoverable.
+- **Hex colours** (`#830041`) alongside Keynote's raw 16-bit triples, and
+  **font family/weight/style** beside the PostScript name.
+- **Named style vocabularies** — type roles, palette, semantic connectors,
+  canvas zones and grid modules — and the **`sdh` built-in style** generated
+  from a real design system. See [docs/STYLE_SYSTEM.md].
+
+### Documentation
+
+- `build_deck`'s own description now carries every limitation that shapes a
+  spec (no fill, no stroke, permanent z-order, no grouping, fixed placeholder
+  geometry, no per-run colour), because a `build_deck`-first user previously
+  met them only on `add_shape`.
+- New: [docs/INDEX_CONTRACT.md], [docs/STYLE_SYSTEM.md],
+  [docs/FIDELITY_REPORT.md] (the pixel comparison against the real deck).
+
 ## [3.0.0] - 2026-07-26
 
 Capability expansion to the practical ceiling of what Keynote's AppleScript

@@ -21,12 +21,161 @@ from __future__ import annotations
 
 from ..utils import AppleScriptRunner, ParameterError, validate_number, validate_slide_number
 
+# docName always arrives CONCRETE: callers resolve it in Python via
+# DocumentTargetedTools._doc before building a script, so there is deliberately
+# no `front document` branch. That branch was the field report's issue #1 - a
+# call omitting doc_name silently targeted whichever deck was frontmost.
 RESOLVE_DOC = """
-        if docName is "" then
-            set targetDoc to front document
-        else
-            set targetDoc to document docName
-        end if"""
+        set targetDoc to document docName"""
+
+# --- THE text-item index filter: one definition, every reader -----------------
+#
+# Keynote's `count of text items` is untruthful. The slide's `default title
+# item` / `default body item` objects occupy slots in the text-item space, and
+# probing (Phase 9 Task 2, three visibility configurations) pins the exact
+# shape:
+#
+#   both hidden : real-A(1) real-B(2) [hidden title](3) [hidden body](4)
+#   title shown : TITLE(1)  real-C(2) TITLE-again(3)    [hidden body](4)
+#   both shown  : TITLE(1)  BODY(2)   real-D(3) TITLE-again(4) BODY-again(5)
+#
+# Two consequences the codebase previously got wrong in two different ways:
+#
+# 1. A SHOWING placeholder takes a LEADING slot, so real indices shift by the
+#    number of showing placeholders. CLAUDE.md's "real items always come first,
+#    so real indices are stable" holds only while both placeholders are hidden.
+# 2. A showing placeholder appears TWICE - once in z-order, once trailing. The
+#    first occurrence is the addressable object; the repeat is a phantom.
+#
+# The canonical rule, used by EVERY reader so they cannot disagree:
+#   first occurrence of a SHOWING placeholder -> REAL, flagged with its role
+#   repeat occurrence, or any occurrence while hidden -> PHANTOM, skipped
+#   anything else -> REAL, role ""
+#
+# `get_slide_content` implemented this; `describe_deck` marked every occurrence
+# phantom and surfaced the text as slide.title instead. Same slide, two
+# numberings, and the offset changed with the layout - so an index taken from
+# one tool addressed a different element in the other. See docs/INDEX_CONTRACT.md.
+TEXT_ITEM_FILTER = """
+                    set defT to missing value
+                    set defB to missing value
+                    try
+                        set defT to default title item
+                    end try
+                    try
+                        set defB to default body item
+                    end try
+                    set titleShown to title showing
+                    set bodyShown to body showing
+                    set seenTitle to false
+                    set seenBody to false
+                    set realIndices to {}
+                    set realRoles to {}
+                    repeat with i from 1 to (count of text items)
+                        set ti to text item i
+                        set phantom to false
+                        set role to ""
+                        if defT is not missing value and ti is defT then
+                            if seenTitle or (not titleShown) then
+                                set phantom to true
+                            else
+                                set role to "title"
+                            end if
+                            set seenTitle to true
+                        else if defB is not missing value and ti is defB then
+                            if seenBody or (not bodyShown) then
+                                set phantom to true
+                            else
+                                set role to "body"
+                            end if
+                            set seenBody to true
+                        end if
+                        if not phantom then
+                            set end of realIndices to i
+                            set end of realRoles to role
+                        end if
+                    end repeat"""
+
+
+# --- per-run text styling, read cheaply --------------------------------------
+#
+# A text box reports ONE font and colour, so a title mixing three colours
+# under-reports the deck's palette entirely. `style_text_range` could always
+# WRITE runs; there was no read path.
+#
+# The naive read is one AppleEvent per character, which would be ruinous on a
+# real deck. Probed (Phase 9 Task 4): `color of every character`,
+# `font of every character` and `size of every character` each return the WHOLE
+# list in ONE event. So three events per text item buys full run fidelity.
+#
+# Coalescing happens here, in AppleScript, over the already-fetched lists -
+# pure local list access, no further events - because emitting one record per
+# character would bloat the payload the rest of Task 3 just shrank.
+#
+# Emits: RUNSTART|end|font|size|r,g,b  per run, joined by RUNSEP.
+_RUN_SEP = "\x1d"
+TEXT_RUNS_FRAGMENT = """
+                            set runsOut to ""
+                            try
+                                set cols to color of every character of object text of ti
+                                set fnts to font of every character of object text of ti
+                                set szs to size of every character of object text of ti
+                                set charCount to count of cols
+                                if charCount > 0 then
+                                    set runStart to 1
+                                    set prevF to item 1 of fnts
+                                    set prevS to item 1 of szs
+                                    set prevC to item 1 of cols
+                                    repeat with ci from 2 to charCount + 1
+                                        set changed to false
+                                        if ci > charCount then
+                                            set changed to true
+                                        else
+                                            set curF to item ci of fnts
+                                            set curS to item ci of szs
+                                            set curC to item ci of cols
+                                            if (curF as text) is not (prevF as text) then set changed to true
+                                            if (curS as text) is not (prevS as text) then set changed to true
+                                            if (curC as text) is not (prevC as text) then set changed to true
+                                        end if
+                                        if changed then
+                                            if runsOut is not "" then set runsOut to runsOut & runsep
+                                            set runsOut to runsOut & (runStart as text) & "|" & ¬
+                                                ((ci - 1) as text) & "|" & (prevF as text) & "|" & ¬
+                                                (prevS as text) & "|" & (item 1 of prevC as text) & ¬
+                                                "," & (item 2 of prevC as text) & "," & ¬
+                                                (item 3 of prevC as text)
+                                            set runStart to ci
+                                            if ci <= charCount then
+                                                set prevF to item ci of fnts
+                                                set prevS to item ci of szs
+                                                set prevC to item ci of cols
+                                            end if
+                                        end if
+                                    end repeat
+                                end if
+                            end try"""
+
+
+def exists_guard(as_type: str, index: int, slide_number: int) -> str:
+    """AppleScript that fails loudly if ``as_type index`` is not on the slide.
+
+    Keynote silently no-ops several operations against a nonexistent element,
+    and an index that is merely STALE addresses a different object rather than
+    none - so a caller working from an out-of-date listing edits the wrong
+    element and is told it succeeded. delete_element, replace_image and
+    set_element_style always guarded; edit_text_item, move_element,
+    resize_element, set_element_opacity and style_text_range did not.
+
+    ``as_type`` comes from a trusted map, ``index``/``slide_number`` from
+    validators, so interpolation here is safe.
+    """
+    return (
+        f"if not (exists {as_type} {index} of slide {slide_number} of targetDoc) then\n"
+        f'    error "No {as_type} {index} on slide {slide_number}. Invalid index." number -1719\n'
+        f"end if"
+    )
+
 
 # Trusted literal maps - ONLY values from these dicts may reach script source.
 CHART_TYPES: dict[str, str] = {
@@ -113,6 +262,23 @@ class Argv:
     def ref(self, value: str) -> str:
         self.values.append(value)
         return f"(item {len(self.values)} of argv)"
+
+    def reserve_doc(self) -> int:
+        """Claim argv slot 1 for the document name, to be filled later.
+
+        ``run_single_fragment`` reads the document name from item 1, so the slot
+        must be allocated before the fragment builders add anything. But the
+        NAME must not be resolved that early: resolving is an Apple event, and
+        resolving before the fragment builders have validated their arguments
+        means invalid input either wastes a round trip or - worse - reports
+        "3 presentations are open" instead of "Invalid coordinate". So the slot
+        is reserved here and filled by ``fill`` after validation.
+        """
+        self.values.append("")
+        return 0
+
+    def fill(self, slot: int, value: str) -> None:
+        self.values[slot] = value
 
 
 def _fmt_num(value: float) -> str:

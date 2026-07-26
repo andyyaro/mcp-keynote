@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -220,6 +221,930 @@ def pdf_page_count(path):
 
 def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
+
+
+async def check_styled_strokes(pres, objects, export, deck):
+    """PHASE 9 Task 5 — semantic strokes, and the round trip that was broken.
+
+    In a real architecture diagram the stroke IS the semantics: dotted black for
+    an invocation, solid maroon for a data path, dotted pink for a denied path.
+    Keynote has NO stroke API (a line's entire property record is its endpoints,
+    geometry, rotation, reflection and locked - probed), so styled_line renders
+    the stroke to a transparent PNG.
+
+    The assertions that matter are RENDERED: a "dotted" line that draws solid
+    passes every structural check, and so does one drawn in the wrong colour.
+    """
+    key = SCRATCH / "phase9-stroke.key"
+    rt_key = SCRATCH / "phase9-stroke-rt.key"
+    for path in (key, rt_key):
+        shutil.rmtree(path, ignore_errors=True)
+        path.unlink(missing_ok=True)
+
+    maroon, black, salmon = "#8E1F55", "#000000", "#EFA3A0"
+    spec = {
+        "title": "phase9-stroke",
+        "width": 1920,
+        "height": 1080,
+        "save_path": str(key),
+        "slides": [
+            {
+                "layout": "Blank",
+                "elements": [
+                    {
+                        "type": "panel",
+                        "x": 100,
+                        "y": 100,
+                        "width": 500,
+                        "height": 300,
+                        "color": "#EFA3A0",
+                        "radius": 16,
+                    },
+                    {
+                        "type": "styled_line",
+                        "x1": 100, "y1": 600, "x2": 900, "y2": 600,
+                        "color": maroon, "stroke_width": 6, "dash": "solid",
+                    },
+                    {
+                        "type": "styled_line",
+                        "x1": 100, "y1": 750, "x2": 900, "y2": 750,
+                        "color": black, "stroke_width": 6, "dash": "dotted",
+                    },
+                    {
+                        "type": "styled_line",
+                        "x1": 100, "y1": 900, "x2": 900, "y2": 900,
+                        "color": salmon, "stroke_width": 6, "dash": "dashed",
+                        "end_arrow": True,
+                    },
+                ],
+            }
+        ],
+    }
+    check("phase9/stroke: build a deck of semantic strokes", await deck.build_deck(spec=spec))
+    doc = "phase9-stroke.key"
+
+    img, scale = await render_slide(export, 1, "phase9-stroke", 1920, doc_name=doc)
+    if img is not None:
+        def scan(y, expect_rgb):
+            """Walk the stroke's row; return (ink runs, gaps, mean sampled colour)."""
+            px = [at(img, scale, x, y) for x in range(100, 901, 2)]
+            hit = [
+                1 if all(abs(int(c) - int(e)) <= 40 for c, e in zip(p, expect_rgb)) else 0
+                for p in px
+            ]
+            # Count the first sample as a run start too: a stroke that is
+            # already inked at x=100 (which a correct SOLID line is) has no
+            # off->on transition at all and would otherwise score 0 runs.
+            runs = hit[0] + sum(1 for i in range(1, len(hit)) if hit[i] and not hit[i - 1])
+            return runs, sum(hit), len(hit)
+
+        solid_runs, solid_ink, total = scan(600, (142, 31, 85))
+        record(
+            "phase9/stroke: RENDERED a SOLID maroon stroke is continuous and the right colour",
+            solid_runs == 1 and solid_ink > 0.9 * total,
+            f"{solid_runs} run(s), {solid_ink}/{total} samples on-colour",
+        )
+
+        dotted_runs, dotted_ink, total = scan(750, (0, 0, 0))
+        record(
+            "phase9/stroke: RENDERED a DOTTED stroke really is broken into many runs",
+            dotted_runs >= 8 and 0.15 * total < dotted_ink < 0.85 * total,
+            f"{dotted_runs} run(s), {dotted_ink}/{total} samples inked "
+            "(a dotted line drawn solid would be 1 run / ~100%)",
+        )
+
+        dashed_runs, dashed_ink, total = scan(900, (239, 163, 160))
+        record(
+            "phase9/stroke: RENDERED a DASHED stroke has fewer, longer runs than a dotted one",
+            2 <= dashed_runs < dotted_runs,
+            f"dashed={dashed_runs} runs vs dotted={dotted_runs} runs",
+        )
+
+    # The read path: styling and endpoints must both come back.
+    described = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    els = described["slides"][0]["elements"]
+    panels = [e for e in els if e.get("type") == "panel"]
+    strokes = [e for e in els if e.get("type") == "styled_line"]
+    record(
+        "phase9/stroke: a rendered panel reads back as a PANEL with its colour, not an image",
+        len(panels) == 1 and panels[0].get("color") == "#EFA3A0" and panels[0].get("radius") == 16,
+        str(panels[:1]),
+    )
+    record(
+        "phase9/stroke: rendered strokes read back as styled_line with colour/width/dash",
+        len(strokes) == 3
+        and {s.get("color") for s in strokes} == {maroon, black, salmon}
+        and {s.get("dash") for s in strokes} == {"solid", "dotted", "dashed"},
+        str([(s.get("color"), s.get("dash")) for s in strokes]),
+    )
+    record(
+        "phase9/stroke: the arrowhead survives the round trip",
+        sum(1 for s in strokes if s.get("end_arrow")) == 1,
+        str([s.get("end_arrow") for s in strokes]),
+    )
+    # Endpoints, not the padded image box: the box is inset by half a stroke
+    # width plus the arrowhead, so reporting x/y would be silently wrong.
+    solid = next(s for s in strokes if s.get("dash") == "solid")
+    record(
+        "phase9/stroke: endpoints are recovered, not the padded image box",
+        all(k in solid for k in ("x1", "y1", "x2", "y2"))
+        and abs(solid["x1"] - 100) <= 2
+        and abs(solid["y1"] - 600) <= 2
+        and abs(solid["x2"] - 900) <= 2,
+        f"({solid.get('x1')}, {solid.get('y1')}) -> ({solid.get('x2')}, {solid.get('y2')})",
+    )
+
+    # THE round trip. Before this task a deck containing panels rebuilt to
+    # "image file does not exist" - the PNGs lived in a temp dir long gone.
+    await pres.close_presentation(doc_name=doc, should_save=False)
+    described["save_path"] = str(rt_key)
+    described["title"] = "phase9-stroke-rt"
+    rebuilt = check(
+        "phase9/stroke: the described deck REBUILDS (panels no longer need the temp PNG)",
+        await deck.build_deck(spec=described),
+        "0 element error",
+    )
+    record(
+        "phase9/stroke: rebuild produced a real file",
+        rt_key.exists(),
+        f"{rt_key.name} exists: {rt_key.exists()}",
+    )
+    if rt_key.exists():
+        rt_img, rt_scale = await render_slide(
+            export, 1, "phase9-stroke-rt", 1920, doc_name="phase9-stroke-rt.key"
+        )
+        if rt_img is not None and img is not None:
+            before = at(img, scale, 350, 250)
+            after = at(rt_img, rt_scale, 350, 250)
+            record(
+                "phase9/stroke: RENDERED the rebuilt deck draws the same panel colour",
+                near(before, after, tol=12),
+                f"original={before} rebuilt={after}",
+            )
+        await pres.close_presentation(doc_name="phase9-stroke-rt.key", should_save=False)
+    assert rebuilt is not None
+
+
+async def check_read_fidelity(pres, content, objects, export, deck):
+    """PHASE 9 Tasks 4 + 6 — what describe_deck can now SEE.
+
+    The field report had to recover five brand colours by screenshotting and
+    eyeballing pixels, because a text box reported ONE font and colour even
+    when its title mixed three, and because nothing distinguished "no fill"
+    from "fill not reported".
+
+    Reproduces the real deck's tri-colour title ("Building A" black / "Secure"
+    maroon / "Client Data Hub" salmon) and asserts the read path recovers it.
+    """
+    key = SCRATCH / "phase9-fidelity.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    doc = "phase9-fidelity.key"
+    check(
+        "phase9/read: create fidelity doc",
+        await pres.create_presentation("phase9-fidelity", save_path=str(key)),
+        "Created presentation",
+    )
+    check(
+        "phase9/read: add the tri-colour title",
+        await content.add_text_box(
+            1, "Building A Secure Client Data Hub", x=100, y=100, font_size=40, doc_name=doc
+        ),
+    )
+    for start, end, color, font in (
+        (1, 10, "#000000", ""),
+        (11, 16, "#8E1F55", "Helvetica-Bold"),
+        (18, 33, "#EFA3A0", ""),
+    ):
+        await objects.style_text_range(
+            1, 1, start, end, color=color, font_name=font, doc_name=doc
+        )
+    check(
+        "phase9/read: add a shape at 80% opacity",
+        await content.add_shape(1, x=100, y=400, width=200, height=150, opacity=80, doc_name=doc),
+    )
+    check("phase9/read: add a line", await objects.add_line(1, 100, 700, 500, 700, doc_name=doc))
+    check("phase9/read: save", await pres.save_presentation(doc_name=doc))
+
+    described = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    slide = described["slides"][0]
+    by_class = {el["element_class"]: el for el in slide["elements"]}
+
+    # --- per-run text styling: the report's item 6 ---
+    text_el = by_class.get("text item", {})
+    runs = text_el.get("runs", [])
+    record(
+        "phase9/read: a mixed-colour text box reports RUNS, not one flat colour",
+        len(runs) >= 3,
+        f"{len(runs)} runs",
+    )
+    run_colors = {r.get("color") for r in runs}
+    record(
+        "phase9/read: every colour in the title is recovered exactly",
+        {"#000000", "#8E1F55", "#EFA3A0"} <= run_colors,
+        f"colours found: {sorted(c for c in run_colors if c)}",
+    )
+    record(
+        "phase9/read: a run's face name is recovered (weight lives in the face)",
+        any(r.get("font_name") == "Helvetica-Bold" for r in runs),
+        str([r.get("font_name") for r in runs]),
+    )
+
+    # --- Task 6 ergonomics ---
+    record(
+        "phase9/read: colours are hex, with the raw 16-bit triple kept alongside",
+        text_el.get("color", "").startswith("#") and "color_65535" in text_el,
+        f"color={text_el.get('color')} color_65535={text_el.get('color_65535')}",
+    )
+    record(
+        "phase9/read: fonts are split into family/weight/style beside the PostScript name",
+        all(k in text_el for k in ("font_name", "font_family", "font_weight", "font_style")),
+        f"{text_el.get('font_name')} -> {text_el.get('font_family')} / "
+        f"{text_el.get('font_weight')} / {text_el.get('font_style')}",
+    )
+
+    # --- opacity / rotation / fill_type across classes ---
+    shape_el = by_class.get("shape", {})
+    record(
+        "phase9/read: shape reports opacity, rotation and fill TYPE",
+        shape_el.get("opacity") == 80
+        and "rotation" in shape_el
+        and shape_el.get("fill_type") in
+        {"color fill", "no fill", "gradient fill", "advanced gradient fill",
+         "image fill", "advanced image fill"},
+        str({k: shape_el.get(k) for k in ("opacity", "rotation", "fill_type")}),
+    )
+    record(
+        "phase9/read: text reports opacity and fill type too (was shapes-only)",
+        "opacity" in text_el and "fill_type" in text_el,
+        str({k: text_el.get(k) for k in ("opacity", "fill_type")}),
+    )
+    record(
+        "phase9/read: line reports rotation",
+        "rotation" in by_class.get("line", {}),
+        str(by_class.get("line")),
+    )
+
+    # --- what CANNOT be read is stated, not omitted ---
+    unread = described.get("not_reported", {})
+    record(
+        "phase9/read: the description says what it could NOT read",
+        {"shape.fill_color", "shape.type", "line.stroke", "z_order"} <= set(unread),
+        f"{len(unread)} documented gaps",
+    )
+    record(
+        "phase9/read: z-order is documented as unrecoverable in the output itself",
+        "z_order" in unread and "not" in unread["z_order"].lower(),
+        unread.get("z_order", "")[:100],
+    )
+
+    # --- export_assets makes the bundle's images resolvable ---
+    assets_dir = SCRATCH / "phase9-assets"
+    shutil.rmtree(assets_dir, ignore_errors=True)
+    assets_text = check(
+        "phase9/read: export_assets extracts the bundle's Data/ folder",
+        await export.export_assets(str(assets_dir), doc_name=doc),
+    )
+    extracted = list(assets_dir.glob("*")) if assets_dir.exists() else []
+    record(
+        "phase9/read: assets really landed on disk (not just reported)",
+        len(extracted) > 0 and all(f.stat().st_size > 0 for f in extracted),
+        f"{len(extracted)} files, {sum(f.stat().st_size for f in extracted):,} bytes",
+    )
+    record(
+        "phase9/read: export_assets refuses politely when there is nothing to read",
+        "Extracted" in assets_text or "No assets" in assets_text,
+        assets_text[:100],
+    )
+
+    check(
+        "phase9/read: close fidelity doc",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
+async def check_describe_at_scale(pres, deck):
+    """PHASE 9 Task 3 — describe_deck on a deck the size of the real one.
+
+    Asserts BOTH the wall clock and the output size, because the field report
+    hit both walls at once: 137,091 characters (over the tool-output limit) and
+    >120 s (over the timeout) on a 35-slide deck. A check that only asserted
+    "it returned something" would have passed then too.
+
+    Builds its own 35-slide / ~735-element deck so the numbers are reproducible
+    rather than dependent on a file that may not be present.
+    """
+    key = SCRATCH / "phase9-scale.key"
+    doc = "phase9-scale.key"
+    if key.exists():
+        check("phase9/scale: open the scale deck", await pres.open_presentation(str(key)))
+    else:
+        spec = {
+            "title": "phase9-scale",
+            "width": 1920,
+            "height": 1080,
+            "save_path": str(key),
+            "slides": [],
+        }
+        for i in range(35):
+            elements = []
+            for c in range(4):
+                elements.append(
+                    {
+                        "type": "panel",
+                        "x": 80 + c * 450,
+                        "y": 200,
+                        "width": 420,
+                        "height": 380,
+                        "color": ["#EFA3A0", "#A8C6DE", "#D8EDD2", "#5C6E80"][c],
+                        "radius": 8,
+                    }
+                )
+            for c in range(4):
+                elements.append(
+                    {
+                        "type": "text",
+                        "text": f"Service {c + 1}",
+                        "x": 100 + c * 450,
+                        "y": 220,
+                        "font_size": 22,
+                    }
+                )
+            for c in range(6):
+                elements.append(
+                    {
+                        "type": "line",
+                        "x1": 100 + c * 60,
+                        "y1": 640,
+                        "x2": 300 + c * 60,
+                        "y2": 700,
+                    }
+                )
+            elements.append(
+                {
+                    "type": "table",
+                    "data": [["Region", "Q1", "Q2"], ["North", 120, 130], ["South", 90, 95]],
+                    "x": 80,
+                    "y": 760,
+                    "width": 700,
+                    "height": 200,
+                }
+            )
+            spec["slides"].append(
+                {
+                    "layout": "Blank",
+                    "title": f"Architecture slide {i + 1}",
+                    "notes": f"Speaker notes for slide {i + 1}.",
+                    "elements": elements,
+                }
+            )
+        check("phase9/scale: build a 35-slide deck", await deck.build_deck(spec=spec))
+
+    # --- summary: the path that makes a real deck workable at all ---
+    t0 = time.monotonic()
+    summary_text = text_of(await deck.describe_deck(doc_name=doc, detail="summary"))
+    summary_s = time.monotonic() - t0
+    summary = json.loads(summary_text)
+    record(
+        "phase9/scale: summary covers every slide",
+        len(summary["slides"]) == 35 and summary["slide_count"] == 35,
+        f"{len(summary['slides'])} slides described",
+    )
+    record(
+        "phase9/scale: summary is FAST (< 5s; full read was 31s before batching)",
+        summary_s < 5.0,
+        f"{summary_s:.2f}s",
+    )
+    record(
+        "phase9/scale: summary is SMALL (< 20k chars; the field report's full dump was 137k)",
+        len(summary_text) < 20_000,
+        f"{len(summary_text):,} chars",
+    )
+    record(
+        "phase9/scale: summary carries per-slide counts and a title",
+        all("counts" in s and "title" in s for s in summary["slides"]),
+        str(summary["slides"][0]),
+    )
+
+    # --- slide_range: paging ---
+    t0 = time.monotonic()
+    paged_text = text_of(await deck.describe_deck(doc_name=doc, slide_range="1-5"))
+    paged_s = time.monotonic() - t0
+    paged = json.loads(paged_text)
+    record(
+        "phase9/scale: slide_range='1-5' returns exactly those five slides",
+        [s.get("slide") for s in paged["slides"]] == [1, 2, 3, 4, 5],
+        str([s.get("slide") for s in paged["slides"]]),
+    )
+    record(
+        "phase9/scale: a five-slide page is small and quick",
+        len(paged_text) < 40_000 and paged_s < 15.0,
+        f"{len(paged_text):,} chars in {paged_s:.2f}s",
+    )
+
+    # --- element_types: skipped classes are not READ, not merely omitted ---
+    t0 = time.monotonic()
+    text_of(await deck.describe_deck(doc_name=doc, slide_range="1-10"))
+    full_s_for_compare = (time.monotonic() - t0) * 3.5  # 10 slides -> ~35
+    t0 = time.monotonic()
+    lines_text = text_of(await deck.describe_deck(doc_name=doc, element_types=["line"]))
+    lines_s = time.monotonic() - t0
+    lines = json.loads(lines_text)
+    classes = {
+        el.get("element_class") for s in lines["slides"] for el in s.get("elements", [])
+    }
+    record(
+        "phase9/scale: element_types=['line'] returns ONLY lines",
+        classes == {"line"},
+        f"classes present: {sorted(c for c in classes if c)}",
+    )
+    # Asserted RELATIVE to the full read, not against a wall-clock constant:
+    # an absolute threshold measures how busy the machine is. Lines-only skips
+    # every text/table property read, so it must be several times faster.
+    record(
+        "phase9/scale: filtering is a real SPEEDUP, not just a smaller payload",
+        lines_s * 3 < full_s_for_compare,
+        f"{lines_s:.2f}s for lines only vs {full_s_for_compare:.2f}s full",
+    )
+
+    # --- full: must not time out, and must carry no float noise ---
+    t0 = time.monotonic()
+    full_text = text_of(await deck.describe_deck(doc_name=doc))
+    full_s = time.monotonic() - t0
+    full = json.loads(full_text)
+    record(
+        "phase9/scale: the FULL description completes well inside the 120s timeout",
+        full_s < 90.0,
+        f"{full_s:.1f}s for 35 slides / {sum(len(s.get('elements', [])) for s in full['slides'])} elements",
+    )
+    record(
+        "phase9/scale: coordinates are rounded - no trailing '.0' noise",
+        '.0,' not in full_text and '.0\n' not in full_text,
+        f"{full_text.count('.0')} '.0' occurrences",
+    )
+    record(
+        "phase9/scale: a large full description SAYS it is large and how to page it",
+        "detail='summary'" in full_text and "slide_range" in full_text,
+        f"{len(full_text):,} chars",
+    )
+    # Opting out of rounding must still work, for callers wanting raw floats.
+    raw_text = text_of(
+        await deck.describe_deck(doc_name=doc, slide_range="1", round_coordinates=False)
+    )
+    record(
+        "phase9/scale: round_coordinates=False keeps Keynote's floats",
+        ".0" in raw_text,
+        f"{raw_text.count('.0')} '.0' occurrences with rounding off",
+    )
+
+    check(
+        "phase9/scale: close the scale deck",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
+async def check_index_contract(pres, slides, content, export, objects, deck):
+    """PHASE 9 Task 2 — one numbering, proven ACROSS tools.
+
+    Every check here runs on a slide with `title showing`, because that is the
+    only configuration in which the bug exists and the only one the Phase 3 and
+    Phase 8 harnesses never ran: a showing placeholder takes text-item slot 1
+    and shifts every real index. Both tools were marked "verified" while
+    disagreeing, because both were only ever tested on Blank slides.
+
+    See docs/INDEX_CONTRACT.md.
+    """
+    key = SCRATCH / "phase9-index.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    doc = "phase9-index.key"
+    check(
+        "phase9/idx: create doc",
+        await pres.create_presentation("phase9-index", save_path=str(key)),
+        "Created presentation",
+    )
+    # Turn ON the title placeholder - this is the whole point.
+    check(
+        "phase9/idx: set_slide_content fills the TITLE placeholder",
+        await content.set_slide_content(1, title="PLACEHOLDER TITLE", doc_name=doc),
+    )
+    added = check(
+        "phase9/idx: add_text_box on the same slide",
+        await content.add_text_box(1, "REAL BOX", x=100, y=600, doc_name=doc),
+    )
+    m = re.search(r"text item index (\d+)", added)
+    emitted_index = int(m.group(1)) if m else -1
+    record(
+        "phase9/idx: add_text_box emitted an index at all",
+        emitted_index > 0,
+        added.replace("\n", " | ")[:120],
+    )
+
+    # 1. add_* -> edit_text_item: the emitted index must address the box we
+    #    just added, NOT the placeholder now sitting in slot 1.
+    check(
+        "phase9/idx: edit_text_item(add_* index) targets the added box",
+        await content.edit_text_item(1, emitted_index, "EDITED BOX", doc_name=doc),
+    )
+    listing = text_of(await content.get_slide_content(1, doc_name=doc))
+    record(
+        "phase9/idx: the EDIT landed on the added box, not the placeholder",
+        "EDITED BOX" in listing and "PLACEHOLDER TITLE" in listing,
+        listing.replace("\n", " | ")[:200],
+    )
+
+    # 2. get_slide_content and describe_deck must AGREE on the index.
+    gsc_indices = {
+        int(i): txt
+        for i, txt in re.findall(r"TEXT:(\d+):::([^:]*):::", listing)
+    }
+    described = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    dd_texts = [
+        el
+        for el in described["slides"][0]["elements"]
+        if el.get("element_class") == "text item"
+    ]
+    dd_indices = {el["index"]: el.get("text", "") for el in dd_texts}
+    record(
+        "phase9/idx: describe_deck emits element_class + index on every element",
+        all("index" in el and "element_class" in el for el in described["slides"][0]["elements"]),
+        str([(el.get("element_class"), el.get("index")) for el in described["slides"][0]["elements"]]),
+    )
+    record(
+        "phase9/idx: get_slide_content and describe_deck agree on text-item indices",
+        gsc_indices == dd_indices,
+        f"get_slide_content={gsc_indices} describe_deck={dd_indices}",
+    )
+
+    # 3. The placeholder is REPRESENTED, not hidden - and flagged.
+    placeholders = [el for el in dd_texts if el.get("placeholder")]
+    record(
+        "phase9/idx: describe_deck emits the showing placeholder as a flagged element",
+        len(placeholders) == 1 and placeholders[0]["placeholder"] == "title",
+        str(placeholders)[:200],
+    )
+    record(
+        "phase9/idx: slide.title still carries the same text (round-trip rebuild)",
+        described["slides"][0].get("title") == "PLACEHOLDER TITLE",
+        str(described["slides"][0].get("title")),
+    )
+
+    # 4. describe_deck index -> style_text_range. This is the pair the field
+    #    report says silently restyled the wrong element on ~half a deck.
+    target = next(el for el in dd_texts if el.get("text") == "EDITED BOX")
+    check(
+        "phase9/idx: style_text_range(describe_deck index) is accepted",
+        await objects.style_text_range(
+            1, target["index"], 1, 6, color="#CC0000", doc_name=doc
+        ),
+    )
+    # RENDERED: the styled text must be the added box, not the placeholder.
+    size_text = text_of(await pres.get_slide_size(doc_name=doc))
+    mm = re.search(r"(\d+)\s*x\s*(\d+)", size_text)
+    slide_w = int(mm.group(1)) if mm else 1024
+    img, scale = await render_slide(export, 1, "phase9-index", slide_w, doc_name=doc)
+    if img is not None:
+        box = next(el for el in dd_texts if el.get("text") == "EDITED BOX")
+        title_el = placeholders[0] if placeholders else None
+        red_in_box = _red_fraction(img, scale, box)
+        red_in_title = _red_fraction(img, scale, title_el) if title_el else 0.0
+        record(
+            "phase9/idx: RENDERED the red styling landed on the described element, "
+            "not the placeholder",
+            red_in_box > 0.001 and red_in_box > red_in_title,
+            f"red in target={red_in_box:.4f} red in placeholder={red_in_title:.4f}",
+        )
+
+    # 5. describe_deck index -> move_element, read back by get_slide_content.
+    before = next(el for el in dd_texts if el.get("text") == "EDITED BOX")
+    check(
+        "phase9/idx: move_element(describe_deck index)",
+        await content.move_element(1, "text", before["index"], 300, 500, doc_name=doc),
+    )
+    after = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    moved = next(
+        el
+        for el in after["slides"][0]["elements"]
+        if el.get("element_class") == "text item" and el.get("text") == "EDITED BOX"
+    )
+    record(
+        "phase9/idx: the MOVE landed on the described element",
+        abs(moved["x"] - 300) < 2 and abs(moved["y"] - 500) < 2,
+        f"moved to ({moved['x']}, {moved['y']}), expected (300, 500)",
+    )
+    still_title = after["slides"][0].get("title")
+    record(
+        "phase9/idx: the placeholder was NOT moved or rewritten by any of it",
+        still_title == "PLACEHOLDER TITLE",
+        str(still_title),
+    )
+
+    # 6. A stale index must FAIL, not silently address a different object.
+    stale = text_of(await content.edit_text_item(1, 99, "should not land", doc_name=doc))
+    record(
+        "phase9/idx: a stale index is rejected, not silently applied",
+        stale.startswith("Failed") and ("-1719" in stale or "Invalid index" in stale),
+        stale.replace("\n", " | ")[:160],
+    )
+
+    check(
+        "phase9/idx: close index doc",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
+def _red_fraction(image, scale, el):
+    """Share of pixels in an element's box that read as red-dominant."""
+    if not el:
+        return 0.0
+    crop = _crop(image, scale, (el["x"], el["y"], el["width"], el["height"]))
+    px = list(crop.convert("RGB").getdata())
+    if not px:
+        return 0.0
+    red = sum(1 for r, g, b in px if r > 110 and r - g > 45 and r - b > 45)
+    return red / len(px)
+
+
+async def check_document_resolution(pres, slides, content, export, objects):
+    """PHASE 9 Task 1 — the right document, named in the reply.
+
+    Reproduces the field report's issue #1 exactly: two decks open, the session
+    document is A, but B is frontmost because the user clicked it. Every
+    doc_name-less call must still act on A, and every reply must say so.
+
+    The rendered half matters most. A and B get panels of DIFFERENT colors at
+    the SAME coordinates, so a screenshot taken without doc_name proves which
+    document was really used - a reply that merely claims 'A' while exporting B
+    is the precise defect being fixed, and only pixels can tell them apart.
+    """
+    from keynote_mcp.utils.session import SESSION
+
+    a_key = SCRATCH / "phase9-docA.key"
+    b_key = SCRATCH / "phase9-docB.key"
+    for path in (a_key, b_key):
+        shutil.rmtree(path, ignore_errors=True)
+        path.unlink(missing_ok=True)
+
+    a_rgb, b_rgb = (200, 30, 30), (30, 60, 200)
+    panel_box = (150, 150, 500, 350)
+
+    check(
+        "phase9: create doc A",
+        await pres.create_presentation("phase9-docA", save_path=str(a_key)),
+        "Created presentation",
+    )
+    check(
+        "phase9: A gets a RED panel",
+        await objects.add_colored_panel(
+            1, *panel_box, color=",".join(str(c * 257) for c in a_rgb), doc_name="phase9-docA.key"
+        ),
+    )
+    check(
+        "phase9: create doc B",
+        await pres.create_presentation("phase9-docB", save_path=str(b_key)),
+        "Created presentation",
+    )
+    check(
+        "phase9: B gets a BLUE panel",
+        await objects.add_colored_panel(
+            1, *panel_box, color=",".join(str(c * 257) for c in b_rgb), doc_name="phase9-docB.key"
+        ),
+    )
+
+    # create_presentation set the session document to B (the most recent).
+    info_b = text_of(await pres.get_presentation_info())
+    record(
+        "phase9: the session document is the most recently created one (B)",
+        "phase9-docB" in info_b,
+        info_b.replace("\n", " | ")[:120],
+    )
+
+    # Now make A the session document the way a caller would.
+    check(
+        "phase9: open_presentation(A) sets the session document",
+        await pres.open_presentation(str(a_key)),
+        "session document",
+    )
+
+    # ...and put B in FRONT, the way a user clicking B would. This is the
+    # exact state in which every doc_name-less call used to target B.
+    pres.runner.run(
+        """
+        on run argv
+            set docName to item 1 of argv
+            tell application "Keynote"
+                activate
+                repeat with w in windows
+                    if name of w is docName then
+                        set index of w to 1
+                        exit repeat
+                    end if
+                end repeat
+                return name of front document
+            end tell
+        end run
+        """,
+        "phase9-docB.key",
+    )
+    front = pres.runner.run_inline_script(
+        'tell application "Keynote" to return name of front document'
+    )
+    record(
+        "phase9: B really is frontmost (the trap is armed)",
+        front == "phase9-docB.key",
+        f"front document is {front!r}",
+    )
+
+    # THE CHECK: no doc_name, B frontmost, session document A.
+    info = text_of(await pres.get_presentation_info())
+    record(
+        "phase9: a doc_name-less call targets the SESSION document, not the front one",
+        "phase9-docA" in info and "phase9-docB" not in info,
+        info.replace("\n", " | ")[:140],
+    )
+
+    # RENDERED: the export must be A's red panel, not B's blue one. The slide
+    # width is READ, never assumed - a hardcoded 1024 against this document's
+    # 1920 sampled outside the panel and reported plain white.
+    size_text = text_of(await pres.get_slide_size(doc_name="phase9-docA.key"))
+    m = re.search(r"(\d+)\s*x\s*(\d+)", size_text)
+    slide_w = int(m.group(1)) if m else 1024
+    img, scale = await render_slide(export, 1, "phase9-resolution", slide_w)
+    if img is not None:
+        sampled = at(img, scale, panel_box[0] + panel_box[2] / 2, panel_box[1] + panel_box[3] / 2)
+        record(
+            "phase9: RENDERED the doc_name-less screenshot shows A's panel, not B's",
+            near(sampled, a_rgb, tol=24),
+            f"sampled={sampled} A={a_rgb} B={b_rgb}",
+        )
+
+    # Ambiguity: with the session default gone and two documents open, the
+    # server must name them instead of guessing.
+    SESSION.clear_default()
+    ambiguous = text_of(await pres.get_presentation_info())
+    record(
+        "phase9: ambiguous target errors and NAMES the open documents",
+        "phase9-docA.key" in ambiguous
+        and "phase9-docB.key" in ambiguous
+        and "doc_name" in ambiguous,
+        ambiguous.replace("\n", " | ")[:180],
+    )
+
+    # The echo, through the real MCP entry point.
+    from keynote_mcp.server import KeynoteMCPServer, _echo_resolved_document
+
+    srv = KeynoteMCPServer()
+    SESSION.note_resolved("")
+    echoed = text_of(
+        _echo_resolved_document(
+            await srv._dispatch("get_slide_count", {"doc_name": "phase9-docA.key"})
+        )
+    )
+    record(
+        "phase9: every reply echoes the resolved document",
+        "[document: phase9-docA.key]" in echoed,
+        echoed.replace("\n", " | ")[:140],
+    )
+
+    check(
+        "phase9: close doc A",
+        await pres.close_presentation(doc_name="phase9-docA.key", should_save=False),
+    )
+    check(
+        "phase9: close doc B",
+        await pres.close_presentation(doc_name="phase9-docB.key", should_save=False),
+    )
+
+
+async def check_fill_is_unwritable(pres, slides, content, export, objects):
+    """PHASE 9 Task 0 — pin the fill ceiling in errors AND in pixels.
+
+    The field report claimed `set_element_style` can write shape fill. Probed
+    across five themes and twelve write routes (including raw four-char-code
+    chevrons), every route fails with -10006 and the render is byte-identical
+    before and after. This check keeps that true: if a future Keynote makes
+    fill writable, it FAILS here and the docs get corrected, rather than the
+    repo carrying a PNG workaround for a limitation that has lapsed - which
+    has already happened twice in this codebase.
+
+    It also pins the mechanism that produced the false belief: an unknown
+    argument being dropped and reported as success.
+    """
+    from keynote_mcp.server import KeynoteMCPServer
+
+    key = SCRATCH / "phase9-fill.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    check(
+        "phase9: create fill-probe doc",
+        await pres.create_presentation("phase9-fill", save_path=str(key)),
+        "Created presentation",
+    )
+    slide_w = 1024
+    size_text = text_of(await pres.get_slide_size(doc_name="phase9-fill.key"))
+    m = re.search(r"(\d+)\s*x\s*(\d+)", size_text)
+    if m:
+        slide_w = int(m.group(1))
+
+    box = (200, 200, 400, 300)
+    # Target the document by name throughout. An earlier draft of this check
+    # omitted doc_name and a stray untitled document -- left frontmost by an
+    # unrelated probe -- got rendered instead, reporting a fill color that came
+    # from a completely different deck. That is the field report's issue #1
+    # reproduced inside the harness meant to verify it; see
+    # check_document_resolution for the check that covers it deliberately.
+    doc = "phase9-fill.key"
+    check(
+        "phase9: add_shape for the fill probe",
+        await content.add_shape(
+            1, x=box[0], y=box[1], width=box[2], height=box[3], doc_name=doc
+        ),
+    )
+
+    before, scale = await render_slide(export, 1, "phase9-fill-before", slide_w, doc_name=doc)
+    if before is None:
+        return
+    interior = (box[0] + 40, box[1] + 40, box[2] - 80, box[3] - 80)
+    before_color = dominant(_crop(before, scale, interior))
+    # Prove the sample is the SHAPE and not just an arbitrary dark pixel: the
+    # default theme fills shapes black, and "unchanged black" would otherwise
+    # be satisfied by measuring nothing at all.
+    outside_color = at(before, scale, box[0] + box[2] + 80, box[1] + box[3] // 2)
+    record(
+        "phase9: the sampled interior really is the shape (differs from the slide beside it)",
+        not near(before_color, outside_color, tol=12),
+        f"interior={before_color} outside={outside_color}",
+    )
+
+    # Every plausible AppleScript route to a shape fill, at the raw level.
+    routes = [
+        ("background fill type := color fill", "set background fill type of shape 1 to color fill"),
+        ("background color := red", "set background color of shape 1 to {65535, 0, 0}"),
+        ("color := red", "set color of shape 1 to {65535, 0, 0}"),
+        ("raw chevron bkft := fico", 'set «class bkft» of shape 1 to «constant ****fico»'),
+        ("raw chevron ceBC := red", 'set «class ceBC» of shape 1 to {65535, 0, 0}'),
+    ]
+    for label, statement in routes:
+        script = (
+            'tell application "Keynote" to tell document "phase9-fill.key" to tell slide 1\n'
+            f"  {statement}\n"
+            "end tell"
+        )
+        try:
+            pres.runner.run_inline_script(script)
+            ok, detail = False, "SUCCEEDED - fill may now be writable; re-probe and fix the docs"
+        except Exception as e:  # noqa: BLE001 - any failure is the expected outcome
+            detail = str(e)
+            ok = "-10006" in detail or "10006" in detail or "Can't set" in detail
+        record(f"phase9: shape fill route rejected — {label}", ok, detail[:150])
+
+    # The read path DOES work, and describe_deck relies on it: a caller must be
+    # able to tell "no fill" from "fill not reported".
+    fill_type = pres.runner.run_inline_script(
+        'tell application "Keynote" to tell document "phase9-fill.key" to '
+        "return background fill type of shape 1 of slide 1 as text"
+    )
+    record(
+        "phase9: background fill type is READABLE (feeds describe_deck fill_type)",
+        fill_type in {"color fill", "no fill", "gradient fill", "advanced gradient fill",
+                      "image fill", "advanced image fill"},
+        fill_type,
+    )
+
+    # RENDERED: the shape must look exactly as it did. Errors alone would not
+    # prove this - a write could raise and still have changed something.
+    after, scale2 = await render_slide(export, 1, "phase9-fill-after", slide_w, doc_name=doc)
+    if after is not None:
+        after_color = dominant(_crop(after, scale2, interior))
+        record(
+            "phase9: RENDERED shape interior is UNCHANGED after every fill attempt",
+            near(before_color, after_color, tol=4),
+            f"before={before_color} after={after_color}",
+        )
+
+    # The mechanism that made the field report believe otherwise.
+    srv = KeynoteMCPServer()
+    rejection = srv._reject_unknown_arguments(
+        "set_element_style",
+        {"slide_number": 1, "element_type": "shape", "element_index": 1, "fill_color": "#EFA3A0"},
+    )
+    record(
+        "phase9: set_element_style(fill_color=...) is REJECTED, not dropped",
+        bool(rejection) and "REJECTED" in rejection and "add_colored_panel" in rejection,
+        (rejection or "accepted silently").replace("\n", " | ")[:200],
+    )
+    record(
+        "phase9: every tool schema forbids unknown arguments",
+        all(t.inputSchema.get("additionalProperties") is False for t in srv.all_tools()),
+        f"{len(srv.all_tools())} tools",
+    )
+
+    # The rendered-PNG panel is colorimetrically EXACT once the export's
+    # Display-P3 profile is applied - the reason the workaround stays.
+    check(
+        "phase9: close fill-probe doc",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
 
 
 async def main():
@@ -1364,12 +2289,13 @@ async def main():
         md_built[:160],
     )
     for name in ("verify-deck.key", "verify-md.key"):
+        # Closed through the TOOL, not raw AppleScript: build_deck made these
+        # the session document, and closing one behind the server's back leaves
+        # the session default pointing at a document that no longer exists.
+        # (The server now self-heals that, but the harness should not be the
+        # thing exercising the recovery path by accident.)
         try:
-            pres.runner.run(
-                'on run argv\ntell application "Keynote" to close document (item 1 of argv) '
-                "saving no\nend run",
-                name,
-            )
+            await pres.close_presentation(doc_name=name, should_save=False)
         except Exception as cleanup_err:
             print(f"  (cleanup: {cleanup_err})")
 
@@ -1478,6 +2404,13 @@ async def main():
     )
     record("rescued file exists", rescue_path.exists(), str(rescue_path))
     check("close rescued doc", await pres.close_presentation(should_save=False))
+
+    await check_index_contract(pres, slides, content, export, objects, deck)
+    await check_styled_strokes(pres, objects, export, deck)
+    await check_read_fidelity(pres, content, objects, export, deck)
+    await check_describe_at_scale(pres, deck)
+    await check_document_resolution(pres, slides, content, export, objects)
+    await check_fill_is_unwritable(pres, slides, content, export, objects)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")

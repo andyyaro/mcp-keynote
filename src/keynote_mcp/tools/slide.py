@@ -3,19 +3,20 @@
 from mcp.types import TextContent, Tool
 
 from ..utils import AppleScriptRunner, validate_slide_number
+from .base import DocumentTargetedTools
 from .fragments import transition_fragment
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
+# docName always arrives CONCRETE: every public tool method resolves it in
+# Python via DocumentTargetedTools._doc first, so there is deliberately no
+# `front document` branch here. That branch was the field report's issue #1 -
+# a call omitting doc_name silently targeted whichever deck was frontmost.
 _RESOLVE_DOC = """
-        if docName is "" then
-            set targetDoc to front document
-        else
-            set targetDoc to document docName
-        end if"""
+        set targetDoc to document docName"""
 
 
 # One consistent routing signal on every element-creating primitive: with 59
@@ -27,7 +28,7 @@ _EDIT_TAG = (
 )
 
 
-class SlideTools:
+class SlideTools(DocumentTargetedTools):
     """Slide management tools class"""
 
     def __init__(self) -> None:
@@ -250,6 +251,7 @@ class SlideTools:
                 if position == 0
                 else f"set newSlide to make new slide at before slide {position} of targetDoc"
             )
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -280,6 +282,7 @@ class SlideTools:
         """Delete a slide."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -322,6 +325,7 @@ class SlideTools:
                     f"duplicate sourceSlide to before slide {new_position} of targetDoc"
                 )
                 new_number = new_position
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -357,6 +361,7 @@ class SlideTools:
             else:
                 insert_ref = f"after slide {to_position}"
 
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -381,6 +386,7 @@ class SlideTools:
     async def get_slide_count(self, doc_name: str = "") -> list[TextContent]:
         """Get slide count."""
         try:
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -401,6 +407,7 @@ class SlideTools:
         """Select a specific slide."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -423,6 +430,7 @@ class SlideTools:
         """Set slide layout."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -462,6 +470,7 @@ class SlideTools:
         """Get slide info."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -529,6 +538,7 @@ class SlideTools:
     async def get_available_layouts(self, doc_name: str = "") -> list[TextContent]:
         """Get available layouts."""
         try:
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -569,6 +579,7 @@ class SlideTools:
                 effect=effect, duration=duration, delay=delay, automatic=automatic
             )
             body = "\n".join(lines)
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -606,6 +617,7 @@ class SlideTools:
         try:
             validate_slide_number(slide_number)
             flag = "true" if skipped else "false"
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv

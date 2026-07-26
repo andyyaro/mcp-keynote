@@ -100,7 +100,7 @@ async def test_builds_batch_skips_bullet_dots(content_tools, mock_subprocess_run
 
 async def test_builds_batch_reports_failures(content_tools, mock_subprocess_run):
     _fail(mock_subprocess_run)
-    result = await content_tools.add_builds_to_slide(1, "2")
+    result = await content_tools.add_builds_to_slide(1, "2", doc_name="Deck.key")
     assert "FAILED" in result[0].text
 
 

@@ -8,6 +8,7 @@ from mcp.types import TextContent, Tool
 from ..utils import (
     ELEMENT_TYPE_MAP,
     AppleScriptRunner,
+    ParameterError,
     parse_color,
     validate_coordinates,
     validate_dimensions,
@@ -17,8 +18,11 @@ from ..utils import (
     validate_number,
     validate_slide_number,
 )
+from .base import DocumentTargetedTools
 from .fragments import (
+    TEXT_ITEM_FILTER,
     Argv,
+    exists_guard,
     image_fragment,
     run_single_fragment,
     shape_fragment,
@@ -29,15 +33,15 @@ logger = logging.getLogger(__name__)
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
+# docName always arrives CONCRETE: every public tool method resolves it in
+# Python via DocumentTargetedTools._doc first, so there is deliberately no
+# `front document` branch here. That branch was the field report's issue #1 -
+# a call omitting doc_name silently targeted whichever deck was frontmost.
 _RESOLVE_DOC = """
-        if docName is "" then
-            set targetDoc to front document
-        else
-            set targetDoc to document docName
-        end if"""
+        set targetDoc to document docName"""
 
 # UI-scripting timeouts: build tools click through the Animate inspector with
 # deliberate delays, so they need more headroom than plain AppleScript.
@@ -53,7 +57,7 @@ _EDIT_TAG = (
 )
 
 
-class ContentTools:
+class ContentTools(DocumentTargetedTools):
     """Content management tools class"""
 
     def __init__(self) -> None:
@@ -700,7 +704,7 @@ class ContentTools:
             box_w, box_h = validate_dimensions(width, height)
 
         argv = Argv()
-        argv.ref(doc_name)
+        doc_slot = argv.reserve_doc()
         lines = text_item_fragment(
             argv,
             "T",
@@ -714,6 +718,11 @@ class ContentTools:
             height=box_h if height is not None else None,
             centered=centered,
         )
+        # Resolved here, not in the seven public callers: validation above
+        # (coordinates, color, dimensions) must fail before an Apple event is
+        # spent, or a bad color reports a document error instead of a color one.
+        doc_name = self._doc(doc_name)
+        argv.fill(doc_slot, doc_name)
         return run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
 
     @staticmethod
@@ -840,6 +849,7 @@ class ContentTools:
         """Add bullet list."""
         try:
             text = "\n".join(f"• {item}" for item in items)
+            doc_name = self._doc(doc_name)
             index, pos, size = await self._add_text_element(
                 slide_number, text, x, y, font_size or 18, font_name, "", doc_name
             )
@@ -869,6 +879,7 @@ class ContentTools:
         """Add numbered list."""
         try:
             text = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(items))
+            doc_name = self._doc(doc_name)
             index, pos, size = await self._add_text_element(
                 slide_number, text, x, y, font_size or 18, font_name, "", doc_name
             )
@@ -973,6 +984,7 @@ class ContentTools:
                 if body is not None
                 else "-- no body"
             )
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -1033,7 +1045,7 @@ class ContentTools:
             if width is not None or height is not None:
                 box_w, box_h = validate_dimensions(width, height)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = image_fragment(
                 argv,
                 "I",
@@ -1044,6 +1056,11 @@ class ContentTools:
                 height=box_h if height is not None else None,
                 description=description,
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
@@ -1063,6 +1080,8 @@ class ContentTools:
         """Get all elements on a slide."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
+            filter_block = TEXT_ITEM_FILTER
             result = self.runner.run(
                 f"""
                 on run argv
@@ -1075,50 +1094,25 @@ class ContentTools:
                             set shapeCount to count of shapes
                             set tableCount to count of tables
 
-                            -- Keynote counts the slide's default title/body
-                            -- placeholder objects among "text items" even when
-                            -- hidden (0x0 phantom entries), and counts them
-                            -- TWICE when showing (in z-order and again
-                            -- trailing). Report only entries a caller can see
-                            -- and address; their i stays valid for
-                            -- edit_text_item / move_element / delete_element.
-                            set defT to missing value
-                            set defB to missing value
-                            try
-                                set defT to default title item
-                            end try
-                            try
-                                set defB to default body item
-                            end try
-                            set titleShown to title showing
-                            set bodyShown to body showing
-                            set seenTitle to false
-                            set seenBody to false
-                            set realIndices to {{}}
-                            repeat with i from 1 to rawTextCount
-                                set ti to text item i
-                                set phantom to false
-                                if defT is not missing value and ti is defT then
-                                    if seenTitle or (not titleShown) then set phantom to true
-                                    set seenTitle to true
-                                else if defB is not missing value and ti is defB then
-                                    if seenBody or (not bodyShown) then set phantom to true
-                                    set seenBody to true
-                                end if
-                                if not phantom then set end of realIndices to i
-                            end repeat
+                            -- Placeholder filtering is defined ONCE, in
+                            -- fragments.TEXT_ITEM_FILTER, so this reader and
+                            -- describe_deck cannot disagree about which text
+                            -- item is number i. See docs/INDEX_CONTRACT.md.
+{filter_block}
 
                             set output to "text_items:" & (count of realIndices) & ¬
                                 "|images:" & imageCount ¬
                                 & "|shapes:" & shapeCount & "|tables:" & tableCount
 
-                            repeat with idx in realIndices
-                                set i to idx as integer
+                            repeat with n from 1 to (count of realIndices)
+                                set i to (item n of realIndices) as integer
+                                set role to item n of realRoles
                                 set ti to text item i
                                 set pos to position of ti
                                 set output to output & "|||TEXT:" & i & ":::" & ¬
                                     (object text of ti) & ":::" & (item 1 of pos) & "," & ¬
-                                    (item 2 of pos) & ":::" & (width of ti) & "," & (height of ti)
+                                    (item 2 of pos) & ":::" & (width of ti) & "," & ¬
+                                    (height of ti) & ":::role:" & role
                             end repeat
 
                             repeat with i from 1 to imageCount
@@ -1164,6 +1158,7 @@ class ContentTools:
         try:
             validate_slide_number(slide_number)
             validate_index(item_index, "item_index")
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -1171,6 +1166,7 @@ class ContentTools:
                     set newText to item 2 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard("text item", item_index, slide_number)}
                         set object text of text item {item_index} of ¬
                             slide {slide_number} of targetDoc to newText
                     end tell
@@ -1197,6 +1193,7 @@ class ContentTools:
             validate_element_type(element_type)
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -1240,12 +1237,14 @@ class ContentTools:
             validate_index(element_index, "element_index")
             x_pos, y_pos = validate_coordinates(x, y)
             as_type = ELEMENT_TYPE_MAP[element_type]
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard(as_type, element_index, slide_number)}
                         set position of {as_type} {element_index} of ¬
                             slide {slide_number} of targetDoc to {{{x_pos}, {y_pos}}}
                     end tell
@@ -1281,12 +1280,14 @@ class ContentTools:
             validate_index(element_index, "element_index")
             w, h = validate_dimensions(width, height)
             as_type = ELEMENT_TYPE_MAP[element_type]
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard(as_type, element_index, slide_number)}
                         tell slide {slide_number} of targetDoc
                             set width of {as_type} {element_index} to {w}
                             set height of {as_type} {element_index} to {h}
@@ -1312,6 +1313,7 @@ class ContentTools:
         """Get presenter notes from a slide."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -1334,6 +1336,7 @@ class ContentTools:
         """Set presenter notes on a slide."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -1356,6 +1359,7 @@ class ContentTools:
         """Clear user content from a slide, preserving theme placeholders."""
         try:
             validate_slide_number(slide_number)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -1363,16 +1367,6 @@ class ContentTools:
                     tell application "Keynote"
                         {_RESOLVE_DOC}
                         tell slide {slide_number} of targetDoc
-                            set shapeCount to count of shapes
-                            repeat with i from shapeCount to 1 by -1
-                                delete shape i
-                            end repeat
-
-                            -- Delete text items from highest to lowest, keeping
-                            -- the theme's default title/body placeholder objects
-                            -- (Keynote also surfaces them as phantom trailing
-                            -- "text items"; deleting those entries would destroy
-                            -- the placeholders)
                             set defT to missing value
                             set defB to missing value
                             try
@@ -1381,6 +1375,35 @@ class ContentTools:
                             try
                                 set defB to default body item
                             end try
+
+                            -- The sdef types default title/body items as
+                            -- SHAPES (keynote-14.5.sdef: "default body item
+                            -- ... type=shape"). Probing Keynote 14.5 found
+                            -- them surfacing only among text items, never in
+                            -- `shapes` - but describe_deck already guards the
+                            -- shape loop by identity, so guarding here too
+                            -- keeps the two readers honest and costs nothing.
+                            -- Unguarded, this loop would delete a theme
+                            -- placeholder outright on any build where they do
+                            -- surface as shapes.
+                            set shapeCount to count of shapes
+                            repeat with i from shapeCount to 1 by -1
+                                set sh to shape i
+                                set keepShape to false
+                                if defT is not missing value and sh is defT then
+                                    set keepShape to true
+                                end if
+                                if defB is not missing value and sh is defB then
+                                    set keepShape to true
+                                end if
+                                if not keepShape then delete sh
+                            end repeat
+
+                            -- Delete text items from highest to lowest, keeping
+                            -- the theme's default title/body placeholder objects
+                            -- (Keynote also surfaces them as phantom trailing
+                            -- "text items"; deleting those entries would destroy
+                            -- the placeholders)
                             set textCount to count of text items
                             repeat with i from textCount to 1 by -1
                                 set ti to text item i
@@ -1418,12 +1441,14 @@ class ContentTools:
             validate_index(element_index, "element_index")
             opacity = validate_number(opacity, "opacity", minimum=0, maximum=100)
             as_type = ELEMENT_TYPE_MAP[element_type]
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        {exists_guard(as_type, element_index, slide_number)}
                         set opacity of {as_type} {element_index} of ¬
                             slide {slide_number} of targetDoc to {int(opacity)}
                     end tell
@@ -1464,8 +1489,13 @@ class ContentTools:
                 opacity if opacity is not None else 100, "opacity", minimum=0, maximum=100
             )
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = shape_fragment(argv, "S", x=x_pos, y=y_pos, width=w, height=h, opacity=op)
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
@@ -1481,20 +1511,61 @@ class ContentTools:
 
     # --- Build animations (UI scripting) ---
 
-    def _select_slide_for_ui(self, slide_number: int) -> None:
+    def _focus_document_for_ui(self, doc_name: str) -> None:
+        """Bring ``doc_name``'s window to the front, for UI scripting.
+
+        UI scripting drives the frontmost window, so a build tool cannot honor
+        a doc_name without moving that document's window there first. Keynote's
+        own ``set index of window N to 1`` does it (probed), and the front
+        document really does follow. Verified afterwards rather than assumed: if
+        the window will not come forward, the caller is told plainly instead of
+        having builds applied to the wrong deck.
+        """
+        result = self.runner.run(
+            """
+            on run argv
+                set docName to item 1 of argv
+                tell application "Keynote"
+                    activate
+                    repeat with w in windows
+                        if name of w is docName then
+                            set index of w to 1
+                            exit repeat
+                        end if
+                    end repeat
+                    return name of front document
+                end tell
+            end run
+            """,
+            doc_name,
+        )
+        if result != doc_name:
+            raise ParameterError(
+                f"Build animations use UI scripting, which can only drive the "
+                f"frontmost Keynote window. '{doc_name}' could not be brought "
+                f"forward (the front document is '{result}'). Bring it forward "
+                "in Keynote and retry, or close the other presentations."
+            )
+
+    def _select_slide_for_ui(self, slide_number: int, doc_name: str) -> None:
         """Select the slide in a separate osascript call before UI scripting.
 
         Absorbed workaround: without this separate call, the Animate inspector
         popover fails with error -2700 after a slide change.
         """
+        self._focus_document_for_ui(doc_name)
         self.runner.run(
             f"""
-            tell application "Keynote"
-                activate
-                set current slide of front document to ¬
-                    slide {slide_number} of front document
-            end tell
-            """
+            on run argv
+                set docName to item 1 of argv
+                tell application "Keynote"
+                    activate
+                    set current slide of document docName to ¬
+                        slide {slide_number} of document docName
+                end tell
+            end run
+            """,
+            doc_name,
         )
 
     def _restore_format_pane(self) -> None:
@@ -1527,6 +1598,7 @@ class ContentTools:
         element_index: int,
         effect: str = "Appear",
         delivery: str = "By Paragraph",
+        doc_name: str = "",
     ) -> list[TextContent]:
         """Add a Build In animation to an element using UI scripting (System Events)."""
         try:
@@ -1534,10 +1606,13 @@ class ContentTools:
             validate_element_type(element_type)
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
-            self._select_slide_for_ui(slide_number)
+            doc_name = self._doc(doc_name)
+            self._select_slide_for_ui(slide_number, doc_name)
 
-            # Full UI scripting flow (targets window 1 of the Keynote process -
-            # window titles do not reliably match document names):
+            # Full UI scripting flow. System Events targets window 1 of the
+            # Keynote process; _select_slide_for_ui has already brought
+            # doc_name's window there and verified it, so window 1 IS the
+            # requested document.
             # 1. Select element  2. Open Animate inspector  3. Build In tab
             # 4. Add effect  5. Set delivery
             self.runner.run(
@@ -1545,12 +1620,13 @@ class ContentTools:
                 on run argv
                     set effectName to item 1 of argv
                     set deliveryName to item 2 of argv
+                    set docName to item 3 of argv
 
                     -- Step 1: Select element (select_slide first, or the popover
                     -- will not appear - error -2700)
                     tell application "Keynote"
                         activate
-                        tell front document
+                        tell document docName
                             set current slide to slide {slide_number}
                             set the selection to ¬
                                 {{{as_type} {element_index} of slide {slide_number}}}
@@ -1644,6 +1720,7 @@ class ContentTools:
                 """,
                 effect,
                 delivery,
+                doc_name,
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 
@@ -1662,7 +1739,7 @@ class ContentTools:
             return [TextContent(type="text", text=f"Failed to add build in: {e}")]
 
     async def remove_build_in(
-        self, slide_number: int, element_type: str, element_index: int
+        self, slide_number: int, element_type: str, element_index: int, doc_name: str = ""
     ) -> list[TextContent]:
         """Remove Build In animation from an element using UI scripting."""
         try:
@@ -1670,15 +1747,17 @@ class ContentTools:
             validate_element_type(element_type)
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
-            self._select_slide_for_ui(slide_number)
+            doc_name = self._doc(doc_name)
+            self._select_slide_for_ui(slide_number, doc_name)
 
             self.runner.run(
                 f"""
                 on run argv
+                    set docName to item 1 of argv
                     -- Select element
                     tell application "Keynote"
                         activate
-                        tell front document
+                        tell document docName
                             set current slide to slide {slide_number}
                             set the selection to ¬
                                 {{{as_type} {element_index} of slide {slide_number}}}
@@ -1736,6 +1815,7 @@ class ContentTools:
                     delay 0.3
                 end run
                 """,
+                doc_name,
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 
@@ -1759,6 +1839,7 @@ class ContentTools:
         element_indices: str,
         element_type: str = "text",
         effect: str = "Appear",
+        doc_name: str = "",
     ) -> list[TextContent]:
         """Add Build In animations to multiple elements. Skips bullet-dot-only items."""
         try:
@@ -1788,6 +1869,14 @@ class ContentTools:
                     )
                 ]
 
+        try:
+            # Resolved here rather than in a leading guard: this method has no
+            # try wrapping its own validation, and an ambiguous document must
+            # not escape as an exception.
+            doc_name = self._doc(doc_name)
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to add builds: {e}")]
+
         # Check which indices are bullet dots (text is just a bullet) and skip them
         as_type = ELEMENT_TYPE_MAP[element_type]
         dots_to_skip: set[int] = set()
@@ -1796,8 +1885,10 @@ class ContentTools:
                 index_list = ", ".join(str(i) for i in indices)
                 result = self.runner.run(
                     f"""
+                    on run argv
+                    set docName to item 1 of argv
                     tell application "Keynote"
-                        tell front document
+                        tell document docName
                             set dotIndices to {{}}
                             repeat with idx in {{{index_list}}}
                                 try
@@ -1814,7 +1905,9 @@ class ContentTools:
                             return joined
                         end tell
                     end tell
-                    """
+                    end run
+                    """,
+                    doc_name,
                 )
                 if result.strip():
                     dots_to_skip = {int(x) for x in result.strip().split(",") if x.strip()}
@@ -1827,7 +1920,7 @@ class ContentTools:
                 results.append(f"text {idx}: skipped (bullet dot)")
                 continue
             response = await self.add_build_in(
-                slide_number, element_type, idx, effect, "All at Once"
+                slide_number, element_type, idx, effect, "All at Once", doc_name
             )
             text = response[0].text
             if text.startswith("Failed"):

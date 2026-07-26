@@ -205,18 +205,23 @@ class TestDescribeDeck:
     _HEAD = f"doc.key{_FS}White{_FS}1920{_FS}1080{_FS}1"
     _RECORDS = _RS.join(
         [
+            # "D" delimits a slide: describe_deck now batches several slides
+            # into one osascript session instead of one call per slide.
+            f"D{_FS}1",
             f"L{_FS}Blank",
             f"K{_FS}true",
             f"X{_FS}fade through color{_FS}1.5{_FS}0.5{_FS}true",
             f"N{_FS}my notes",
             f"PT{_FS}Placeholder Title",
             f"PB{_FS}Placeholder Body",
-            f"T{_FS}Hello{_FS}100{_FS}200{_FS}300{_FS}50{_FS}Helvetica{_FS}24{_FS}100,200,300",
-            f"I{_FS}img.png{_FS}10{_FS}20{_FS}30{_FS}40",
-            f"S{_FS}shape text{_FS}1{_FS}2{_FS}3{_FS}4{_FS}80",
-            f"B{_FS}1{_FS}0{_FS}5{_FS}6{_FS}7{_FS}8{_FS}Region\tQ1\nNorth\t120\n=SUM(B2)\t1.5",
-            f"C{_FS}9{_FS}8{_FS}7{_FS}6",
-            f"G{_FS}1{_FS}2{_FS}3{_FS}4",
+            # Trailing field on every element record is its per-class
+            # AppleScript index; text carries index THEN placeholder role.
+            f"T{_FS}Hello{_FS}100{_FS}200{_FS}300{_FS}50{_FS}Helvetica{_FS}24{_FS}100,200,300{_FS}3{_FS}",
+            f"I{_FS}img.png{_FS}10{_FS}20{_FS}30{_FS}40{_FS}1",
+            f"S{_FS}shape text{_FS}1{_FS}2{_FS}3{_FS}4{_FS}80{_FS}1",
+            f"B{_FS}1{_FS}0{_FS}5{_FS}6{_FS}7{_FS}8{_FS}Region\tQ1\nNorth\t120\n=SUM(B2)\t1.5{_FS}1",
+            f"C{_FS}9{_FS}8{_FS}7{_FS}6{_FS}1",
+            f"G{_FS}1{_FS}2{_FS}3{_FS}4{_FS}1",
         ]
     )
 
@@ -251,15 +256,34 @@ class TestDescribeDeck:
         text, image, shape, table, chart, line = slide["elements"]
         assert text == {
             "type": "text",
+            "element_class": "text item",
+            "index": 3,
             "text": "Hello",
             "x": 100.0,
             "y": 200.0,
             "width": 300.0,
             "height": 50.0,
             "font_name": "Helvetica",
+            "font_family": "Helvetica",
+            "font_weight": "Regular",
+            "font_style": "Normal",
             "font_size": 24.0,
-            "color": "100,200,300",
+            # Colour is reported as hex (what humans and build_deck both take),
+            # with Keynote's raw 16-bit triple kept alongside.
+            "color": "#000101",
+            "color_65535": "100,200,300",
         }
+        # Every element carries the per-class index a consuming tool takes.
+        for el in slide["elements"]:
+            assert el["index"] >= 1, el
+            assert el["element_class"] in {
+                "text item",
+                "image",
+                "shape",
+                "table",
+                "chart",
+                "line",
+            }, el
         assert image["type"] == "image"
         assert image["path"] == "img.png"
         assert shape["type"] == "shape"
@@ -271,11 +295,24 @@ class TestDescribeDeck:
         assert table["data"] == [["Region", "Q1"], ["North", 120], ["=SUM(B2)", 1.5]]
         assert chart["chart_type"] is None
         assert "geometry only" in chart["note"]
-        assert line == {"type": "line", "x1": 1.0, "y1": 2.0, "x2": 3.0, "y2": 4.0}
+        assert line == {
+            "type": "line",
+            "element_class": "line",
+            "index": 1,
+            "x1": 1.0,
+            "y1": 2.0,
+            "x2": 3.0,
+            "y2": 4.0,
+        }
 
     async def test_no_transition_effect_is_omitted(self, deck_tools, mock_subprocess_run):
         records = _RS.join(
-            [f"L{_FS}Blank", f"K{_FS}false", f"X{_FS}no transition effect{_FS}0{_FS}0{_FS}false"]
+            [
+                f"D{_FS}1",
+                f"L{_FS}Blank",
+                f"K{_FS}false",
+                f"X{_FS}no transition effect{_FS}0{_FS}0{_FS}false",
+            ]
         )
         self._wire(mock_subprocess_run, records)
         spec = json.loads((await deck_tools.describe_deck())[0].text)

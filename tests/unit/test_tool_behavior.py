@@ -119,7 +119,7 @@ class TestSlideTools:
         # get_slide_info must apply the same identity filter get_slide_content
         # uses.
         mock_subprocess_run.return_value.stdout = "1|||Blank|||0"
-        result = await slide_tools.get_slide_info(1)
+        result = await slide_tools.get_slide_info(1, doc_name="Deck.key")
         script = last_script(mock_subprocess_run)
         assert "default title item" in script
         assert "set textCount to count of text items" not in script
@@ -319,16 +319,33 @@ class TestContentTools:
         assert '"text_items:" & textCount' not in script
 
     async def test_build_in_selects_slide_first(self, content_tools, mock_subprocess_run):
-        mock_subprocess_run.return_value.stdout = "Window"
-        await content_tools.add_build_in(2, "text", 3)
+        # The focus step reads back the front document's name and must see the
+        # requested one, so the mock answers with it.
+        mock_subprocess_run.return_value.stdout = "Deck.key"
+        await content_tools.add_build_in(2, "text", 3, doc_name="Deck.key")
         scripts = [c.kwargs["input"] for c in mock_subprocess_run.call_args_list]
-        # window title lookup, separate slide-selection call, then UI script
-        assert any("set current slide of front document" in s for s in scripts[:-1])
+        # bring the document's window forward, separate slide-selection call,
+        # then the UI script
+        assert any("set index of w to 1" in s for s in scripts[:-1])
+        assert any("set current slide of document docName" in s for s in scripts[:-1])
         assert "System Events" in scripts[-1]
 
+    async def test_build_in_targets_the_named_document_not_the_front_one(
+        self, content_tools, mock_subprocess_run
+    ):
+        """UI scripting drives the frontmost window, so a build tool must bring
+        the requested document forward - and refuse if it cannot, rather than
+        animating whichever deck happens to be in front."""
+        mock_subprocess_run.return_value.stdout = "SomeOtherDeck.key"
+        result = await content_tools.add_build_in(2, "text", 3, doc_name="Deck.key")
+        assert "Failed to add build in" in result[0].text
+        assert "could not be brought forward" in result[0].text
+        scripts = [c.kwargs["input"] for c in mock_subprocess_run.call_args_list]
+        assert not any("System Events" in s and "Animate" in s for s in scripts)
+
     async def test_build_in_ui_timeout_is_extended(self, content_tools, mock_subprocess_run):
-        mock_subprocess_run.return_value.stdout = "Window"
-        await content_tools.add_build_in(2, "text", 3)
+        mock_subprocess_run.return_value.stdout = "Deck.key"
+        await content_tools.add_build_in(2, "text", 3, doc_name="Deck.key")
         # the last call is the best-effort Format-pane restore (10s); the UI
         # scripting call itself gets the extended 60s timeout
         timeouts = [c.kwargs.get("timeout") for c in mock_subprocess_run.call_args_list]
@@ -348,7 +365,7 @@ class TestExportTools:
     async def test_screenshot_restores_skip_state(
         self, export_tools, mock_subprocess_run, tmp_path
     ):
-        await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
+        await export_tools.screenshot_slide(1, str(tmp_path / "out.png"), doc_name="Deck.key")
         script = last_script(mock_subprocess_run)
         # The restore is its own call, and it is the LAST one.
         assert "set skipped of slide i of targetDoc" in script
@@ -374,7 +391,9 @@ class TestExportTools:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
-        result = await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
+        result = await export_tools.screenshot_slide(
+            1, str(tmp_path / "out.png"), doc_name="Deck.key"
+        )
         assert "Failed" in result[0].text  # the export failure still surfaces
         restores = [c for c in calls if "set skipped of slide i of targetDoc" in c]
         assert restores, "the skipped states were never put back"
@@ -395,7 +414,7 @@ class TestExportTools:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
-        result = await export_tools.screenshot_slide(1, str(out))
+        result = await export_tools.screenshot_slide(1, str(out), doc_name="Deck.key")
         assert "Captured screenshot" in result[0].text
         assert out.exists()
 
@@ -417,7 +436,7 @@ class TestExportTools:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
-        result = await export_tools.screenshot_slide(1, str(out))
+        result = await export_tools.screenshot_slide(1, str(out), doc_name="Deck.key")
         assert "2 unfilled placeholder" in result[0].text
         assert "NOT rendered" in result[0].text
 
@@ -437,7 +456,7 @@ class TestExportTools:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
-        result = await export_tools.screenshot_slide(1, str(out))
+        result = await export_tools.screenshot_slide(1, str(out), doc_name="Deck.key")
         assert "matches the editor view" in result[0].text
 
     async def test_export_pdf_uses_posix_file(self, export_tools, mock_subprocess_run, tmp_path):
@@ -447,5 +466,7 @@ class TestExportTools:
 
     async def test_screenshot_error_path(self, export_tools, mock_subprocess_run, tmp_path):
         _fail_with(mock_subprocess_run, NOT_FOUND)
-        result = await export_tools.screenshot_slide(1, str(tmp_path / "o.png"))
+        result = await export_tools.screenshot_slide(
+            1, str(tmp_path / "o.png"), doc_name="Deck.key"
+        )
         assert "Failed to screenshot" in result[0].text
