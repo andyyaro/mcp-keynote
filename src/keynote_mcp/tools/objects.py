@@ -134,7 +134,11 @@ class ObjectTools:
                     "data cannot be changed after creation - to update it, "
                     "delete_element the chart and add a new one. The tool "
                     "switches the document's current slide to the target slide "
-                    "(required by Keynote, or nothing is created)."
+                    "(required by Keynote, or nothing is created). Pie charts: "
+                    "slices come from the axis you group by (one slice per "
+                    "entry, using its first value); when only one axis has "
+                    "multiple entries the tool groups by that axis "
+                    "automatically."
                 ),
                 inputSchema={
                     "type": "object",

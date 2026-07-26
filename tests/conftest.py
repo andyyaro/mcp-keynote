@@ -6,7 +6,9 @@ from unittest.mock import patch
 import pytest
 
 from keynote_mcp.tools.content import ContentTools
+from keynote_mcp.tools.deck import DeckTools
 from keynote_mcp.tools.export import ExportTools
+from keynote_mcp.tools.objects import ObjectTools
 from keynote_mcp.tools.presentation import PresentationTools
 from keynote_mcp.tools.slide import SlideTools
 from keynote_mcp.utils.applescript_runner import AppleScriptRunner
@@ -61,3 +63,15 @@ def slide_tools(mock_subprocess_run):
 def export_tools(mock_subprocess_run):
     """ExportTools with mocked AppleScript runner."""
     return ExportTools()
+
+
+@pytest.fixture
+def object_tools(mock_subprocess_run):
+    """ObjectTools with mocked AppleScript runner."""
+    return ObjectTools()
+
+
+@pytest.fixture
+def deck_tools(mock_subprocess_run):
+    """DeckTools with mocked AppleScript runner."""
+    return DeckTools()

@@ -404,6 +404,15 @@ def chart_fragment(
         raise ParameterError(f"Unknown chart_type {chart_type!r}. Valid: {sorted(CHART_TYPES)}")
     if group_by not in ("row", "column"):
         raise ParameterError("group_by must be 'row' or 'column'.")
+    # Pie slices come from the axis you group by (verified visually: grouping
+    # by a single-entry axis renders one 100% slice). When exactly one axis
+    # has multiple entries, group by that axis so the categories become the
+    # slices regardless of what the caller passed.
+    if chart_type.startswith("pie"):
+        if len(row_names) > 1 and len(column_names) == 1:
+            group_by = "row"
+        elif len(column_names) > 1 and len(row_names) == 1:
+            group_by = "column"
     if not data or not row_names or not column_names:
         raise ParameterError("Chart needs row_names, column_names, and data.")
     if len(data) != len(row_names):

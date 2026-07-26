@@ -147,6 +147,16 @@ class TestParseColor:
         assert parse_color("65535,0,128") == (65535, 0, 128)
         assert parse_color(" 1 , 2 , 3 ") == (1, 2, 3)
 
+    def test_hex_rrggbb(self):
+        # 0-255 channels widen to 0-65535 via *257 (0xFF -> 0xFFFF)
+        assert parse_color("#16294A") == (0x16 * 257, 0x29 * 257, 0x4A * 257)
+        assert parse_color("#FFFFFF") == (65535, 65535, 65535)
+        assert parse_color("#000000") == (0, 0, 0)
+
+    def test_hex_shorthand_rgb(self):
+        assert parse_color("#FFF") == (65535, 65535, 65535)
+        assert parse_color("#a1c") == parse_color("#aa11cc")
+
     @pytest.mark.parametrize(
         "bad",
         [
@@ -157,6 +167,10 @@ class TestParseColor:
             "-1,0,0",
             '0,0,0} & (do shell script "true")',
             "0,0,0\ntell app",
+            "#12345",
+            "#GGHHII",
+            "#",
+            '#FFF" & (do shell script "true")',
         ],
     )
     def test_invalid(self, bad):

@@ -988,12 +988,14 @@ class DeckTools:
             # errors), so batching costs no error isolation.
             slide_reports: list[dict[str, Any]] = []
             for _slide in spec["slides"]:
-                slide_reports.append({"slide": len(slide_reports) + 1, "elements": [], "errors": []})
+                slide_reports.append(
+                    {"slide": len(slide_reports) + 1, "elements": [], "errors": []}
+                )
             sessions = 2
             for batch_start in range(0, len(spec["slides"]), _SLIDES_PER_SESSION):
-                batch = list(
-                    enumerate(spec["slides"], start=1)
-                )[batch_start : batch_start + _SLIDES_PER_SESSION]
+                batch = list(enumerate(spec["slides"], start=1))[
+                    batch_start : batch_start + _SLIDES_PER_SESSION
+                ]
                 sessions += 1
                 argv = Argv()
                 argv.ref(doc_name)
@@ -1415,10 +1417,7 @@ class DeckTools:
                 slide["elements"].append(el)
             elif kind == "B":
                 data = (
-                    [
-                        [_parse_cell(c) for c in row.split("\t")]
-                        for row in fields[7].split("\n")
-                    ]
+                    [[_parse_cell(c) for c in row.split("\t")] for row in fields[7].split("\n")]
                     if fields[7]
                     else []
                 )

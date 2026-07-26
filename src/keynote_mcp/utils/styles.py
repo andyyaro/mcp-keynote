@@ -184,13 +184,20 @@ def _style_from_mapping(data: dict[str, object], source: str) -> DeckStyle:
         raise ParameterError(
             f"Style {source}: unknown keys {unknown}. Valid keys: {sorted(_FIELD_NAMES)}"
         )
+    # Expected types come from the dataclass ANNOTATIONS, not the runtime
+    # type of the default value: a float field with a whole-number default
+    # (title_size = 66) stores an int, and typing against it would wrongly
+    # reject a TOML `title_size = 70.5`.
+    annotations = {f.name: f.type for f in dataclasses.fields(DeckStyle)}
     for key, value in data.items():
         if key == "extends":
             continue
-        expected = type(values[key])
-        if expected is float and isinstance(value, int):
+        expected: type = str if annotations[key] == "str" else float
+        if annotations[key] == "int":
+            expected = int
+        if expected is float and isinstance(value, int) and not isinstance(value, bool):
             value = float(value)
-        if not isinstance(value, expected):
+        if not isinstance(value, expected) or isinstance(value, bool):
             raise ParameterError(
                 f"Style {source}: key {key!r} must be {expected.__name__}, "
                 f"got {type(value).__name__}"
