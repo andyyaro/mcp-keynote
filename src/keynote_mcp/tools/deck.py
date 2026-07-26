@@ -46,6 +46,8 @@ from ..utils import (
     split_font_name,
 )
 from ..utils.render import render_panel_png
+from ..utils.rendered_assets import decode_rendered_asset, panel_filename, stroke_filename
+from ..utils.stroke import render_stroke_png
 from ..utils.styles import DeckStyle, resolve_style
 from .base import DocumentTargetedTools
 from .fragments import (
@@ -88,6 +90,7 @@ _ELEMENT_TYPES = {
     "table",
     "chart",
     "line",
+    "styled_line",
 }
 
 # ASCII unit/record separators for structured readbacks (never appear in
@@ -109,6 +112,8 @@ _DESCRIBE_SLIDES_PER_SESSION = 10
 
 # Beyond this, a full description is likely to blow a tool-output limit.
 _LARGE_DESCRIPTION_CHARS = 60_000
+
+_DASH_STYLES = frozenset({"solid", "dash", "dashed", "dot", "dotted", "dashdot", "dash-dot"})
 
 _ALL_ELEMENT_CLASSES = frozenset({"text", "image", "shape", "table", "chart", "line"})
 
@@ -380,10 +385,17 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
             errors.append(_err(path, "each chart data row needs one number per column_name"))
         if el.get("group_by") not in (None, "row", "column"):
             errors.append(_err(path, "chart group_by must be 'row' or 'column'"))
-    elif etype == "line":
+    elif etype in ("line", "styled_line"):
         for key in ("x1", "y1", "x2", "y2"):
             if _num(el.get(key), f"{path}.{key}", errors, minimum=0) is None:
-                errors.append(_err(path, f"line needs numeric '{key}'"))
+                errors.append(_err(path, f"{etype} needs numeric '{key}'"))
+        if etype == "styled_line":
+            dash = el.get("dash", "solid")
+            if dash not in _DASH_STYLES:
+                errors.append(
+                    _err(f"{path}.dash", f"{dash!r} invalid; valid: {sorted(_DASH_STYLES)}")
+                )
+            _num(el.get("stroke_width"), f"{path}.stroke_width", errors, minimum=0.1)
 
 
 def validate_spec(spec: Any) -> list[str]:
@@ -726,7 +738,7 @@ def _flow_slide(
         # use the tool. Pinned values still win: the setdefault calls below
         # never overwrite one.
         fully_placed = el.get("x") is not None and el.get("y") is not None
-        if etype in ("panel", "line", "shape") or fully_placed:
+        if etype in ("panel", "line", "styled_line", "shape") or fully_placed:
             placed.append(el)
             continue
 
@@ -870,7 +882,17 @@ def _element_fragment(
     if etype == "panel":
         rgb = parse_color(color or style.panel_color) or (60000, 60000, 60000)
         radius = el.get("radius", style.panel_radius)
-        png_path = os.path.join(panels_dir, f"{tag}.png")
+        # Parameters live in the FILENAME so the panel round-trips - see
+        # utils/rendered_assets.py. `tag` keeps it unique within the deck.
+        png_path = os.path.join(
+            panels_dir,
+            panel_filename(
+                rgb65535_to_hex(",".join(str(c) for c in rgb)),
+                radius,
+                el.get("opacity", 100),
+                tag.lower().replace(".", ""),
+            ),
+        )
         render_panel_png(
             png_path,
             el["width"],
@@ -934,6 +956,54 @@ def _element_fragment(
         )
     if etype == "line":
         return line_fragment(tag, x1=el["x1"], y1=el["y1"], x2=el["x2"], y2=el["y2"])
+    if etype == "styled_line":
+        # Keynote has no stroke API at all, so a connector whose colour/dash
+        # carries meaning is a rendered PNG. Its parameters go in the filename
+        # so describe_deck reports it back as a styled_line, not an anonymous
+        # image - see utils/rendered_assets.py.
+        srgb = parse_color(color or "#000000") or (0, 0, 0)
+        hex_color = rgb65535_to_hex(",".join(str(c) for c in srgb))
+        stroke_w = float(el.get("stroke_width", 2.0))
+        dash = str(el.get("dash", "solid"))
+        start_arrow = bool(el.get("start_arrow", False))
+        end_arrow = bool(el.get("end_arrow", False))
+        scratch_png = os.path.join(panels_dir, f"{tag}-stroke.png")
+        ox, oy, box_w, box_h, _pw, _ph = render_stroke_png(
+            scratch_png,
+            el["x1"],
+            el["y1"],
+            el["x2"],
+            el["y2"],
+            rgb_65535=srgb,
+            width_pt=stroke_w,
+            dash=dash,
+            start_arrow=start_arrow,
+            end_arrow=end_arrow,
+            opacity=float(el.get("opacity", 100)),
+        )
+        png_path = os.path.join(
+            panels_dir,
+            stroke_filename(
+                hex_color,
+                stroke_w,
+                dash,
+                start_arrow,
+                end_arrow,
+                tag.lower().replace(".", ""),
+                offsets=(el["x1"] - ox, el["y1"] - oy, el["x2"] - ox, el["y2"] - oy),
+            ),
+        )
+        os.rename(scratch_png, png_path)
+        return image_fragment(
+            argv,
+            tag,
+            png_path,
+            x=ox,
+            y=oy,
+            width=box_w,
+            height=box_h,
+            description=f"styled line ({dash}, {hex_color})",
+        )
     raise ParameterError(f"Unhandled element type {etype!r}")  # pragma: no cover
 
 
@@ -1922,6 +1992,28 @@ class DeckTools(DocumentTargetedTools):
                 _set_optional(slide["elements"][-1], "rotation", fields, 7, float)
                 _set_optional(slide["elements"][-1], "opacity", fields, 8, float)
                 _set_optional(slide["elements"][-1], "description", fields, 9, str)
+                # A panel or styled stroke this server rendered carries its
+                # parameters in its filename, so report it as what it IS rather
+                # than as an anonymous image. build_deck re-renders from these,
+                # which is also what makes the round trip work at all - the
+                # original PNG lived in a temp directory that is long gone.
+                decoded = decode_rendered_asset(os.path.basename(fields[1]))
+                if decoded:
+                    el_img = slide["elements"][-1]
+                    offsets = decoded.pop("_endpoint_offsets", None)
+                    el_img.update(decoded)
+                    el_img.pop("path", None)
+                    if offsets and len(offsets) == 4:
+                        # The rendered box is padded by half a stroke width plus
+                        # the arrowhead, so the image's x/y is NOT the line's
+                        # start point. Recover the real endpoints from the box.
+                        ox_, oy_ = el_img["x"], el_img["y"]
+                        el_img["x1"] = ox_ + offsets[0]
+                        el_img["y1"] = oy_ + offsets[1]
+                        el_img["x2"] = ox_ + offsets[2]
+                        el_img["y2"] = oy_ + offsets[3]
+                        for key in ("x", "y", "width", "height"):
+                            el_img.pop(key, None)
             elif kind == "S":
                 el = {
                     "type": "shape",

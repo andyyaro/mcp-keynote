@@ -87,7 +87,16 @@ class TestAddColoredPanel:
         script = last_script(mock_subprocess_run)
         assert "POSIX file (item 2 of argv)" in script
         png_path = last_cmd(mock_subprocess_run)[3]
-        assert png_path.endswith("panel.png")
+        # The filename carries the panel's parameters so describe_deck can
+        # report `type: panel` with its colour instead of an anonymous image,
+        # and build_deck can re-render it. See utils/rendered_assets.py.
+        from keynote_mcp.utils.rendered_assets import decode_rendered_asset
+
+        decoded = decode_rendered_asset(os.path.basename(png_path))
+        assert decoded is not None, png_path
+        assert decoded["type"] == "panel"
+        assert decoded["color"] == "#3B6ECC"
+        assert decoded["radius"] == 12
         assert open(png_path, "rb").read(8) == b"\x89PNG\r\n\x1a\n"
         assert "not a native" in result[0].text
 

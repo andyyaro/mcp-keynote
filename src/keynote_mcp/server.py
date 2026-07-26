@@ -574,6 +574,21 @@ class KeynoteMCPServer:
                 style=arguments.get("style", ""),
                 doc_name=doc_name,
             )
+        elif name == "styled_line":
+            return await self.object_tools.styled_line(
+                slide_number=arguments["slide_number"],
+                x1=arguments["x1"],
+                y1=arguments["y1"],
+                x2=arguments["x2"],
+                y2=arguments["y2"],
+                color=arguments.get("color", "#000000"),
+                stroke_width=arguments.get("stroke_width", 2.0),
+                dash=arguments.get("dash", "solid"),
+                start_arrow=arguments.get("start_arrow", False),
+                end_arrow=arguments.get("end_arrow", False),
+                opacity=arguments.get("opacity", 100),
+                doc_name=doc_name,
+            )
         elif name == "style_text_range":
             return await self.object_tools.style_text_range(
                 slide_number=arguments["slide_number"],

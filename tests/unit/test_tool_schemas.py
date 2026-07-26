@@ -33,8 +33,8 @@ def tools(monkeypatch):
 
 
 def test_expected_tool_count(tools):
-    # 59 at v3.0.0; +1 export_assets (Phase 9 Task 4) = 60.
-    assert len(tools) == 60
+    # 59 at v3.0.0; +export_assets (Task 4) +styled_line (Task 5) = 61.
+    assert len(tools) == 61
 
 
 def test_tool_names_unique(tools):

@@ -223,6 +223,168 @@ def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
 
 
+async def check_styled_strokes(pres, objects, export, deck):
+    """PHASE 9 Task 5 — semantic strokes, and the round trip that was broken.
+
+    In a real architecture diagram the stroke IS the semantics: dotted black for
+    an invocation, solid maroon for a data path, dotted pink for a denied path.
+    Keynote has NO stroke API (a line's entire property record is its endpoints,
+    geometry, rotation, reflection and locked - probed), so styled_line renders
+    the stroke to a transparent PNG.
+
+    The assertions that matter are RENDERED: a "dotted" line that draws solid
+    passes every structural check, and so does one drawn in the wrong colour.
+    """
+    key = SCRATCH / "phase9-stroke.key"
+    rt_key = SCRATCH / "phase9-stroke-rt.key"
+    for path in (key, rt_key):
+        shutil.rmtree(path, ignore_errors=True)
+        path.unlink(missing_ok=True)
+
+    maroon, black, salmon = "#8E1F55", "#000000", "#EFA3A0"
+    spec = {
+        "title": "phase9-stroke",
+        "width": 1920,
+        "height": 1080,
+        "save_path": str(key),
+        "slides": [
+            {
+                "layout": "Blank",
+                "elements": [
+                    {
+                        "type": "panel",
+                        "x": 100,
+                        "y": 100,
+                        "width": 500,
+                        "height": 300,
+                        "color": "#EFA3A0",
+                        "radius": 16,
+                    },
+                    {
+                        "type": "styled_line",
+                        "x1": 100, "y1": 600, "x2": 900, "y2": 600,
+                        "color": maroon, "stroke_width": 6, "dash": "solid",
+                    },
+                    {
+                        "type": "styled_line",
+                        "x1": 100, "y1": 750, "x2": 900, "y2": 750,
+                        "color": black, "stroke_width": 6, "dash": "dotted",
+                    },
+                    {
+                        "type": "styled_line",
+                        "x1": 100, "y1": 900, "x2": 900, "y2": 900,
+                        "color": salmon, "stroke_width": 6, "dash": "dashed",
+                        "end_arrow": True,
+                    },
+                ],
+            }
+        ],
+    }
+    check("phase9/stroke: build a deck of semantic strokes", await deck.build_deck(spec=spec))
+    doc = "phase9-stroke.key"
+
+    img, scale = await render_slide(export, 1, "phase9-stroke", 1920, doc_name=doc)
+    if img is not None:
+        def scan(y, expect_rgb):
+            """Walk the stroke's row; return (ink runs, gaps, mean sampled colour)."""
+            px = [at(img, scale, x, y) for x in range(100, 901, 2)]
+            hit = [
+                1 if all(abs(int(c) - int(e)) <= 40 for c, e in zip(p, expect_rgb)) else 0
+                for p in px
+            ]
+            # Count the first sample as a run start too: a stroke that is
+            # already inked at x=100 (which a correct SOLID line is) has no
+            # off->on transition at all and would otherwise score 0 runs.
+            runs = hit[0] + sum(1 for i in range(1, len(hit)) if hit[i] and not hit[i - 1])
+            return runs, sum(hit), len(hit)
+
+        solid_runs, solid_ink, total = scan(600, (142, 31, 85))
+        record(
+            "phase9/stroke: RENDERED a SOLID maroon stroke is continuous and the right colour",
+            solid_runs == 1 and solid_ink > 0.9 * total,
+            f"{solid_runs} run(s), {solid_ink}/{total} samples on-colour",
+        )
+
+        dotted_runs, dotted_ink, total = scan(750, (0, 0, 0))
+        record(
+            "phase9/stroke: RENDERED a DOTTED stroke really is broken into many runs",
+            dotted_runs >= 8 and 0.15 * total < dotted_ink < 0.85 * total,
+            f"{dotted_runs} run(s), {dotted_ink}/{total} samples inked "
+            "(a dotted line drawn solid would be 1 run / ~100%)",
+        )
+
+        dashed_runs, dashed_ink, total = scan(900, (239, 163, 160))
+        record(
+            "phase9/stroke: RENDERED a DASHED stroke has fewer, longer runs than a dotted one",
+            2 <= dashed_runs < dotted_runs,
+            f"dashed={dashed_runs} runs vs dotted={dotted_runs} runs",
+        )
+
+    # The read path: styling and endpoints must both come back.
+    described = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    els = described["slides"][0]["elements"]
+    panels = [e for e in els if e.get("type") == "panel"]
+    strokes = [e for e in els if e.get("type") == "styled_line"]
+    record(
+        "phase9/stroke: a rendered panel reads back as a PANEL with its colour, not an image",
+        len(panels) == 1 and panels[0].get("color") == "#EFA3A0" and panels[0].get("radius") == 16,
+        str(panels[:1]),
+    )
+    record(
+        "phase9/stroke: rendered strokes read back as styled_line with colour/width/dash",
+        len(strokes) == 3
+        and {s.get("color") for s in strokes} == {maroon, black, salmon}
+        and {s.get("dash") for s in strokes} == {"solid", "dotted", "dashed"},
+        str([(s.get("color"), s.get("dash")) for s in strokes]),
+    )
+    record(
+        "phase9/stroke: the arrowhead survives the round trip",
+        sum(1 for s in strokes if s.get("end_arrow")) == 1,
+        str([s.get("end_arrow") for s in strokes]),
+    )
+    # Endpoints, not the padded image box: the box is inset by half a stroke
+    # width plus the arrowhead, so reporting x/y would be silently wrong.
+    solid = next(s for s in strokes if s.get("dash") == "solid")
+    record(
+        "phase9/stroke: endpoints are recovered, not the padded image box",
+        all(k in solid for k in ("x1", "y1", "x2", "y2"))
+        and abs(solid["x1"] - 100) <= 2
+        and abs(solid["y1"] - 600) <= 2
+        and abs(solid["x2"] - 900) <= 2,
+        f"({solid.get('x1')}, {solid.get('y1')}) -> ({solid.get('x2')}, {solid.get('y2')})",
+    )
+
+    # THE round trip. Before this task a deck containing panels rebuilt to
+    # "image file does not exist" - the PNGs lived in a temp dir long gone.
+    await pres.close_presentation(doc_name=doc, should_save=False)
+    described["save_path"] = str(rt_key)
+    described["title"] = "phase9-stroke-rt"
+    rebuilt = check(
+        "phase9/stroke: the described deck REBUILDS (panels no longer need the temp PNG)",
+        await deck.build_deck(spec=described),
+        "0 element error",
+    )
+    record(
+        "phase9/stroke: rebuild produced a real file",
+        rt_key.exists(),
+        f"{rt_key.name} exists: {rt_key.exists()}",
+    )
+    if rt_key.exists():
+        rt_img, rt_scale = await render_slide(
+            export, 1, "phase9-stroke-rt", 1920, doc_name="phase9-stroke-rt.key"
+        )
+        if rt_img is not None and img is not None:
+            before = at(img, scale, 350, 250)
+            after = at(rt_img, rt_scale, 350, 250)
+            record(
+                "phase9/stroke: RENDERED the rebuilt deck draws the same panel colour",
+                near(before, after, tol=12),
+                f"original={before} rebuilt={after}",
+            )
+        await pres.close_presentation(doc_name="phase9-stroke-rt.key", should_save=False)
+    assert rebuilt is not None
+
+
 async def check_read_fidelity(pres, content, objects, export, deck):
     """PHASE 9 Tasks 4 + 6 — what describe_deck can now SEE.
 
@@ -2237,6 +2399,7 @@ async def main():
     check("close rescued doc", await pres.close_presentation(should_save=False))
 
     await check_index_contract(pres, slides, content, export, objects, deck)
+    await check_styled_strokes(pres, objects, export, deck)
     await check_read_fidelity(pres, content, objects, export, deck)
     await check_describe_at_scale(pres, deck)
     await check_document_resolution(pres, slides, content, export, objects)
