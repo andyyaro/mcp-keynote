@@ -175,6 +175,31 @@ async def main():
     # clear_slide on the duplicated slide 3
     check("clear_slide(3)", await content.clear_slide(3), "Cleared slide 3")
 
+    # --- phantom text item regression (field test 8.3) ---
+    # Keynote surfaces the default title/body placeholder objects as extra
+    # "text items" (hidden ones as 0x0 empties); five adds must report exactly
+    # five items, none of them empty.
+    check("add_slide(blank, for leak check)", await slides.add_slide(), "Added slide #4")
+    await content.add_text_box(4, "one", x=50, y=50)
+    await content.add_title(4, "two", x=50, y=150)
+    await content.add_subtitle(4, "three", x=50, y=250)
+    await content.add_code_block(4, "four = 4", x=50, y=350)
+    await content.add_quote(4, "five", x=50, y=450)
+    leak_report = text_of(await content.get_slide_content(4))
+    entries = [e for e in leak_report.split("|||") if e.startswith("TEXT:")]
+    empty_entries = [e for e in entries if e.split(":::")[1] == ""]
+    record(
+        "five adds -> exactly five text items",
+        "text_items:5" in leak_report and len(entries) == 5,
+        leak_report[:160],
+    )
+    record("no empty phantom entries reported", not empty_entries, str(empty_entries)[:120])
+    # clear_slide must remove all five real items and still report zero
+    check("clear_slide(4)", await content.clear_slide(4), "Cleared slide 4")
+    cleared = text_of(await content.get_slide_content(4))
+    record("clear_slide leaves zero text items", "text_items:0" in cleared, cleared[:100])
+    check("delete leak-check slide", await slides.delete_slide(4), "Deleted slide 4")
+
     # --- export tools ---
     shot = SCRATCH / "slide2.png"
     check("screenshot_slide(2)", await export.screenshot_slide(2, str(shot)), "Captured")

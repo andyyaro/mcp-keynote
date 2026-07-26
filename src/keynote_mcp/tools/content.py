@@ -968,15 +968,50 @@ class ContentTools:
                     tell application "Keynote"
                         {_RESOLVE_DOC}
                         tell slide {slide_number} of targetDoc
-                            set textCount to count of text items
+                            set rawTextCount to count of text items
                             set imageCount to count of images
                             set shapeCount to count of shapes
                             set tableCount to count of tables
 
-                            set output to "text_items:" & textCount & "|images:" & imageCount ¬
+                            -- Keynote counts the slide's default title/body
+                            -- placeholder objects among "text items" even when
+                            -- hidden (0x0 phantom entries), and counts them
+                            -- TWICE when showing (in z-order and again
+                            -- trailing). Report only entries a caller can see
+                            -- and address; their i stays valid for
+                            -- edit_text_item / move_element / delete_element.
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item
+                            end try
+                            try
+                                set defB to default body item
+                            end try
+                            set titleShown to title showing
+                            set bodyShown to body showing
+                            set seenTitle to false
+                            set seenBody to false
+                            set realIndices to {{}}
+                            repeat with i from 1 to rawTextCount
+                                set ti to text item i
+                                set phantom to false
+                                if defT is not missing value and ti is defT then
+                                    if seenTitle or (not titleShown) then set phantom to true
+                                    set seenTitle to true
+                                else if defB is not missing value and ti is defB then
+                                    if seenBody or (not bodyShown) then set phantom to true
+                                    set seenBody to true
+                                end if
+                                if not phantom then set end of realIndices to i
+                            end repeat
+
+                            set output to "text_items:" & (count of realIndices) & ¬
+                                "|images:" & imageCount ¬
                                 & "|shapes:" & shapeCount & "|tables:" & tableCount
 
-                            repeat with i from 1 to textCount
+                            repeat with idx in realIndices
+                                set i to idx as integer
                                 set ti to text item i
                                 set pos to position of ti
                                 set output to output & "|||TEXT:" & i & ":::" & ¬
@@ -1231,17 +1266,30 @@ class ContentTools:
                                 delete shape i
                             end repeat
 
-                            -- Delete text items from highest to lowest, skipping
-                            -- theme placeholders (empty text at 0,0)
+                            -- Delete text items from highest to lowest, keeping
+                            -- the theme's default title/body placeholder objects
+                            -- (Keynote also surfaces them as phantom trailing
+                            -- "text items"; deleting those entries would destroy
+                            -- the placeholders)
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item
+                            end try
+                            try
+                                set defB to default body item
+                            end try
                             set textCount to count of text items
                             repeat with i from textCount to 1 by -1
                                 set ti to text item i
-                                set pos to position of ti
-                                set txt to object text of ti as text
-                                if not ((item 1 of pos) is 0 and ¬
-                                        (item 2 of pos) is 0 and txt is "") then
-                                    delete ti
+                                set keepIt to false
+                                if defT is not missing value and ti is defT then
+                                    set keepIt to true
                                 end if
+                                if defB is not missing value and ti is defB then
+                                    set keepIt to true
+                                end if
+                                if not keepIt then delete ti
                             end repeat
                         end tell
                     end tell

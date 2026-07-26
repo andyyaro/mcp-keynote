@@ -188,10 +188,33 @@ class TestContentTools:
         assert "set opacity of newShape to 100" in script
 
     async def test_clear_slide_preserves_placeholders(self, content_tools, mock_subprocess_run):
+        # Placeholders are identified by object identity (default title/body
+        # item), NOT by the old empty-text-at-0,0 heuristic: themed layouts
+        # position their placeholders away from 0,0, and Keynote surfaces the
+        # placeholder objects as phantom trailing "text items" whose deletion
+        # would destroy them.
         await content_tools.clear_slide(2)
         script = last_script(mock_subprocess_run)
-        assert "(item 1 of pos) is 0" in script
+        assert "default title item" in script
+        assert "default body item" in script
+        assert "(item 1 of pos) is 0" not in script
         assert "delete image" not in script
+
+    async def test_get_slide_content_filters_phantom_placeholder_entries(
+        self, content_tools, mock_subprocess_run
+    ):
+        # count of text items includes the default title/body placeholder
+        # objects even when hidden (and twice when showing); the report must
+        # enumerate only the real entries while keeping their live indices.
+        mock_subprocess_run.return_value.stdout = "text_items:1|images:0|shapes:0|tables:0"
+        await content_tools.get_slide_content(2)
+        script = last_script(mock_subprocess_run)
+        assert "default title item" in script
+        assert "default body item" in script
+        assert "title showing" in script
+        assert "count of realIndices" in script
+        assert '"text_items:" & rawTextCount' not in script
+        assert '"text_items:" & textCount' not in script
 
     async def test_build_in_selects_slide_first(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "Window"
