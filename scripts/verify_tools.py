@@ -267,6 +267,28 @@ async def main():
     check("export_pdf", await export.export_pdf(str(pdf)), "Exported PDF")
     record("pdf file exists", pdf.exists() and pdf.stat().st_size > 1000, str(pdf))
 
+    # --- screenshot honesty (field test 8.5): unfilled placeholders are
+    # omitted from the export; the tool must say so ---
+    check("add_slide(for screenshot honesty)", await slides.add_slide(), "Added slide #4")
+    await content.set_slide_content(4, title="")  # enable title placeholder, leave unfilled
+    shot_ph = SCRATCH / "slide4-placeholder.png"
+    honesty = check(
+        "screenshot_slide(unfilled placeholder)",
+        await export.screenshot_slide(4, str(shot_ph)),
+        "Captured",
+    )
+    record(
+        "screenshot reports the omitted placeholder",
+        "1 unfilled placeholder" in honesty and "NOT rendered" in honesty,
+        honesty[:160],
+    )
+    record(
+        "screenshot of filled slide reports faithful view",
+        "matches the editor view" in text_of(await export.screenshot_slide(2, str(shot))),
+        "",
+    )
+    check("delete honesty slide", await slides.delete_slide(4), "Deleted slide 4")
+
     # --- build animation tools (UI scripting, slow) ---
     check("select_slide(2) pre-build", await slides.select_slide(2))
     check(

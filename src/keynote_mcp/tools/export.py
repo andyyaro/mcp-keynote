@@ -24,6 +24,50 @@ _RESOLVE_DOC = """
 # Exports of large decks can outlive the default osascript timeout.
 _EXPORT_TIMEOUT = 120.0
 
+# Counts visible text boxes with empty text on one slide - exactly what
+# Keynote's image export silently omits. Skips the phantom surfacings of the
+# default title/body placeholder objects (see content.get_slide_content).
+_COUNT_UNFILLED_SCRIPT = """
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {resolve_doc}
+                        tell slide {slide_number} of targetDoc
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item
+                            end try
+                            try
+                                set defB to default body item
+                            end try
+                            set titleShown to title showing
+                            set bodyShown to body showing
+                            set seenTitle to false
+                            set seenBody to false
+                            set emptyCount to 0
+                            repeat with i from 1 to (count of text items)
+                                set ti to text item i
+                                set phantom to false
+                                if defT is not missing value and ti is defT then
+                                    if seenTitle or (not titleShown) then set phantom to true
+                                    set seenTitle to true
+                                else if defB is not missing value and ti is defB then
+                                    if seenBody or (not bodyShown) then set phantom to true
+                                    set seenBody to true
+                                end if
+                                if not phantom then
+                                    if (object text of ti as text) is "" then
+                                        set emptyCount to emptyCount + 1
+                                    end if
+                                end if
+                            end repeat
+                            return emptyCount
+                        end tell
+                    end tell
+                end run
+"""
+
 
 class ExportTools:
     """Export and screenshot tools class"""
@@ -36,7 +80,12 @@ class ExportTools:
         return [
             Tool(
                 name="screenshot_slide",
-                description="Export a single slide as an image file (PNG or JPEG)",
+                description=(
+                    "Export a single slide as an image file (PNG or JPEG). NOT a "
+                    "faithful editor view: Keynote's export omits unfilled placeholder "
+                    "text boxes, so the image can look clean while the editor still "
+                    "shows empty boxes. The response reports how many were omitted."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -131,10 +180,34 @@ class ExportTools:
                     )
                 ]
             shutil.move(generated[0], output_path)
+
+            # Honesty check: the export silently omits unfilled placeholder
+            # boxes, so tell the caller how far the image is from the editor.
+            try:
+                unfilled = int(
+                    self.runner.run(
+                        _COUNT_UNFILLED_SCRIPT.format(
+                            resolve_doc=_RESOLVE_DOC, slide_number=slide_number
+                        ),
+                        doc_name,
+                    )
+                )
+            except Exception:
+                unfilled = -1
+            if unfilled > 0:
+                note = (
+                    f" WARNING: {unfilled} unfilled placeholder text box(es) on this "
+                    "slide are NOT rendered in the export - the editor shows them, "
+                    "the image does not."
+                )
+            elif unfilled == 0:
+                note = " No unfilled placeholders; the export matches the editor view."
+            else:
+                note = " (Unfilled-placeholder check unavailable for this slide.)"
             return [
                 TextContent(
                     type="text",
-                    text=f"Captured screenshot of slide {slide_number} to: {output_path}",
+                    text=f"Captured screenshot of slide {slide_number} to: {output_path}.{note}",
                 )
             ]
         except Exception as e:

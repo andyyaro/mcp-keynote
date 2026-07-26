@@ -294,6 +294,45 @@ class TestExportTools:
         assert "Captured screenshot" in result[0].text
         assert out.exists()
 
+    async def test_screenshot_warns_about_omitted_placeholders(
+        self, export_tools, mock_subprocess_run, tmp_path
+    ):
+        # Keynote's export omits unfilled placeholder boxes; a screenshot that
+        # looks clean can hide placeholder boxes the editor still shows.
+        out = tmp_path / "out.png"
+
+        def fake_run(cmd, **kwargs):
+            import pathlib
+
+            script = kwargs.get("input", "")
+            if "emptyCount" in script:
+                return subprocess.CompletedProcess(cmd, 0, "2", "")
+            pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        mock_subprocess_run.side_effect = fake_run
+        result = await export_tools.screenshot_slide(1, str(out))
+        assert "2 unfilled placeholder" in result[0].text
+        assert "NOT rendered" in result[0].text
+
+    async def test_screenshot_zero_placeholders_confirms_faithful(
+        self, export_tools, mock_subprocess_run, tmp_path
+    ):
+        out = tmp_path / "out.png"
+
+        def fake_run(cmd, **kwargs):
+            import pathlib
+
+            script = kwargs.get("input", "")
+            if "emptyCount" in script:
+                return subprocess.CompletedProcess(cmd, 0, "0", "")
+            pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        mock_subprocess_run.side_effect = fake_run
+        result = await export_tools.screenshot_slide(1, str(out))
+        assert "matches the editor view" in result[0].text
+
     async def test_export_pdf_uses_posix_file(self, export_tools, mock_subprocess_run, tmp_path):
         await export_tools.export_pdf(str(tmp_path / "deck.pdf"))
         assert "as PDF" in last_script(mock_subprocess_run)
