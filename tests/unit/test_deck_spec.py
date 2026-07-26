@@ -6,6 +6,7 @@ from keynote_mcp.tools.deck import (
     _parse_attrs,
     _parse_cell,
     markdown_to_spec,
+    tolerated_keys,
     validate_spec,
 )
 from keynote_mcp.utils.styles import BUILTIN_STYLES
@@ -436,3 +437,354 @@ class TestParseCell:
 
     def test_text_stays_text(self):
         assert _parse_cell("abc") == "abc"
+
+
+class TestUnknownKeysAreRejected:
+    """Unknown keys in the spec were silently ignored at ALL THREE levels.
+
+    Same failure class 4.0.0 fixed at the tool-argument boundary, still live in
+    the largest model-authored input the server takes: a deck with a mistyped
+    `layuot`, an invented `fill_color` and a plausible `font` built with zero
+    errors, and only the render showed it.
+    """
+
+    def test_unknown_deck_key(self):
+        errors = validate_spec({"widht": 1920, "slides": [{"elements": []}]})
+        assert any("spec.widht" in e and "Did you mean 'width'" in e for e in errors)
+        assert any("the deck accepts:" in e for e in errors)
+
+    def test_unknown_slide_key(self):
+        errors = validate_spec({"slides": [{"layuot": "Blank", "elements": []}]})
+        assert any("slides[0].layuot" in e and "Did you mean 'layout'" in e for e in errors)
+        assert any("a slide accepts:" in e for e in errors)
+
+    def test_unknown_element_key(self):
+        errors = validate_spec(_element({"type": "text", "text": "x", "centred": True}))
+        assert any(".centred" in e and "Did you mean 'centered'" in e for e in errors)
+        assert any("an element of type 'text' accepts:" in e for e in errors)
+
+    def test_unknown_transition_key(self):
+        errors = validate_spec(
+            {"slides": [{"elements": [], "transition": {"effect": "push", "speed": 2}}]}
+        )
+        assert any("transition.speed" in e for e in errors)
+
+    def test_invented_capability_gets_the_real_reason(self):
+        """Not a typo - a capability Keynote does not have. Says so, and where
+        to go instead, from the same table the argument boundary uses."""
+        errors = validate_spec(_element({"type": "text", "text": "x", "fill_color": "#f00"}))
+        joined = "\n".join(errors)
+        assert "not writable by AppleScript" in joined
+        assert "add_colored_panel" in joined
+
+    def test_key_valid_on_another_type_is_still_rejected(self):
+        """`centered` does something on a title and nothing on an image. Being
+        a real key SOMEWHERE is what makes this one hard to notice."""
+        errors = validate_spec(_element({"type": "image", "path": __file__, "centered": True}))
+        assert any(".centered" in e for e in errors)
+        assert not validate_spec(_element({"type": "title", "text": "x", "centered": True}))
+
+    def test_good_spec_still_validates(self):
+        assert validate_spec({"title": "t", "slides": [{"elements": []}]}) == []
+
+
+# One realistic describe_deck payload, key-for-key as _describe_slides emits it:
+# every read-only field, every element class, the placeholder in both of its
+# reported forms. This is the spec format's own output, so it MUST validate -
+# strict unknown-key rejection is worthless if it rejects the round trip.
+DESCRIBED = {
+    "title": "deck",
+    "theme": "Black",
+    "width": 1920,
+    "height": 1080,
+    "slide_count": 1,
+    "not_reported": {"z_order": "NOT reported and NOT recoverable."},
+    "slides": [
+        {
+            "slide": 1,
+            "layout": "Title & Subtitle",
+            "skipped": True,
+            "transition": {
+                "effect": "push",
+                "duration": 1.0,
+                "delay": 0.0,
+                "automatic": False,
+            },
+            "notes": "say hello",
+            "title": "Heading",
+            "groups": {"count": 2, "note": "made by hand"},
+            "elements": [
+                {
+                    "type": "text",
+                    "element_class": "text item",
+                    "index": 1,
+                    "placeholder": "title",
+                    "text": "Heading",
+                    "x": 100,
+                    "y": 100,
+                    "width": 800,
+                    "height": 90,
+                    "font_name": "LibreCaslonCondensed-Medium",
+                    "font_family": "LibreCaslon-Condensed",
+                    "font_weight": "Medium",
+                    "font_style": "Normal",
+                    "font_size": 69,
+                    "color": "#830041",
+                    "color_65535": "33410,0,16705",
+                    "rotation": 0,
+                    "opacity": 100,
+                    "fill_type": "no fill",
+                    "runs": [
+                        {"start": 1, "end": 4, "color": "#000000", "color_65535": "0,0,0"},
+                        {"start": 5, "end": 7, "color": "#830041", "color_65535": "33410,0,16705"},
+                    ],
+                },
+                {
+                    "type": "panel",
+                    "element_class": "image",
+                    "index": 1,
+                    "rendered": True,
+                    "description": "colored panel",
+                    "x": 0,
+                    "y": 0,
+                    "width": 400,
+                    "height": 200,
+                    "color": "#EFA3A0",
+                    "radius": 12,
+                    "opacity": 100,
+                    "rotation": 0,
+                },
+                {
+                    "type": "styled_line",
+                    "element_class": "image",
+                    "index": 2,
+                    "rendered": True,
+                    "description": "styled line (dotted, #000000)",
+                    "x1": 10,
+                    "y1": 10,
+                    "x2": 200,
+                    "y2": 10,
+                    "color": "#000000",
+                    "stroke_width": 2.0,
+                    "dash": "dotted",
+                    "start_arrow": False,
+                    "end_arrow": True,
+                },
+                {
+                    "type": "shape",
+                    "element_class": "shape",
+                    "index": 1,
+                    "x": 5,
+                    "y": 5,
+                    "width": 50,
+                    "height": 50,
+                    "opacity": 60,
+                    "rotation": 45,
+                    "fill_type": "color fill",
+                    "reflection_showing": False,
+                    "locked": False,
+                },
+                {
+                    "type": "table",
+                    "element_class": "table",
+                    "index": 1,
+                    "header_row": True,
+                    "header_column": False,
+                    "x": 0,
+                    "y": 300,
+                    "width": 600,
+                    "height": 200,
+                    "data": [["a", "b"], [1, "=SUM(A1)"]],
+                },
+                {
+                    "type": "line",
+                    "element_class": "line",
+                    "index": 1,
+                    "x1": 1,
+                    "y1": 2,
+                    "x2": 3,
+                    "y2": 4,
+                    "rotation": 0,
+                },
+            ],
+        }
+    ],
+}
+
+
+class TestDescribeDeckOutputRebuilds:
+    def test_a_full_description_validates(self):
+        """The live harness found two keys this list was missing - a decoded
+        panel carries `rendered` and the image `description` Keynote holds for
+        it - and the failure mode was the round trip refusing its own output."""
+        assert validate_spec(DESCRIBED) == []
+
+    def test_chart_geometry_only_is_still_rejected(self):
+        """describe_deck returns chart_type null because Keynote exposes no
+        chart data. Rebuilding as-is must FAIL, not build an empty chart."""
+        spec = {
+            "slides": [
+                {
+                    "elements": [
+                        {
+                            "type": "chart",
+                            "element_class": "chart",
+                            "index": 1,
+                            "chart_type": None,
+                            "note": "chart data is not readable via AppleScript",
+                            "x": 0,
+                            "y": 0,
+                            "width": 10,
+                            "height": 10,
+                        }
+                    ]
+                }
+            ]
+        }
+        errors = validate_spec(spec)
+        assert any("chart_type" in e for e in errors)
+
+    def test_unwritable_keys_are_reported_not_dropped(self):
+        """Tolerating a key so the round trip works is only honest if the
+        build says which ones it could not write."""
+        reported = tolerated_keys(DESCRIBED)
+        assert "rotation" in reported
+        assert "locked" in reported or "reflection_showing" in reported
+        assert "groups" in reported
+
+    def test_a_clean_spec_reports_nothing_unwritable(self):
+        assert tolerated_keys({"title": "t", "slides": [{"elements": []}]}) == []
+
+
+class TestRunAuthoring:
+    """build_deck could not author runs, so a tri-colour title needed three
+    follow-up style_text_range calls and a described deck lost its runs on
+    rebuild - describe->build fidelity being the point of the format."""
+
+    def _title(self, runs, text="Building A Secure Client Data Hub"):
+        return _element({"type": "title", "text": text, "runs": runs})
+
+    def test_runs_validate(self):
+        assert (
+            validate_spec(
+                self._title(
+                    [
+                        {"start": 1, "end": 10, "color": "#000000"},
+                        {"start": 12, "end": 17, "color": "#830041"},
+                        {"start": 19, "end": 33, "color": "#F09490"},
+                    ]
+                )
+            )
+            == []
+        )
+
+    def test_run_past_the_end_of_the_text_is_rejected(self):
+        """`characters 5 thru 400` is a runtime error one element deep in a
+        batched build. Caught here so nothing is created."""
+        errors = validate_spec(self._title([{"start": 5, "end": 400, "color": "#000"}]))
+        assert any("but the text is 33 character(s) long" in e for e in errors)
+
+    def test_backwards_run_is_rejected(self):
+        errors = validate_spec(self._title([{"start": 9, "end": 2, "color": "#000"}]))
+        assert any("runs[0].end" in e for e in errors)
+
+    def test_run_that_styles_nothing_is_rejected(self):
+        errors = validate_spec(self._title([{"start": 1, "end": 4}]))
+        assert any("styles nothing" in e for e in errors)
+
+    def test_unknown_run_key_is_rejected(self):
+        errors = validate_spec(self._title([{"start": 1, "end": 4, "bold": True}]))
+        assert any("a text run" in e for e in errors)
+
+    def test_describe_deck_run_shape_is_accepted_verbatim(self):
+        """The read side reports font_family/weight/style and color_65535 next
+        to each run. They are derived, so they must not fail validation."""
+        assert (
+            validate_spec(
+                self._title(
+                    [
+                        {
+                            "start": 1,
+                            "end": 8,
+                            "font_name": "LibreCaslonCondensed-Medium",
+                            "font_family": "LibreCaslon-Condensed",
+                            "font_weight": "Medium",
+                            "font_style": "Normal",
+                            "font_size": 69.0,
+                            "color": "#830041",
+                            "color_65535": "33410,0,16705",
+                        }
+                    ]
+                )
+            )
+            == []
+        )
+
+    def test_runs_only_on_text_bearing_types(self):
+        errors = validate_spec(_element({"type": "image", "path": __file__, "runs": []}))
+        assert any(".runs" in e for e in errors)
+
+
+class TestRunFragment:
+    def _lines(self, el, style=PLAIN):
+        from keynote_mcp.tools.deck import _element_fragment
+        from keynote_mcp.tools.fragments import Argv
+
+        argv = Argv()
+        argv.ref("Doc")
+        return _element_fragment(el, "s1.e0", argv, style, "/tmp"), argv
+
+    def test_runs_are_written_after_the_text_is_reset_and_before_position(self):
+        """Both halves matter: re-setting `object text` discards every run, and
+        a run that changes size re-triggers auto-fit, which keeps the box's
+        vertical CENTRE fixed - so a position set earlier drifts."""
+        lines, _ = self._lines(
+            {
+                "type": "title",
+                "text": "Secure Data Hub",
+                "x": 100,
+                "y": 461,
+                "font_size": 69,
+                "runs": [{"start": 8, "end": 11, "color": "#830041", "font_size": 40}],
+            }
+        )
+        reset = max(i for i, ln in enumerate(lines) if ln.startswith("set object text of newItem"))
+        run = next(i for i, ln in enumerate(lines) if "characters 8 thru 11" in ln)
+        position = next(i for i, ln in enumerate(lines) if ln.startswith("set position of newItem"))
+        assert reset < run < position
+
+    def test_colors_are_interpolated_as_validated_numbers(self):
+        lines, _ = self._lines(
+            {"type": "text", "text": "abcdef", "runs": [{"start": 1, "end": 3, "color": "#830041"}]}
+        )
+        assert any(
+            "set color of characters 1 thru 3 of object text of newItem to {33667, 0, 16705}" in ln
+            for ln in lines
+        )
+
+    def test_a_quote_shifts_offsets_past_the_curly_quote_it_adds(self):
+        """The builder wraps a quote in typographic quotes, so the caller's
+        character 1 is Keynote's character 2. Runs address the text the caller
+        wrote."""
+        lines, _ = self._lines(
+            {
+                "type": "quote",
+                "text": "abcdef",
+                "runs": [{"start": 1, "end": 6, "color": "#000000"}],
+            }
+        )
+        assert any("characters 2 thru 7" in ln for ln in lines)
+
+    def test_palette_names_resolve_inside_a_run(self):
+        style = BUILTIN_STYLES["sdh"]
+        name = sorted(style.palette)[0]
+        lines, _ = self._lines(
+            {
+                "type": "text",
+                "text": "abcdef",
+                "runs": [{"start": 1, "end": 3, "color": f"@{name}"}],
+            },
+            style,
+        )
+        assert any("set color of characters 1 thru 3" in ln for ln in lines)
+        assert not any("@" in ln for ln in lines)

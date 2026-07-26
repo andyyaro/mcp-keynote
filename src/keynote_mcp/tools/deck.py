@@ -28,6 +28,7 @@ chart data to read).
 
 from __future__ import annotations
 
+import difflib
 import json
 import math
 import os
@@ -41,6 +42,7 @@ from ..utils import (
     SESSION,
     AppleScriptRunner,
     ParameterError,
+    explain_unsupported,
     parse_color,
     rgb65535_to_hex,
     split_font_name,
@@ -157,6 +159,240 @@ _UNREADABLE_NOTE: dict[str, str] = {
         "z-order is creation order and AppleScript cannot read or change it."
     ),
 }
+
+
+# --------------------------------------------------------------------------
+# The spec's key vocabulary
+# --------------------------------------------------------------------------
+#
+# build_deck's `spec` is by far the largest model-authored input this server
+# takes, and every unknown key in it was silently ignored at all three levels -
+# deck, slide and element. That is the SAME failure 4.0.0 fixed at the
+# tool-argument boundary, where a dropped `fill_color` was reported as success
+# and read as "the server can set shape fill". Inside a spec it is worse: a
+# 35-slide deck builds with zero errors while a mistyped `layuot`, an invented
+# `fill_color` and a plausible-but-wrong `font` do nothing, and the render is
+# the only place it shows.
+#
+# Three categories, deliberately distinct:
+#
+#   APPLIED    - the key does something. Unknown-key errors list these.
+#   TOLERATED  - describe_deck EMITS it but build_deck cannot apply it (Keynote
+#                has no write route, or it is pure addressing metadata). These
+#                must not fail validation or `describe_deck -> build_deck`, the
+#                whole point of the format, would break on its own output. They
+#                are reported back in the build result instead of vanishing.
+#   UNKNOWN    - everything else. Hard error, nothing is created.
+
+_DECK_KEYS = frozenset(
+    {"title", "theme", "style", "width", "height", "save_path", "on_exists", "slides"}
+)
+# describe_deck's own envelope, so its output feeds straight back in.
+_DECK_TOLERATED = frozenset(
+    {"slide_count", "not_reported", "note", "detail", "slide_range", "element_types"}
+)
+
+_SLIDE_KEYS = frozenset({"layout", "title", "body", "notes", "skipped", "transition", "elements"})
+_SLIDE_TOLERATED = frozenset({"slide", "groups"})
+
+_TRANSITION_KEYS = frozenset({"effect", "duration", "delay", "automatic"})
+
+# Accepted on an element of ANY type: the flow engine and the named-layout
+# vocabulary handle these generically.
+_ELEMENT_COMMON = frozenset(
+    {"type", "x", "y", "width", "height", "zone", "module", "index", "column"}
+)
+# Read-back detail describe_deck attaches to every element.
+_ELEMENT_TOLERATED = frozenset(
+    {
+        "element_class",
+        "placeholder",
+        "rotation",
+        "fill_type",
+        "color_65535",
+        "font_family",
+        "font_weight",
+        "font_style",
+        "note",
+        # decode_rendered_asset stamps this on a panel/styled_line it recovered
+        # from a PNG filename, so a caller can tell a rendered workaround from
+        # an image the user placed. It is a marker, not an input.
+        "rendered",
+    }
+)
+
+_TEXTUAL = ("title", "subtitle", "text", "code", "quote")
+
+# Per type, the keys that DO something. `centered`, `role`, `font_name`,
+# `font_size` and `color` are deliberately NOT common: `centered` on an image
+# and `role` on a table are silently ignored by the builder, which is exactly
+# the class of mistake this table exists to name.
+_ELEMENT_KEYS: dict[str, frozenset[str]] = {
+    **{
+        t: frozenset({"text", "runs", "font_name", "font_size", "color", "role", "centered"})
+        for t in _TEXTUAL
+    },
+    "bullets": frozenset({"items", "font_name", "font_size", "color"}),
+    "numbered": frozenset({"items", "font_name", "font_size", "color"}),
+    "image": frozenset({"path", "description"}),
+    "panel": frozenset({"color", "radius", "opacity"}),
+    "shape": frozenset({"text", "opacity"}),
+    "table": frozenset(
+        {
+            "data",
+            "header_row",
+            "header_column",
+            "column_widths",
+            "font_name",
+            "font_size",
+        }
+    ),
+    "chart": frozenset({"chart_type", "row_names", "column_names", "data", "group_by"}),
+    "line": frozenset({"x1", "y1", "x2", "y2"}),
+    "styled_line": frozenset(
+        {
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "connector",
+            "color",
+            "stroke_width",
+            "dash",
+            "start_arrow",
+            "end_arrow",
+            "opacity",
+        }
+    ),
+}
+
+# Per type, what describe_deck reports that build_deck cannot write back.
+_ELEMENT_TYPE_TOLERATED: dict[str, frozenset[str]] = {
+    **{t: frozenset({"opacity"}) for t in _TEXTUAL},
+    "image": frozenset({"opacity"}),
+    # A rendered panel/stroke is an IMAGE underneath, so describe_deck reports
+    # the alt text Keynote holds for it. The builder writes its own
+    # ("colored panel", "styled line (dotted, #000000)"), so it is not an
+    # input - but it must round-trip.
+    "panel": frozenset({"description"}),
+    "styled_line": frozenset({"description"}),
+    "shape": frozenset({"reflection_showing", "locked"}),
+    "chart": frozenset({"chart_type"}),  # comes back null; must be re-supplied
+}
+
+
+# Near-misses where difflib either ties or misses outright, and the intent is
+# unambiguous. `font` scores identically against `font_name` and `font_size`,
+# and the wrong half of that coin flip sends a model to change the size.
+_KEY_ALIASES: dict[str, str] = {
+    "font": "font_name",
+    "typeface": "font_name",
+    "font_face": "font_name",
+    "size": "font_size",
+    "fontsize": "font_size",
+    "text_size": "font_size",
+    "colour": "color",
+    "text_color": "color",
+    "font_color": "color",
+    "src": "path",
+    "file": "path",
+    "image": "path",
+    "image_path": "path",
+    "url": "path",
+    "content": "text",
+    "label": "text",
+    "value": "text",
+    "caption": "text",
+    "body": "text",
+    "bullets": "items",
+    "list": "items",
+    "rows": "data",
+    "cells": "data",
+    "speaker_notes": "notes",
+    "presenter_notes": "notes",
+    "name": "title",
+    "slides_": "slides",
+}
+
+
+def _unknown_keys(
+    node: dict[str, Any],
+    accepted: frozenset[str],
+    tolerated: frozenset[str],
+    path: str,
+    what: str,
+    errors: list[str],
+) -> None:
+    """Reject keys that are neither applied nor a known read-back field.
+
+    The message names what IS accepted here, and suggests a near miss, because
+    the two ways a spec key goes wrong are a typo and a plausible invention -
+    and a model cannot tell which it made from "ignored".
+    """
+    unknown = sorted(set(node) - accepted - tolerated)
+    if not unknown:
+        return
+    for key in unknown:
+        # An invented name for a capability Keynote does not have gets the real
+        # explanation and the right alternative, exactly as at the tool-argument
+        # boundary - the two share one table (utils/unsupported.py). Anything
+        # else is treated as a typo and matched against the accepted keys.
+        explained = explain_unsupported(key, argument_boundary=False)
+        if explained:
+            reason, alt = explained
+            detail = f" Not a capability of Keynote's AppleScript ({reason})."
+            if alt:
+                detail += f" Use {alt}."
+        else:
+            alias = _KEY_ALIASES.get(key.lower())
+            close = (
+                [alias]
+                if alias in accepted
+                else difflib.get_close_matches(key, sorted(accepted), n=1, cutoff=0.6)
+            )
+            detail = f" Did you mean {close[0]!r}?" if close else ""
+        errors.append(_err(f"{path}.{key}", f"unknown key for {what}.{detail}"))
+    errors.append(
+        _err(path, f"{what} accepts: {', '.join(sorted(accepted))}. Nothing was created.")
+    )
+
+
+# Tolerated keys that mean the rebuild LOSES something, as opposed to the ones
+# that are merely derived or re-derivable. `font_family`/`font_weight`/
+# `font_style` come FROM `font_name` and `color_65535` from `color`, both of
+# which the builder does apply, so nothing is lost by ignoring them; a marker
+# (`rendered`), a description the builder writes itself, and a `placeholder`
+# that IS rebuilt (as slide.title/body) are likewise not losses. Listing those
+# would bury the four entries below in noise on every single round trip.
+_LOSSY_ELEMENT_KEYS = frozenset({"rotation", "opacity", "reflection_showing", "locked"})
+
+
+def tolerated_keys(spec: dict[str, Any]) -> list[str]:
+    """Keys a valid spec carries that the BUILDER genuinely will not apply.
+
+    describe_deck reports rotation, per-element opacity, shape lock/reflection,
+    hand-made groups and null chart data that Keynote gives no write route for.
+    Accepting them is what keeps `describe_deck -> build_deck` working on its
+    own output; REPORTING them is what keeps that from being a silent
+    downgrade - which is the same defect this release fixed one level up.
+    """
+    found: set[str] = set()
+    for slide in spec.get("slides", []):
+        if not isinstance(slide, dict):
+            continue
+        if "groups" in slide:
+            found.add("groups")
+        for el in slide.get("elements", []) or []:
+            if not isinstance(el, dict):
+                continue
+            hits = set(el) & _LOSSY_ELEMENT_KEYS
+            if str(el.get("type")) == "panel":
+                # A panel's opacity IS applied - it is rendered into the PNG.
+                hits.discard("opacity")
+            if el.get("type") == "chart" and el.get("chart_type") is None:
+                found.add("chart_type")
+            found |= hits
+    return sorted(found)
 
 
 def _set_color(node: dict[str, Any], triple: str) -> None:
@@ -339,6 +575,66 @@ def _validate_named_refs(el: dict[str, Any], path: str, errors: list[str], style
         )
 
 
+_RUN_KEYS = frozenset({"start", "end", "font_name", "font_size", "color", "role"})
+# describe_deck reports these beside each run; they are derived, not settable.
+_RUN_TOLERATED = frozenset({"font_family", "font_weight", "font_style", "color_65535"})
+
+
+def _validate_runs(el: dict[str, Any], path: str, errors: list[str], style: Any) -> None:
+    """Check a text element's ``runs`` against the text they address.
+
+    Bounds are checked HERE rather than in AppleScript because `characters 5
+    thru 40` of a 12-character string is a runtime error inside the batched
+    session - it would fail one element deep in a built deck, which is exactly
+    what validate-all-then-build exists to avoid.
+    """
+    runs = el.get("runs")
+    if runs is None:
+        return
+    if not isinstance(runs, list) or not runs:
+        errors.append(_err(f"{path}.runs", "must be a non-empty array of run objects"))
+        return
+    length = len(str(el.get("text", "")))
+    for k, run in enumerate(runs):
+        rpath = f"{path}.runs[{k}]"
+        if not isinstance(run, dict):
+            errors.append(_err(rpath, "run must be an object"))
+            continue
+        _unknown_keys(run, _RUN_KEYS, _RUN_TOLERATED, rpath, "a text run", errors)
+        start, end = run.get("start"), run.get("end")
+        if not isinstance(start, int) or isinstance(start, bool) or start < 1:
+            errors.append(_err(f"{rpath}.start", "must be an integer >= 1 (1-based, inclusive)"))
+            continue
+        if not isinstance(end, int) or isinstance(end, bool) or end < start:
+            errors.append(_err(f"{rpath}.end", f"must be an integer >= start ({start}), inclusive"))
+            continue
+        if end > length:
+            errors.append(
+                _err(
+                    rpath,
+                    f"covers characters {start}-{end} but the text is {length} "
+                    f"character(s) long. Offsets are 1-based and INCLUSIVE, over "
+                    f"the text as you wrote it.",
+                )
+            )
+        _num(run.get("font_size"), f"{rpath}.font_size", errors, minimum=1)
+        if not any(run.get(key) for key in ("font_name", "font_size", "color", "role")):
+            errors.append(
+                _err(
+                    rpath,
+                    "styles nothing: give a run at least one of color/font_name/font_size/role",
+                )
+            )
+        if style is not None:
+            _validate_named_refs(run, rpath, errors, style)
+        color = run.get("color", "")
+        if color and not str(color).startswith("@"):
+            try:
+                parse_color(str(color))
+            except ParameterError as e:
+                errors.append(_err(f"{rpath}.color", str(e)))
+
+
 def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) -> None:
     if not isinstance(el, dict):
         errors.append(_err(path, "element must be an object"))
@@ -349,6 +645,14 @@ def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) 
             _err(path, f"unknown element type {etype!r}; valid: {sorted(_ELEMENT_TYPES)}")
         )
         return
+    _unknown_keys(
+        el,
+        _ELEMENT_COMMON | _ELEMENT_KEYS[str(etype)],
+        _ELEMENT_TOLERATED | _ELEMENT_TYPE_TOLERATED.get(str(etype), frozenset()),
+        path,
+        f"an element of type {etype!r}",
+        errors,
+    )
     for key in ("x", "y", "width", "height", "font_size"):
         _num(el.get(key), f"{path}.{key}", errors, minimum=0)
     if el.get("index") is not None and (
@@ -371,6 +675,8 @@ def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) 
     if etype in ("title", "subtitle", "text", "code", "quote"):
         if not isinstance(el.get("text"), str) or not el.get("text"):
             errors.append(_err(path, f"{etype} needs a non-empty 'text' string"))
+        else:
+            _validate_runs(el, path, errors, style)
     elif etype in ("bullets", "numbered"):
         items = el.get("items")
         if not isinstance(items, list) or not items or not all(isinstance(i, str) for i in items):
@@ -454,6 +760,7 @@ def validate_spec(spec: Any, style: DeckStyle | None = None) -> list[str]:
     errors: list[str] = []
     if not isinstance(spec, dict):
         return ["spec must be a JSON object"]
+    _unknown_keys(spec, _DECK_KEYS, _DECK_TOLERATED, "spec", "the deck", errors)
     slides = spec.get("slides")
     if not isinstance(slides, list) or not slides:
         errors.append("spec.slides must be a non-empty array")
@@ -465,6 +772,7 @@ def validate_spec(spec: Any, style: DeckStyle | None = None) -> list[str]:
         if not isinstance(slide, dict):
             errors.append(_err(path, "slide must be an object"))
             continue
+        _unknown_keys(slide, _SLIDE_KEYS, _SLIDE_TOLERATED, path, "a slide", errors)
         for key in ("title", "body", "notes", "layout"):
             if slide.get(key) is not None and not isinstance(slide[key], str):
                 errors.append(_err(f"{path}.{key}", "must be a string"))
@@ -475,6 +783,14 @@ def validate_spec(spec: Any, style: DeckStyle | None = None) -> list[str]:
             if not isinstance(transition, dict):
                 errors.append(_err(f"{path}.transition", "must be an object"))
             else:
+                _unknown_keys(
+                    transition,
+                    _TRANSITION_KEYS,
+                    frozenset(),
+                    f"{path}.transition",
+                    "a transition",
+                    errors,
+                )
                 effect = transition.get("effect")
                 if effect not in TRANSITION_EFFECTS:
                     errors.append(
@@ -891,6 +1207,38 @@ def _flow_slide(
 # --------------------------------------------------------------------------
 
 
+def _resolve_runs(raw: Any, style: DeckStyle) -> list[dict[str, Any]] | None:
+    """Turn a spec's ``runs`` into what ``text_run_lines`` consumes.
+
+    Resolves each run's colour through the style (so `@brand.maroon` works in a
+    run exactly as it does on an element) and drops the read-only companions
+    describe_deck reports alongside - `font_family`/`font_weight`/`font_style`
+    are DERIVED from `font_name`, and `color_65535` is the same colour `color`
+    already carries. A run that names a `role` takes that type style's font,
+    size and colour, so a spec can say what a run MEANS.
+    """
+    if not raw:
+        return None
+    resolved: list[dict[str, Any]] = []
+    for run in raw:
+        named: dict[str, Any] = dict(style.type_role(str(run["role"]))) if run.get("role") else {}
+        out: dict[str, Any] = {"start": int(run["start"]), "end": int(run["end"])}
+        font = run.get("font_name") or named.get("font")
+        if font:
+            out["font_name"] = str(font)
+        raw_size = run.get("font_size")
+        size = raw_size if raw_size is not None else named.get("size")
+        if size is not None:
+            out["font_size"] = float(size)
+        color = style.resolve_color(str(run.get("color", ""))) or style.resolve_color(
+            str(named.get("color", ""))
+        )
+        if color:
+            out["color_rgb"] = parse_color(color)
+        resolved.append(out)
+    return resolved
+
+
 def _element_fragment(
     el: dict[str, Any], tag: str, argv: Argv, style: DeckStyle, panels_dir: str
 ) -> list[str]:
@@ -913,8 +1261,13 @@ def _element_fragment(
             or getattr(style, f"{role}_color")
         )
         text = el["text"]
+        run_offset = 0
         if etype == "quote":
             text = f"“{text}”"
+            # The builder adds the curly quotes, so the caller's character 1 is
+            # Keynote's character 2. Runs are written against the text the
+            # caller wrote, not against what got stored.
+            run_offset = 1
         return text_item_fragment(
             argv,
             tag,
@@ -927,6 +1280,8 @@ def _element_fragment(
             width=el.get("width"),
             height=el.get("height"),
             centered=bool(el.get("centered")),
+            runs=_resolve_runs(el.get("runs"), style),
+            run_offset=run_offset,
         )
     if etype in ("bullets", "numbered"):
         if etype == "bullets":
@@ -1167,6 +1522,21 @@ class DeckTools(DocumentTargetedTools):
                     "font_name, and color as `#RRGGBB` or `r,g,b`, plus `role` "
                     "(a named type style), `zone`/`module`+`index` (named "
                     "layout) and `@name` colors from the style's palette. "
+                    "MIXED STYLING INSIDE ONE LINE: a text/title/subtitle/code/"
+                    "quote element takes `runs`: [{start, end, color?, "
+                    "font_name?, font_size?, role?}] - 1-based INCLUSIVE "
+                    "character offsets over the text as you wrote it, each run "
+                    "overriding the element's own font/size/color. That is how "
+                    "you author a heading in three colours in ONE call instead "
+                    "of the element plus three style_text_range calls, and "
+                    "describe_deck reports runs in the same shape, so they "
+                    "survive a rebuild. Offsets past the end of the text are a "
+                    "validation error, not a half-styled title. "
+                    "UNKNOWN KEYS ARE REJECTED at every level - deck, slide, "
+                    "element, run - and the error names what IS accepted there. "
+                    "Nothing is created when validation fails, so a typo costs "
+                    "one call, not a deck that looks wrong for reasons nothing "
+                    "reported. "
                     "`style` is a built-in name (plain, boardroom, midnight, "
                     "editorial, sdh) or a path to a .toml style file; the "
                     "markdown ```chart fence "
@@ -1194,9 +1564,6 @@ class DeckTools(DocumentTargetedTools):
                     "puts them; their position and size cannot be read or set. "
                     "If your design places its heading somewhere specific, author "
                     "it as a text ELEMENT with x/y instead of as `title`.\n"
-                    "* NO PER-RUN COLOR HERE. An element has one font/size/color. "
-                    "For a heading that mixes colors mid-line, build it, then "
-                    "call style_text_range (describe_deck reads runs back).\n"
                     "* ALSO ABSENT: text alignment (use `centered`), underline, "
                     "bold/italic as attributes (pass the bold FACE name as "
                     "font_name), per-slide backgrounds, shadows, gradients, "
@@ -1246,23 +1613,69 @@ class DeckTools(DocumentTargetedTools):
                 name="describe_deck",
                 description=(
                     "Read an open presentation back into the build_deck spec "
-                    "format (JSON): slides with layout, skipped, transition, "
-                    "speaker notes, theme placeholders, and elements with "
-                    "settled geometry (text items with font/size/color, images "
-                    "with file names, shapes, tables with cell values, charts "
-                    "geometry-only - Keynote exposes no chart data, lines). "
-                    "Decks round-trip: feed the result back to build_deck, or "
-                    "diff two describe_deck outputs in git. This is the first "
-                    "step for reworking an existing deck: describe_deck -> edit "
-                    "the spec -> build_deck, instead of a long chain of "
-                    "per-element edits. "
+                    "format (JSON). This is the first step for reworking an "
+                    "existing deck: describe_deck -> edit the spec -> build_deck, "
+                    "instead of a long chain of per-element edits. Decks "
+                    "round-trip: feed the result straight back to build_deck, or "
+                    "diff two describe_deck outputs in git.\n"
                     "ON A REAL DECK, START WITH detail='summary' (one fast call: "
-                    "per-slide counts and titles), then pull the slides you care "
-                    "about with slide_range. A full description of a 35-slide "
-                    "deck is ~125,000 characters and can exceed a tool-output "
-                    "limit. Every element carries element_class + index - the "
-                    "index other tools consume; ARRAY POSITION IS NOT AN ADDRESS "
-                    "and is not z-order (see docs/INDEX_CONTRACT.md)."
+                    "per-slide element counts and titles), then pull the slides "
+                    "you care about with slide_range. A full description of a "
+                    "35-slide deck is ~125,000 characters and can exceed a "
+                    "tool-output limit; the payload says so when it is large.\n"
+                    "\nRETURN SHAPE. Top level: {title, theme, width, height, "
+                    "slide_count, slides: [...], not_reported: {...}} plus "
+                    "`slide_range`/`element_types` echoed when you filtered, "
+                    "`detail:'summary'` on the summary path, and a `note` when "
+                    "the payload is large. `not_reported` (full detail only) "
+                    "lists what Keynote refuses to expose - read it before "
+                    "concluding a deck lacks something; it is how you tell 'no "
+                    "fill' from 'fill not readable', and it names Z-ORDER as "
+                    "unrecoverable.\n"
+                    "Each slide: {slide, layout, skipped?, transition? "
+                    "{effect,duration,delay,automatic}, notes?, title?/body? "
+                    "(theme placeholder text), elements: [...], groups? "
+                    "{count,note} for groups the user made by hand}.\n"
+                    "\nEVERY element carries `element_class` (Keynote's class: "
+                    "text item / image / shape / table / chart / line) and "
+                    "`index` - the 1-based index the other tools consume. ARRAY "
+                    "POSITION IS NOT AN ADDRESS and is not z-order; pass "
+                    "`index`, never the position in the list (docs/"
+                    "INDEX_CONTRACT.md). Per type:\n"
+                    "* TEXT (type:'text'): text, x/y/width/height, `font_name` "
+                    "(the PostScript face, which is what you pass back) plus the "
+                    "decomposed `font_family`/`font_weight`/`font_style` for "
+                    "auditing, `font_size`, `color` as #RRGGBB with the exact "
+                    "16-bit `color_65535` beside it, and `rotation`/`opacity`/"
+                    "`fill_type` when Keynote reports them. `placeholder`: "
+                    "'title' or 'body' marks a THEME placeholder - it is emitted "
+                    "as an ordinary indexed element AND as the slide's "
+                    "title/body, so this listing and get_slide_content agree.\n"
+                    "* `runs`: present only when a text item is NOT uniform - a "
+                    "list of {start, end, font_name/font_family/font_weight/"
+                    "font_style, font_size, color, color_65535} over 1-based "
+                    "INCLUSIVE character offsets, covering the whole string. A "
+                    "title mixing three colours reports one at the top level and "
+                    "all three here. build_deck accepts `runs` verbatim, so "
+                    "mixed-colour headings survive the round trip.\n"
+                    "* IMAGE: path (a BASENAME once the source file is gone - "
+                    "Keynote stores no path; use export_assets), geometry, "
+                    "rotation/opacity/description. A panel or connector THIS "
+                    "server rendered comes back decoded as type:'panel' "
+                    "{color,radius,opacity} or type:'styled_line' {x1,y1,x2,y2,"
+                    "color,stroke_width,dash,start_arrow,end_arrow}, not as an "
+                    "anonymous image, because the parameters live in the "
+                    "filename.\n"
+                    "* SHAPE: text?, geometry, opacity, rotation, `fill_type` "
+                    "(the KIND of fill; the colour is not readable at all), "
+                    "reflection_showing, locked.\n"
+                    "* TABLE: data (cell values; formulas come back as '=' "
+                    "strings), header_row/header_column, geometry.\n"
+                    "* CHART: geometry only, with `chart_type: null` and a note - "
+                    "AppleScript exposes no chart data. Rebuilding as-is is "
+                    "correctly REJECTED; supply chart_type/row_names/"
+                    "column_names/data yourself.\n"
+                    "* LINE: x1,y1,x2,y2, rotation."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1304,6 +1717,18 @@ class DeckTools(DocumentTargetedTools):
                                 "(default true). Keynote reports every coordinate "
                                 "as a float; the trailing '.0' was ~2% of the "
                                 "payload and carried no information."
+                            ),
+                        },
+                        "include_text_runs": {
+                            "type": "boolean",
+                            "description": (
+                                "Read per-run text styling (default true): the "
+                                "`runs` array on any text item that is not "
+                                "uniform. Costs three Apple events per text item "
+                                "and is the largest contributor to the payload on "
+                                "a type-heavy deck. Pass false when you only need "
+                                "geometry and the box-level font - but a heading "
+                                "that mixes colours will then report just one."
                             ),
                         },
                     },
@@ -1467,6 +1892,23 @@ class DeckTools(DocumentTargetedTools):
                 "size": f"{width}x{height}",
                 "slides": [],
             }
+            # Keys the spec carries that Keynote gives no way to write. They are
+            # ACCEPTED so describe_deck's own output rebuilds, but saying so is
+            # the difference between a round trip and a silent downgrade - the
+            # same reason unknown keys are now rejected outright.
+            not_applied = tolerated_keys(spec)
+            if not_applied:
+                report["not_applied"] = {
+                    "keys": not_applied,
+                    "note": (
+                        "Present in the spec and accepted, but NOT written: "
+                        "Keynote's AppleScript has no write route for these. "
+                        "They survive a describe_deck round trip as data only. "
+                        "rotation/opacity on an existing element can be set "
+                        "afterwards with set_element_style / set_element_opacity; "
+                        "a chart's data cannot be set at all after creation."
+                    ),
+                }
             build_errors = 0
 
             # Sessions 2..: slides in batches of _SLIDES_PER_SESSION per
@@ -1504,7 +1946,21 @@ class DeckTools(DocumentTargetedTools):
                             f"set base layout of targetSlide to slide layout {layout_ref} of targetDoc"
                         )
 
-                        placed, est_bottom = _flow_slide(dict(slide), deck_style, width, height)
+                        # A THEME placeholder is reported by describe_deck twice
+                        # on purpose - as slide.title/body for rebuilding, and as
+                        # an indexed element so this listing and
+                        # get_slide_content agree on what "text item i" is (see
+                        # docs/INDEX_CONTRACT.md). Building both would put the
+                        # heading on the slide twice: once in the placeholder,
+                        # once as a loose text box on top of it. The placeholder
+                        # form wins, because only it carries the theme's styling.
+                        authored = dict(slide)
+                        authored["elements"] = [
+                            el
+                            for el in (slide.get("elements") or [])
+                            if not (isinstance(el, dict) and el.get("placeholder"))
+                        ]
+                        placed, est_bottom = _flow_slide(authored, deck_style, width, height)
                         limit = height - deck_style.margin_bottom(height)
                         if est_bottom > limit:
                             slide_report["warning"] = (

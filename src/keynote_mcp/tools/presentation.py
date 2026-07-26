@@ -133,7 +133,11 @@ class PresentationTools(DocumentTargetedTools):
                 description=(
                     "Open an existing Keynote presentation. Uses LaunchServices (like a "
                     "double-click), so files outside Keynote's sandbox container - "
-                    "~/Downloads, ~/Desktop, anywhere - open safely."
+                    "~/Downloads, ~/Desktop, anywhere - open safely. The opened "
+                    "document becomes the SESSION DEFAULT, so subsequent calls may "
+                    "omit doc_name; the reply names it, and every later reply echoes "
+                    "the document it acted on. Start with describe_deck "
+                    "detail='summary' to see what is in it."
                 ),
                 inputSchema={
                     "type": "object",

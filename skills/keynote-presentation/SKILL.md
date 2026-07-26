@@ -43,9 +43,15 @@ Two things worth knowing before laying out a deck:
 * A slide's `title`/`body` fill the THEME's placeholders, wherever the layout
   puts them; that geometry cannot be read or set. If the design needs its
   heading at a particular point, author it as a text element with x/y.
-* An element has one font/size/color. For a heading that mixes colors
-  mid-line, build it and then call `style_text_range` (describe_deck reads
-  the runs back).
+* A heading that mixes colors mid-line is authored in the spec, not after
+  the fact: a text/title/subtitle/code/quote element takes
+  `runs: [{start, end, color?, font_name?, font_size?, role?}]` over 1-based
+  INCLUSIVE character offsets. `describe_deck` reports runs in the same
+  shape, so they survive a rebuild. `style_text_range` is for editing text
+  that already exists.
+* Unknown keys in a spec are rejected at every level — deck, slide, element,
+  run — naming what is accepted there, and nothing is created. A typo costs
+  one call rather than a deck that looks wrong for unreported reasons.
 
 On a deck you did not build, call `describe_deck` with `detail="summary"`
 first — a full description of a 35-slide deck is ~125,000 characters. Then

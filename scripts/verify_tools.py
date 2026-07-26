@@ -38,6 +38,7 @@ import shutil
 import sys
 import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageFilter  # dev dependency; rendered checks are not optional
@@ -1144,6 +1145,167 @@ async def check_fill_is_unwritable(pres, slides, content, export, objects):
     check(
         "phase9: close fill-probe doc",
         await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
+# Keynote renders text through a colour profile, so an authored #830041 lands
+# at ~(138,37,82) on the canvas rather than (131,0,65). That is Keynote's own
+# behaviour and not a write error - the ORIGINAL hand-made deck this was
+# reproduced from renders the same maroon at (138,32,82), five levels away on
+# one channel. The tolerance below is wide enough to survive the profile and
+# far narrower than the gaps between the three run colours, which are 100+
+# apart on every channel.
+_RUN_COLOUR_TOLERANCE = 45
+
+
+def _run_colour_census(image, scale, band, wanted):
+    """Count ink pixels in a horizontal band by nearest expected colour.
+
+    Deliberately a RENDERED check. "the text item has 3 runs" and "describe_deck
+    reports three colours" both pass just as happily against a monochrome
+    title - the read path and the write path can agree with each other and
+    still both be wrong about the canvas.
+    """
+    px = image.convert("RGB").load()
+    width = image.size[0]
+    top, bottom = int(band[0] * scale), int(band[1] * scale)
+    sampled = [px[x, y] for y in range(top, bottom, 3) for x in range(0, width, 3)]
+    background = Counter(sampled).most_common(1)[0][0]
+    counts = Counter()
+    for y in range(top, bottom):
+        for x in range(0, width, 2):
+            pixel = px[x, y]
+            if sum(abs(a - b) for a, b in zip(pixel, background, strict=True)) < 90:
+                continue
+            for want in wanted:
+                if all(abs(a - b) <= _RUN_COLOUR_TOLERANCE for a, b in zip(pixel, want, strict=True)):
+                    counts[want] += 1
+                    break
+    return counts
+
+
+async def check_text_runs_author(pres, export, deck):
+    """PHASE 10 — build_deck AUTHORS per-run styling, proved in pixels.
+
+    ``style_text_range`` could always write runs and 4.0.0 taught
+    ``describe_deck`` to read them, but nothing could author them: the real
+    deck's tri-colour H1 took the element plus three follow-up calls, and a
+    described deck lost its runs the moment it was rebuilt - in a format whose
+    whole point is describe -> edit -> build.
+
+    Builds the same title from ONE spec, asserts three distinct colours are on
+    the canvas, then rebuilds from the unedited description and re-checks the
+    pixels. The first deck is closed before the second export, so a call that
+    silently targeted the original cannot pass.
+    """
+    title = "Building A Secure Client Data Hub"
+    wanted = [(0, 0, 0), (131, 0, 65), (240, 148, 144)]
+    out = SCRATCH / "phase10-runs"
+    out.mkdir(exist_ok=True)
+
+    spec = {
+        "title": "phase10-runs",
+        "theme": "White",
+        "width": 1920,
+        "height": 1080,
+        "save_path": str(SCRATCH / "phase10-runs.key"),
+        "on_exists": "replace",
+        "slides": [
+            {
+                "layout": "Blank",
+                "elements": [
+                    {
+                        "type": "title",
+                        "text": title,
+                        "x": 200,
+                        "y": 461,
+                        "font_size": 69,
+                        "font_name": "Helvetica",
+                        "color": "#000000",
+                        "runs": [
+                            {"start": 1, "end": 10, "color": "#000000"},
+                            {"start": 12, "end": 17, "color": "#830041"},
+                            {"start": 19, "end": 33, "color": "#F09490"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    built = text_of(await deck.build_deck(spec=spec))
+    record(
+        "phase10/runs: build_deck authors runs in one call",
+        "0 element error" in built and "validation failed" not in built.lower(),
+        built.splitlines()[0] if built else "",
+    )
+
+    png = out / "s1.png"
+    await export.screenshot_slide(
+        slide_number=1, output_path=str(png), doc_name="phase10-runs.key"
+    )
+    if png.exists():
+        image = Image.open(png)
+        counts = _run_colour_census(image, image.size[0] / 1920, (440, 620), wanted)
+        present = [c for c in wanted if counts.get(c, 0) > 200]
+        record(
+            "phase10/runs: three distinct colours are ON THE CANVAS",
+            len(present) == 3,
+            f"{len(present)}/3 present; census {dict(counts)}",
+        )
+    else:
+        record("phase10/runs: three distinct colours are ON THE CANVAS", False, "no export")
+
+    described = json.loads(text_of(await deck.describe_deck(doc_name="phase10-runs.key")))
+    element = next(
+        e
+        for s in described["slides"]
+        for e in s["elements"]
+        if e.get("type") == "text" and title in str(e.get("text", ""))
+    )
+    # Four, not three: the two spaces the spec left unstyled keep the box
+    # colour, so black(1-11) / maroon(12-17) / black(18) / salmon(19-33).
+    read_runs = element.get("runs", [])
+    record(
+        "phase10/runs: describe_deck reads the authored runs back",
+        len(read_runs) >= 3 and any(r.get("color") == "#830041" for r in read_runs),
+        f"{len(read_runs)} runs: {[r.get('color') for r in read_runs]}",
+    )
+
+    described["save_path"] = str(SCRATCH / "phase10-runs-rt.key")
+    described["on_exists"] = "replace"
+    rebuilt = text_of(await deck.build_deck(spec=described))
+    record(
+        "phase10/runs: an UNEDITED description rebuilds",
+        "validation failed" not in rebuilt.lower() and "0 element error" in rebuilt,
+        rebuilt.splitlines()[0] if rebuilt else "",
+    )
+
+    # Close the original first: the two renders are pixel-identical (same text,
+    # font, position and colours render deterministically), so document
+    # identity is the only thing separating a round trip from a re-screenshot.
+    await pres.close_presentation(doc_name="phase10-runs.key", should_save=False)
+    png2 = out / "s1-roundtrip.png"
+    await export.screenshot_slide(
+        slide_number=1, output_path=str(png2), doc_name="phase10-runs-rt.key"
+    )
+    if png2.exists():
+        image2 = Image.open(png2)
+        counts2 = _run_colour_census(image2, image2.size[0] / 1920, (440, 620), wanted)
+        present2 = [c for c in wanted if counts2.get(c, 0) > 200]
+        record(
+            "phase10/runs: the REBUILT deck still renders three colours",
+            len(present2) == 3,
+            f"{len(present2)}/3 present; census {dict(counts2)}",
+        )
+    else:
+        record("phase10/runs: the REBUILT deck still renders three colours", False, "no export")
+
+    record(
+        "phase10/runs: close round-trip doc",
+        "Failed"
+        not in text_of(
+            await pres.close_presentation(doc_name="phase10-runs-rt.key", should_save=False)
+        ),
     )
 
 
@@ -2411,6 +2573,7 @@ async def main():
     await check_describe_at_scale(pres, deck)
     await check_document_resolution(pres, slides, content, export, objects)
     await check_fill_is_unwritable(pres, slides, content, export, objects)
+    await check_text_runs_author(pres, export, deck)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")

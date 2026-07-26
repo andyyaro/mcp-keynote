@@ -24,6 +24,7 @@ from .session import (
     open_document_names,
     resolve_document,
 )
+from .unsupported import explain_unsupported
 
 __all__ = [
     "ELEMENT_TYPE_MAP",
@@ -34,6 +35,7 @@ __all__ = [
     "FileOperationError",
     "KeynoteError",
     "ParameterError",
+    "explain_unsupported",
     "open_document_names",
     "parse_color",
     "resolve_document",

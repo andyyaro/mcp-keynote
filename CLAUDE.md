@@ -194,6 +194,39 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
   identical. New tool = schema + method + `server._dispatch` case + fragment
   (if element) + `scripts/verify_tools.py` check + TOOL_MATRIX row.
 
+### 4.1.0 facts (round-2 field feedback)
+
+- **A schema property, a method parameter and a `_dispatch` line are three
+  separate things, and all three must exist.** Since 4.0.0 rejects unknown
+  arguments, a parameter missing from the schema is not merely undocumented —
+  it is unreachable, and the call errors. Three build tools' `doc_name` and
+  `describe_deck.include_text_runs` each shipped that way, one of them
+  documented in TOOL_MATRIX.md. `tests/unit/test_tool_schemas.py` now compares
+  all three, in both directions; do not add an argument without it.
+- **Per-run text styling IS authorable**, contrary to what `build_deck`'s
+  description asserted for two releases. `set color/size/font of characters S
+  thru E of object text of <item>` works on a freshly created item in the same
+  session. Order is load-bearing: AFTER the element's text (re-setting
+  `object text` discards runs) and its box-level colour (which flattens them),
+  BEFORE its position (a run that changes size re-triggers auto-fit, which
+  holds the box's vertical centre). Offsets are 1-based INCLUSIVE and are
+  validated against the text in Python — `characters 5 thru 400` of a
+  12-character string is a runtime error one element deep in a batched build.
+- **Keynote renders text through a colour profile.** An authored `#830041`
+  paints as ~(138,37,82), not (131,0,65). Not a write error: a hand-made deck
+  renders the same maroon at (138,32,82). A rendered check must compare against
+  what the app paints, with a tolerance (~45) far below the separation between
+  the colours being told apart.
+- **`build_deck`'s spec rejects unknown keys at deck/slide/element/run level.**
+  Adding an element field means adding it to `_ELEMENT_KEYS` in `deck.py`, and
+  anything `describe_deck` EMITS but cannot write back goes in the matching
+  `_TOLERATED` set instead — otherwise the format refuses its own output. The
+  live harness is what caught the two that were missed (`rendered` and the
+  image `description` on a decoded panel), so run it after touching those sets.
+- Invented-capability names (`fill_color`, `corner_radius`, `bold`, …) have ONE
+  hint table, `utils/unsupported.py`, shared by the tool-argument boundary and
+  the spec-key boundary. Add new ones there, not in either caller.
+
 ### Field-test facts (Phase 8 — the sandbox/save/placeholder traps)
 
 - **Never send AppleScript `open` for a file outside Keynote's sandbox

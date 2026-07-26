@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [4.1.0] - 2026-07-26
+
+Round-2 field feedback: three defects, plus the run-authoring gap they exposed.
+Every one is a case of documentation and behavior disagreeing — which is the
+same failure as a dropped argument, one level up. 289 live checks, 0 failed.
+
+### Added
+
+- **`build_deck` authors text runs.** A text/title/subtitle/code/quote element
+  takes `runs: [{start, end, color?, font_name?, font_size?, role?}]` over
+  1-based inclusive offsets, so a tri-colour heading is ONE call instead of the
+  element plus three `style_text_range` calls — and a described deck keeps its
+  runs when rebuilt, which is the point of the format. `build_deck`'s own
+  description had asserted this was impossible; it had never been probed. The
+  write route always existed (`set color of characters S thru E …`), and inside
+  the batched session it costs AppleScript lines, not Apple events. Runs are
+  written after the element's text and colour (both of which would otherwise
+  erase or flatten them) and before its position (a run that changes size
+  re-triggers auto-fit, which holds the box's vertical centre). Verified in
+  pixels: three distinct ink colours on the exported slide, then the UNEDITED
+  description rebuilt and re-sampled with the first deck CLOSED, so a
+  mistargeted export cannot pass.
+
+### Fixed
+
+- **`build_deck` silently ignored unknown keys at every level of `spec`** —
+  deck, slide, element and run. The same silent-drop class 4.0.0 fixed at the
+  tool-argument boundary, still live in the largest model-authored input the
+  server takes: a spec with a mistyped `layuot`, an invented `fill_color` and a
+  plausible `font` built with zero errors, and the render was the only place it
+  showed. Unknown keys are now rejected with the accepted set named and nothing
+  created; invented-capability names share one hint table with the argument
+  boundary (`utils/unsupported.py`), so `fill_color` gets the same explanation
+  and the same alternative in a spec as it does as an argument. Keys
+  `describe_deck` emits that Keynote cannot write back (`rotation`, per-element
+  `opacity`, shape `locked`/`reflection_showing`) are ACCEPTED so the round trip
+  survives, and reported in the reply under `not_applied` — tolerating them
+  silently would have been the original bug again.
+- **Three tool arguments existed but could not be reached.** `doc_name` on
+  `add_build_in`/`remove_build_in`/`add_builds_to_slide` was implemented in
+  4.0.0 and announced in the CHANGELOG, but never added to the schema — so once
+  4.0.0 began rejecting unknown arguments, passing it was an error.
+  `describe_deck.include_text_runs` was implemented AND documented in
+  TOOL_MATRIX.md, and likewise absent from the schema. Both directions are now
+  pinned by tests that compare every schema against its method signature and
+  against what `_dispatch` actually forwards.
+- **`describe_deck` rebuilt a theme placeholder twice.** It reports a
+  placeholder as `slide.title`/`body` AND as an indexed element (deliberately —
+  see INDEX_CONTRACT.md), and `build_deck` built both, putting the heading in
+  the placeholder and again as a loose text box on top of it.
+
+### Documentation
+
+- **`describe_deck`'s description still documented the v3 return shape**, which
+  is all a model reads: none of 4.0.0's read fidelity — hex colours beside
+  `color_65535`, font family/weight/style beside the PostScript name, per-run
+  `runs`, `placeholder`, rotation/opacity/`fill_type`, the `not_reported` block,
+  the index contract — was visible. Rewritten to the actual shape, field by
+  field. The same audit rewrote `get_slide_content` (which gained per-item
+  `role:` flagging and a filtered count), the five index-addressed writes (which
+  gained `exists` guards), `open_presentation` (session default),
+  `add_colored_panel` (round-trips via its filename), `style_text_range`
+  (authoring belongs in the spec now) and the three build tools.
+- **FIDELITY_REPORT.md and CEILING.md cited the real deck's H1 at y=817 in
+  three places.** Measured value is **y≈543** — ink rows 480–607 of the
+  1920×1080 reference export, and `describe_deck` reports the box at `y=461,
+  h=158`. The conclusion those documents drew was right; the number offered as
+  its evidence was never measured from anything. Now stated with its provenance.
+- CEILING.md gained "Runs, which turned out not to be a ceiling at all",
+  including the finding that **Keynote renders text through a colour profile** —
+  an authored `#830041` lands at ~(138,37,82), and the original hand-made deck
+  renders the same maroon at (138,32,82), so a rendered check must compare
+  against what the app paints, not against what was sent.
+
 ## [4.0.0] - 2026-07-26
 
 Fidelity and correctness pass, driven by an external field report from

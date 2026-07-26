@@ -50,7 +50,10 @@ land where the original has them.
 **Does not match, and why:**
 
 1. **The title is in the wrong place.** The original centres
-   "Building A Secure Client Data Hub" at y≈817. The template sets the slide's
+   "Building A Secure Client Data Hub" at **y≈543** — its ink runs rows 480–607
+   of the 1920×1080 reference export (1px = 1pt), and `describe_deck` reports
+   the box as `y=461, h=158` (centre 540; the 3pt is internal leading). Just
+   past the vertical middle of the canvas. The template sets the slide's
    `title:`, which fills the *theme placeholder*, and the theme puts it at the
    top. **Placeholder geometry is not readable or settable** — layouts are
    opaque (CEILING.md). The fix is to author the title as a positioned text
@@ -130,7 +133,7 @@ Honestly separated into *Keynote's ceiling* and *this server's remaining gaps*.
 
 | | |
 |---|---|
-| **Theme placeholder geometry** | Cannot be read or set; layouts are opaque. A design that puts its H1 at y=817 must not use the title placeholder at all. This caused the single largest visual difference in the whole exercise. |
+| **Theme placeholder geometry** | Cannot be read or set; layouts are opaque. A design that puts its H1 at y≈543 (measured; see slide 1 above) must not use the title placeholder at all. This caused the single largest visual difference in the whole exercise. |
 | **Per-slide backgrounds / gradients** | No term on `slide`. The original's soft grey gradient is the theme's. |
 | **Icons, 3-D renders, illustrated glyphs** | Must be supplied as image files. Nothing generates them. |
 | **Orthogonal connector routing** | `line` has fixed endpoints; `styled_line` draws straight. The original routes connectors around obstacles — every one of those is a hand edit or a pre-rendered PNG. |
