@@ -8,8 +8,7 @@ import pytest
 from keynote_mcp.server import _configure_logging
 
 NOT_FOUND = (
-    "execution error: Keynote got an error: Can’t get slide 9 of document 1. "
-    "Invalid index. (-1719)"
+    "execution error: Keynote got an error: Can’t get slide 9 of document 1. Invalid index. (-1719)"
 )
 
 

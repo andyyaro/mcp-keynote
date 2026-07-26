@@ -59,11 +59,9 @@ def test_removed_tools_stay_removed(tools):
     assert "get_presentation_resolution" not in names, (
         "get_presentation_resolution was removed as a duplicate of get_slide_size"
     )
-    assert "template" not in (
-        PresentationTools()
-        .get_tools()[0]
-        .inputSchema["properties"]
-    ), "create_presentation.template was removed as dead schema surface"
+    assert "template" not in (PresentationTools().get_tools()[0].inputSchema["properties"]), (
+        "create_presentation.template was removed as dead schema surface"
+    )
 
 
 def test_enum_fields_are_constrained(tools):

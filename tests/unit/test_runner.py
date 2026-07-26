@@ -41,7 +41,7 @@ def test_timeout_maps_to_actionable_error(runner, mock_subprocess_run):
 def test_argv_are_separate_arguments(runner, mock_subprocess_run):
     runner.run("on run argv\nreturn 1\nend run", "a b", 'c"d')
     cmd = mock_subprocess_run.call_args.args[0]
-    assert cmd == ["osascript", "-", "a b", 'c"d']
+    assert cmd == ["/usr/bin/osascript", "-", "a b", 'c"d']
     assert mock_subprocess_run.call_args.kwargs["input"].startswith("on run argv")
 
 

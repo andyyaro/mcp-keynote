@@ -3,10 +3,6 @@ and error paths."""
 
 import subprocess
 
-import pytest
-
-from keynote_mcp.utils.error_handler import AppleScriptError
-
 
 def last_script(mock_run) -> str:
     return mock_run.call_args.kwargs["input"]
@@ -23,8 +19,7 @@ def _fail_with(mock_run, stderr):
 
 
 NOT_FOUND = (
-    "execution error: Keynote got an error: Can’t get slide 9 of document 1. "
-    "Invalid index. (-1719)"
+    "execution error: Keynote got an error: Can’t get slide 9 of document 1. Invalid index. (-1719)"
 )
 
 
@@ -64,9 +59,7 @@ class TestPresentationTools:
         result = await presentation_tools.set_presentation_theme("Nope")
         assert "get_available_themes" in result[0].text
 
-    async def test_error_path_returns_failed_text(
-        self, presentation_tools, mock_subprocess_run
-    ):
+    async def test_error_path_returns_failed_text(self, presentation_tools, mock_subprocess_run):
         _fail_with(mock_subprocess_run, NOT_FOUND)
         result = await presentation_tools.save_presentation()
         assert result[0].text.startswith("Failed to save presentation")
@@ -77,9 +70,7 @@ class TestPresentationTools:
 
 
 class TestSlideTools:
-    async def test_move_slide_uses_before_after_not_replace(
-        self, slide_tools, mock_subprocess_run
-    ):
+    async def test_move_slide_uses_before_after_not_replace(self, slide_tools, mock_subprocess_run):
         await slide_tools.move_slide(2, 5)
         assert "after slide 5" in last_script(mock_subprocess_run)
         await slide_tools.move_slide(5, 2)
@@ -96,9 +87,7 @@ class TestSlideTools:
         assert last_cmd(mock_subprocess_run)[3] == "Blank"
         assert "Added slide #2" in result[0].text
 
-    async def test_add_slide_at_position_inserts_before(
-        self, slide_tools, mock_subprocess_run
-    ):
+    async def test_add_slide_at_position_inserts_before(self, slide_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "2|Blank"
         await slide_tools.add_slide(position=2)
         assert "before slide 2" in last_script(mock_subprocess_run)
@@ -144,9 +133,7 @@ class TestContentTools:
         await content_tools.add_title(1, "small", font_size=36)
         assert "set width of newItem" not in last_script(mock_subprocess_run)
 
-    async def test_explicit_width_wins_over_autosize(
-        self, content_tools, mock_subprocess_run
-    ):
+    async def test_explicit_width_wins_over_autosize(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "1"
         await content_tools.add_text_box(1, "text", font_size=96, width=500, height=100)
         script = last_script(mock_subprocess_run)
@@ -167,7 +154,6 @@ class TestContentTools:
         await content_tools.add_code_block(1, "x = 1")
         assert "Monaco" in last_cmd(mock_subprocess_run)
 
-
     async def test_quote_wrapped_in_curly_quotes(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "1"
         await content_tools.add_quote(1, "wisdom")
@@ -178,9 +164,7 @@ class TestContentTools:
         assert "Failed" in result[0].text
         assert not mock_subprocess_run.called
 
-    async def test_set_slide_content_requires_something(
-        self, content_tools, mock_subprocess_run
-    ):
+    async def test_set_slide_content_requires_something(self, content_tools, mock_subprocess_run):
         result = await content_tools.set_slide_content(1)
         assert "Nothing to set" in result[0].text
         assert not mock_subprocess_run.called
@@ -202,9 +186,7 @@ class TestContentTools:
         assert "width:200.0" in script
         assert "set opacity of newShape to 100" in script
 
-    async def test_clear_slide_preserves_placeholders(
-        self, content_tools, mock_subprocess_run
-    ):
+    async def test_clear_slide_preserves_placeholders(self, content_tools, mock_subprocess_run):
         await content_tools.clear_slide(2)
         script = last_script(mock_subprocess_run)
         assert "(item 1 of pos) is 0" in script
@@ -223,9 +205,7 @@ class TestContentTools:
         await content_tools.add_build_in(2, "text", 3)
         assert mock_subprocess_run.call_args.kwargs["timeout"] == 60.0
 
-    async def test_builds_batch_rejects_garbage_indices(
-        self, content_tools, mock_subprocess_run
-    ):
+    async def test_builds_batch_rejects_garbage_indices(self, content_tools, mock_subprocess_run):
         result = await content_tools.add_builds_to_slide(1, "1,-2")
         assert "Invalid element index" in result[0].text
 
@@ -236,7 +216,9 @@ class TestContentTools:
 
 
 class TestExportTools:
-    async def test_screenshot_restores_skip_state(self, export_tools, mock_subprocess_run, tmp_path):
+    async def test_screenshot_restores_skip_state(
+        self, export_tools, mock_subprocess_run, tmp_path
+    ):
         await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
         script = last_script(mock_subprocess_run)
         assert "set savedStates to skipped of every slide" in script

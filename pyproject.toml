@@ -82,9 +82,14 @@ select = [
 ignore = [
     "E501", # long lines in embedded AppleScript are clearer unwrapped
 ]
+# Keynote's own error text uses curly quotes; tests and matchers must too.
+allowed-confusables = ["’"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "S603"] # asserts and subprocess calls are the point of tests
+# S108: unit tests use literal /tmp paths as opaque strings (never written to)
+"tests/*" = ["S101", "S603", "S108"]
+# S608: AppleScript source in f-strings trips the SQL-injection heuristic
+"src/keynote_mcp/tools/content.py" = ["S608"]
 
 [tool.mypy]
 python_version = "3.11"

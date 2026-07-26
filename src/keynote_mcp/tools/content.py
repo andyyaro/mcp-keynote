@@ -605,10 +605,10 @@ class ContentTools:
                 width = min(1800.0, longest * font_size * 0.58 + 60)
                 if height is None:
                     height = len(lines) * font_size * 1.5 + 20
+        box_w: float | None = None
+        box_h: float | None = None
         if width is not None or height is not None:
             box_w, box_h = validate_dimensions(width, height)
-        else:
-            box_w = box_h = None
 
         set_position = (
             f"set position of newItem to {{{x_pos}, {y_pos}}}"
@@ -625,9 +625,7 @@ class ContentTools:
             else "-- default font size"
         )
         set_font = (
-            "set font of object text of newItem to fontName"
-            if font_name
-            else "-- default font"
+            "set font of object text of newItem to fontName" if font_name else "-- default font"
         )
         set_color = (
             f"set color of object text of newItem to {{{rgb[0]}, {rgb[1]}, {rgb[2]}}}"
@@ -848,8 +846,7 @@ class ContentTools:
         """Add quote."""
         try:
             index = await self._add_text_element(
-                slide_number, f"“{quote}”", x, y, font_size or 20,
-                font_name, "", doc_name
+                slide_number, f"“{quote}”", x, y, font_size or 20, font_name, "", doc_name
             )
             return [
                 TextContent(
@@ -871,11 +868,7 @@ class ContentTools:
         try:
             validate_slide_number(slide_number)
             if title is None and body is None:
-                return [
-                    TextContent(
-                        type="text", text="Nothing to set: provide title and/or body."
-                    )
-                ]
+                return [TextContent(type="text", text="Nothing to set: provide title and/or body.")]
             set_title = (
                 """
                         set title showing of targetSlide to true
@@ -1218,9 +1211,7 @@ class ContentTools:
                 doc_name,
                 notes,
             )
-            return [
-                TextContent(type="text", text=f"Speaker notes set on slide {slide_number}.")
-            ]
+            return [TextContent(type="text", text=f"Speaker notes set on slide {slide_number}.")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to set speaker notes: {e}")]
 

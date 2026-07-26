@@ -10,7 +10,7 @@ import pytest
 
 ADVERSARIAL = [
     'he said "hello" and left',
-    "backslash \\ and escaped quote \\\"",
+    'backslash \\ and escaped quote \\"',
     'quote" then ¬\ntell application "Finder" to quit',
     "line one\nline two\nline three",
     "emoji 🎉🚀 CJK 中文字符 RTL שלום עולם",
@@ -36,7 +36,7 @@ def _assert_string_safe(mock_run, payload: str):
     assert in_argv, f"payload was not passed via argv: {payload!r}"
     assert not in_source, f"payload was spliced into AppleScript source: {payload!r}"
     for cmd, script in calls:
-        assert cmd[:2] == ["osascript", "-"]
+        assert cmd[:2] == ["/usr/bin/osascript", "-"]
         if len(cmd) > 2:
             assert "on run argv" in script, "script takes argv but has no run handler"
 
@@ -66,18 +66,14 @@ async def test_doc_name_via_argv(content_tools, mock_subprocess_run, payload):
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
-async def test_create_presentation_theme_via_argv(
-    presentation_tools, mock_subprocess_run, payload
-):
+async def test_create_presentation_theme_via_argv(presentation_tools, mock_subprocess_run, payload):
     mock_subprocess_run.return_value.stdout = "Untitled|default theme"
     await presentation_tools.create_presentation("t", theme=payload)
     _assert_string_safe(mock_subprocess_run, payload)
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
-async def test_open_presentation_path_via_argv(
-    presentation_tools, mock_subprocess_run, payload
-):
+async def test_open_presentation_path_via_argv(presentation_tools, mock_subprocess_run, payload):
     await presentation_tools.open_presentation(payload)
     _assert_string_safe(mock_subprocess_run, payload)
 

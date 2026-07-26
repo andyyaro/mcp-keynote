@@ -57,7 +57,9 @@ class KeynoteMCPServer:
     def _register_handlers(self) -> None:
         """Register MCP handlers"""
 
-        @self.server.list_tools()
+        # The mcp 1.x registration decorators are untyped; v2 replaces them
+        # with constructor params (see docs/MCP_V2_MIGRATION.md).
+        @self.server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
         async def list_tools() -> list[Tool]:
             """List all available tools"""
             tools = []
@@ -69,7 +71,7 @@ class KeynoteMCPServer:
                 tools.extend(self.unsplash_tools.get_tools())
             return tools
 
-        @self.server.call_tool()
+        @self.server.call_tool()  # type: ignore[untyped-decorator]
         async def call_tool(
             name: str, arguments: dict[str, Any]
         ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
@@ -94,7 +96,7 @@ class KeynoteMCPServer:
                 return [TextContent(type="text", text=f"File operation error: {e}")]
             except KeynoteError as e:
                 return [TextContent(type="text", text=f"Keynote error: {e}")]
-            except Exception as e:  # noqa: BLE001 - last-resort process guard
+            except Exception as e:
                 logger.exception("Unhandled error in tool %s", name)
                 return [TextContent(type="text", text=f"Unknown error: {e}")]
 
@@ -111,9 +113,7 @@ class KeynoteMCPServer:
                 save_path=arguments.get("save_path", ""),
             )
         elif name == "open_presentation":
-            return await self.presentation_tools.open_presentation(
-                file_path=arguments["file_path"]
-            )
+            return await self.presentation_tools.open_presentation(file_path=arguments["file_path"])
         elif name == "save_presentation":
             return await self.presentation_tools.save_presentation(doc_name=doc_name)
         elif name == "close_presentation":

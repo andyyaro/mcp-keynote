@@ -43,7 +43,7 @@ class AppleScriptRunner:
         effective_timeout = timeout if timeout is not None else self.timeout
         try:
             result = subprocess.run(  # noqa: S603 - fixed executable, script via stdin
-                ["osascript", "-", *args],
+                ["/usr/bin/osascript", "-", *args],
                 input=script,
                 capture_output=True,
                 text=True,

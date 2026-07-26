@@ -37,9 +37,7 @@ def keynote_doc():
 
     presentation = PresentationTools()
     created = asyncio.run(
-        presentation.create_presentation(
-            "integration-test", theme="", save_path=str(key_path)
-        )
+        presentation.create_presentation("integration-test", theme="", save_path=str(key_path))
     )
     assert "Created presentation" in created[0].text, created[0].text
 
@@ -85,9 +83,7 @@ async def test_large_font_title_is_not_clipped(keynote_doc, content, slides):
 
 
 async def test_slide_lifecycle(keynote_doc, slides):
-    base = int(
-        (await slides.get_slide_count(doc_name=keynote_doc))[0].text.split(":")[1]
-    )
+    base = int((await slides.get_slide_count(doc_name=keynote_doc))[0].text.split(":")[1])
     await slides.add_slide(doc_name=keynote_doc)
     await slides.duplicate_slide(1, doc_name=keynote_doc)
     count = (await slides.get_slide_count(doc_name=keynote_doc))[0].text

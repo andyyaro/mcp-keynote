@@ -81,9 +81,7 @@ DISPATCH_CASES = [
 
 
 @pytest.mark.parametrize(("name", "arguments", "stdout"), DISPATCH_CASES)
-async def test_dispatch_returns_text_content(
-    server, mock_subprocess_run, name, arguments, stdout
-):
+async def test_dispatch_returns_text_content(server, mock_subprocess_run, name, arguments, stdout):
     mock_subprocess_run.return_value.stdout = stdout
     result = await server._dispatch(name, arguments)
     assert len(result) >= 1
@@ -133,9 +131,7 @@ async def test_handler_survives_unexpected_exception(server):
         assert "Unknown error: boom" in result.content[0].text
     # and the server still answers afterwards
     list_handler = server.server.request_handlers[mtypes.ListToolsRequest]
-    listing = (
-        await list_handler(mtypes.ListToolsRequest(method="tools/list"))
-    ).root
+    listing = (await list_handler(mtypes.ListToolsRequest(method="tools/list"))).root
     assert len(listing.tools) >= 40
 
 
@@ -166,9 +162,7 @@ async def test_unsplash_dispatch_forwards_args(mock_subprocess_run, monkeypatch)
             "add_unsplash_image_to_slide", {"slide_number": 1, "query": "q", "x": 1}
         )
     ) == sentinel
-    assert (
-        await server._dispatch("get_random_unsplash_image", {"slide_number": 1})
-    ) == sentinel
+    assert (await server._dispatch("get_random_unsplash_image", {"slide_number": 1})) == sentinel
     server.unsplash_tools.search_unsplash_images.assert_awaited_once_with(
         query="q", per_page=10, orientation=None, order_by="relevant"
     )

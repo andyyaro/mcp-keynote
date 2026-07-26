@@ -24,9 +24,7 @@ class TestAppleScriptErrorMapping:
         handle_applescript_error("   \n")
 
     def test_1743_names_the_automation_pane(self):
-        stderr = (
-            "execution error: Not authorized to send Apple events to Keynote. (-1743)"
-        )
+        stderr = "execution error: Not authorized to send Apple events to Keynote. (-1743)"
         with pytest.raises(AppleScriptError) as exc:
             handle_applescript_error(stderr)
         message = str(exc.value)
@@ -36,10 +34,7 @@ class TestAppleScriptErrorMapping:
         assert "-1743" in message
 
     def test_1728_is_actionable(self):
-        stderr = (
-            "execution error: Keynote got an error: "
-            "Can't get slide 99 of document 1. (-1728)"
-        )
+        stderr = "execution error: Keynote got an error: Can't get slide 99 of document 1. (-1728)"
         with pytest.raises(AppleScriptError) as exc:
             handle_applescript_error(stderr)
         message = str(exc.value)

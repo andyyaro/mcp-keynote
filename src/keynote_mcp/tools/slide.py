@@ -199,11 +199,7 @@ class SlideTools:
                 layout,
             )
             number, _, layout_note = result.partition("|")
-            return [
-                TextContent(
-                    type="text", text=f"Added slide #{number} (layout: {layout_note})"
-                )
-            ]
+            return [TextContent(type="text", text=f"Added slide #{number} (layout: {layout_note})")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to add slide: {e}")]
 
@@ -266,9 +262,7 @@ class SlideTools:
                 """,
                 doc_name,
             )
-            return [
-                TextContent(type="text", text=f"Duplicated slide, new number: {new_number}")
-            ]
+            return [TextContent(type="text", text=f"Duplicated slide, new number: {new_number}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to duplicate slide: {e}")]
 
@@ -281,9 +275,7 @@ class SlideTools:
             validate_slide_number(to_position)
 
             if from_position == to_position:
-                return [
-                    TextContent(type="text", text=f"Slide already at position {to_position}")
-                ]
+                return [TextContent(type="text", text=f"Slide already at position {to_position}")]
 
             # Use 'before' when moving backward, 'after' when moving forward.
             # Plain 'move X to slide Y' REPLACES slide Y, destroying it.
@@ -379,9 +371,7 @@ class SlideTools:
             )
             if result == "success":
                 return [
-                    TextContent(
-                        type="text", text=f"Set slide {slide_number} layout to: {layout}"
-                    )
+                    TextContent(type="text", text=f"Set slide {slide_number} layout to: {layout}")
                 ]
             return [
                 TextContent(

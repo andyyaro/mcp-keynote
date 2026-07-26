@@ -108,7 +108,7 @@ async def test_add_image_downloads_and_inserts(tools, mock_subprocess_run):
     assert "Successfully added image" in result[0].text
     # AppleScript insertion happened with the downloaded path via argv
     cmd = mock_subprocess_run.call_args.args[0]
-    assert cmd[0] == "osascript"
+    assert cmd[0] == "/usr/bin/osascript"
     assert any("unsplash_abc123" in arg for arg in cmd)
     # download stat endpoint pinged per Unsplash API guidelines
     assert "https://dl" in session.requests
@@ -150,9 +150,7 @@ async def test_random_image_api_error(tools):
 
 
 async def test_download_failure_reported(tools):
-    ctx, _ = _with_session(
-        [FakeResponse(payload={"results": [PHOTO]}), FakeResponse(status=404)]
-    )
+    ctx, _ = _with_session([FakeResponse(payload={"results": [PHOTO]}), FakeResponse(status=404)])
     with ctx:
         result = await tools.add_unsplash_image_to_slide(1, "cat")
     assert "download failed" in result[0].text.lower()

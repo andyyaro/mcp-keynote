@@ -371,9 +371,7 @@ class PresentationTools:
             if themes:
                 listing = "\n".join(f"- {t}" for t in themes)
                 return [
-                    TextContent(
-                        type="text", text=f"Available themes ({len(themes)}):\n{listing}"
-                    )
+                    TextContent(type="text", text=f"Available themes ({len(themes)}):\n{listing}")
                 ]
             return [TextContent(type="text", text="No available themes found")]
         except Exception as e:

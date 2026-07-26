@@ -125,8 +125,9 @@ def validate_coordinates(x: float | None, y: float | None) -> tuple[float, float
     return float(x) if x is not None else 0.0, float(y) if y is not None else 0.0
 
 
-def validate_number(value: float, name: str, minimum: float | None = None,
-                    maximum: float | None = None) -> float:
+def validate_number(
+    value: float, name: str, minimum: float | None = None, maximum: float | None = None
+) -> float:
     """Validate that a value is a real number within optional bounds."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ParameterError(f"Invalid {name}: {value!r}. Must be a number.")
@@ -166,7 +167,7 @@ def validate_element_type(element_type: str) -> str:
     return element_type
 
 
-def validate_dimensions(width: float, height: float) -> tuple[float, float]:
+def validate_dimensions(width: float | None, height: float | None) -> tuple[float, float]:
     """Validate width and height dimensions"""
     for name, value in (("width", width), ("height", height)):
         if value is not None and (
@@ -198,7 +199,5 @@ def parse_color(color: str) -> tuple[int, int, int] | None:
         ) from None
     for channel in (r, g, b):
         if not 0 <= channel <= 65535:
-            raise ParameterError(
-                f"Invalid color {color!r}. Components must be within 0-65535."
-            )
+            raise ParameterError(f"Invalid color {color!r}. Components must be within 0-65535.")
     return r, g, b
