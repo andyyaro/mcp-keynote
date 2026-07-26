@@ -39,6 +39,20 @@ by `scripts/verify_tools.py` (see `TOOL_MATRIX.md`).
 
 ## 2. AVAILABLE BUT UNEXPOSED — scriptable, useful, probed live today
 
+> **Status update (3.0.0, same day):** everything in this section except the
+> "Small/unprobed remainder" table was implemented and live-verified —
+> tables/charts (`add_table`/`add_chart`), transitions
+> (`set_slide_transition`), exports (`export_presentation`, `export_pdf`
+> options), per-range styling (`style_text_range`), document
+> settings/geometry (`set_document_settings`/`set_slide_size`), skipped
+> slides (`set_slide_skipped`), lines (`add_line`), image properties
+> (`replace_image`, `add_image` width/height/description,
+> `set_element_style`). Deliberately left unexposed (low value for a model
+> building decks — revisit here if that judgment changes): playback control,
+> document passwords, `make image slides`, `.kth` via make-with-data,
+> `print`. Per-tool verification: [TOOL_MATRIX.md](TOOL_MATRIX.md); the
+> impossibility list with workarounds: [CEILING.md](CEILING.md).
+
 Ordered roughly by expected value to a model building a real deck.
 
 ### Native tables — the largest single gap

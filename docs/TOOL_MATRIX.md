@@ -2,12 +2,13 @@
 
 First verified 2026-07-25/26 on macOS 26.5.1, Keynote 14.5 (see
 `docs/ENVIRONMENT.md`); re-verified 2026-07-26 after the Phase 8 field-test
-fixes. Every AppleScript verb/property was checked against the Keynote
-scripting dictionary (tracked at `docs/keynote-14.5.sdef`), then executed
-against a live Keynote via `scripts/verify_tools.py` — **109 live checks, 0
-failed** (last full run 2026-07-26, after the geometry-honesty fix).
-"Verified" below means the tool ran against a real document and its
-effect was confirmed by reading state back (`get_slide_content`, file
+fixes, and extended 2026-07-26 for the 3.0.0 capability expansion. Every
+AppleScript verb/property was checked against the Keynote scripting
+dictionary (tracked at `docs/keynote-14.5.sdef`), then executed against a
+live Keynote via `scripts/verify_tools.py` — **155 live checks, 0 failed**
+(last full run 2026-07-26, after the 3.0.0 expansion). "Verified" below
+means the tool ran against a real document and its effect was confirmed by
+reading state back (`get_slide_content`, raw AppleScript readback, file
 existence, round-trips), not just a non-error exit.
 
 **Lesson from the field test (Phase 8):** the Phase 3 harness only exercised
@@ -73,12 +74,41 @@ only are marked *(re-verified P8)*.
 | `add_builds_to_slide` | slide_number, element_indices, element_type?, effect? | verified live (2 elements) | UI scripting loop, bullet-dot auto-skip | Batch apply; per-element OK/FAILED status in the response (UI timing flake possible per element). |
 | `add_shape` | slide_number, x?, y?, width?, height?, opacity?, doc_name? | verified | `make new shape with properties {position, width, height}`; `set opacity`; identity loop for the returned index | Insert with opacity + read-back; reply reports index and final geometry, matching `get_slide_content`. |
 
+## Native object tools (3.0.0)
+
+| Tool | Args | Status | AppleScript mapping | Verification exercises |
+|------|------|--------|--------------------|------------------------|
+| `add_table` | slide_number, data[][], x?, y?, width?, height?, header_row?, header_column?, font_name?, font_size?, column_widths?, style?, doc_name? | verified | `make new table with properties {row count, column count, header …}` + per-cell `set value` (numbers interpolated post-validation, strings via argv → `=`-strings become live formulas) + range styling from the resolved style; identity-located index | 4×3 table with `=SUM(B2:B3)`: raw cell readback confirms the number stayed numeric, the formula is live (`formula of cell` = `=SUM(B2:B3)`, value = 35), header styled. 2×2 minimum enforced server-side (Keynote raises -10000 below it — probed). |
+| `add_chart` | slide_number, chart_type, row_names, column_names, data, group_by?, x?, y?, width?, height?, doc_name? | verified | Compatibility-Suite `add chart … type <legacy chart type> group by chart row/column`, after `set current slide` (REQUIRED — without it Keynote silently creates nothing, probed); chart located as `chart (count of charts)`; geometry applied after | Chart count read back = 1; geometry read/write; pie slice semantics verified against rendered pixels (slices come from the grouped axis; grouping a single-entry axis gives one 100% slice — auto-corrected). Write-once documented: `chart` class exposes only geometry. |
+| `add_line` | slide_number, x1, y1, x2, y2, doc_name? | verified | `make new line with properties {start point, end point}`; identity-located index; count-guarded in-script retry | Creation + endpoint semantics probed (endpoints rw). Root-caused: `make new line` fails DETERMINISTICALLY with -10000 while the Animate inspector is open (as the build tools left it) — the build tools now restore the Format pane, and the harness runs add_line after builds to pin the fix. |
+| `add_colored_panel` | slide_number, x, y, width, height, color?, radius?, opacity?, style?, doc_name? | verified | Pure-Python rounded-rect PNG (2 px/pt, supersampled corners, no Pillow) placed via the verified image path | Reply geometry equals request; corner transparency and color pinned by unit tests on the PNG bytes; visual render checked in the e2e deck. Documented as an image, NOT recolorable in Keynote. |
+| `style_text_range` | slide_number, item_index, start, end, unit?, color?, font_name?, font_size?, doc_name? | verified | `set color/font/size of characters/words/paragraphs i thru j of object text of text item N` | Chars 1–5 set to #CC0000 + Helvetica-Bold; raw readback: char 2 red+bold, char 9 keeps the THEME color/font (assertion is relative — theme text isn't always dark). |
+| `replace_image` | slide_number, image_index, image_path, doc_name? | verified | `set file name of image N to POSIX file …` (bare-text form raises -1703 — probed); exists-guarded | File name reads back as the new file; geometry preserved (probed red→blue swap). |
+| `set_element_style` | slide_number, element_type (text/image/shape/line), element_index, rotation?, reflection_showing?, reflection_value?, locked?, doc_name? | verified | `set rotation / reflection showing / reflection value / locked` (all rw per sdef; NOT on tables/charts) | Rotation 15° read back exactly; reflection set; unlock exercised for cleanup. |
+
+## Declarative deck tools (3.0.0)
+
+| Tool | Args | Status | Mapping | Verification exercises |
+|------|------|--------|---------|------------------------|
+| `build_deck` | spec? \| markdown?, save_path?, style? | verified | Same fragment builders as the per-element tools, batched ~5 slides per osascript session; whole-spec validation first; per-element AppleScript `try`; layout names validated against the live theme (failure deletes the fresh doc) | Bad spec rejected up front with BOTH errors and no document created; 3-slide spec (table+chart+panel+two-column+notes+transition+skipped) builds with 0 element errors; settled geometry in the reply; idempotent re-run replaces the same file; markdown dialect builds (frontmatter, #/##, bullets, GitHub table, Notes:). Benchmark: 20-slide deck = 81 primitive calls/21.8 s vs 1 call/11.9 s/6 sessions. E2E: 16-slide deck, 6 sessions, 0 errors. |
+| `describe_deck` | doc_name? | verified | Structured readback (ASCII 30/31 separators built via `character id`), phantom-filtered text items, per-cell `formula`-then-`value` table reads, `file of image` POSIX path with basename fallback | Round-trips notes/transition/skipped/layout/table data (numbers typed, formulas preserved); rebuild from the described spec succeeds after dropping the two documented non-round-trippables (charts: write-once, no readable data → `chart_type: null` rejected up front; embedded images whose source file is gone: basename only). Z-order across classes is NOT preserved (AppleScript enumerates per class). |
+
+## Slide/document setting tools (3.0.0)
+
+| Tool | Args | Status | AppleScript mapping | Verification exercises |
+|------|------|--------|--------------------|------------------------|
+| `set_slide_transition` | slide_number, effect, duration?, delay?, automatic?, doc_name? | verified | `set transition properties to {transition effect:…, …}` — 43 effects in a trusted literal map | Set push/1.5 s, read back `push|1.5` from `transition properties`. |
+| `set_slide_skipped` | slide_number, skipped, doc_name? | verified | `set skipped` (exists-guarded). Quirk (probed): `skipped:true` inside `make new slide with properties` is silently ignored — must be its own statement | True and false both read back. |
+| `set_slide_size` | width, height, doc_name? | verified | `set width/height of document` (rw on a LIVE document — probed) | 1024×768 → 1920×1080 read back; reply warns that Keynote rescales layout content. |
+| `set_document_settings` | slide_numbers_showing?, auto_loop?, auto_play?, auto_restart?, maximum_idle_duration?, doc_name? | verified | `set slide numbers showing / auto loop / auto play / auto restart / maximum idle duration` | Slide numbers on → read back true → restored. All five probed rw in Phase A. |
+
 ## Export tools
 
 | Tool | Args | Status | AppleScript mapping | Verification exercises |
 |------|------|--------|--------------------|------------------------|
 | `screenshot_slide` | slide_number, output_path, format?, doc_name? | verified *(re-verified P8)* | `export … as slide images` with per-slide `skipped` save/restore; phantom-aware unfilled-placeholder count | PNG produced AND honesty both ways: a slide with an unfilled placeholder reports "1 unfilled placeholder … NOT rendered"; a fully-filled slide reports "matches the editor view". The export is NOT a faithful editor view — Phase 3 treated a clean image as proof of a clean slide, which the field test showed is false. |
-| `export_pdf` | output_path, doc_name? | verified (PDF produced) | `export … to (POSIX file …) as PDF` | File existence + size. |
+| `export_pdf` | output_path, layout?, image_quality?, include_skipped?, doc_name? | verified (both layouts) | `export … as PDF with properties {export style, PDF image quality, skipped slides}` (trusted literal maps) | Bare PDF and slides_with_notes layout both produced with real size; invalid layout/quality rejected in Python. |
+| `export_presentation` | format (pptx/movie/html/images/key09), output_path, movie_format?, image_format?, include_skipped?, doc_name? | verified (pptx/images/html per harness run; movie 360p `.m4v` and key09 produced in the Phase A probes — movie renders near-real-time, too slow for every run) | `export … as Microsoft PowerPoint / QuickTime movie / HTML / slide images / Keynote 09` with per-format options; extensions normalized | Artifacts on disk: .pptx (>1 KB), ≥3 per-slide PNGs, HTML bundle dir. Movie timeout 600 s. |
 
 ## Runner-level behavior (no single tool)
 

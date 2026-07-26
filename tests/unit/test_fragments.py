@@ -112,8 +112,9 @@ class TestShapeAndLineFragments:
 
     def test_line_interpolates_validated_numbers(self):
         lines = line_fragment("L", x1=1, y1=2, x2=3.5, y2=4)
-        assert "start point:{1, 2}" in lines[0]
-        assert "end point:{3.5, 4}" in lines[0]
+        script = "\n".join(lines)
+        assert "start point:{1, 2}" in script
+        assert "end point:{3.5, 4}" in script
 
 
 class TestImageFragment:

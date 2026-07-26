@@ -6,16 +6,22 @@
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
 
 An MCP server that gives AI full control over Apple Keynote through AppleScript
-automation. Create, edit, and export presentations — all via natural language.
+automation. Build entire decks from one declarative spec — native tables and
+charts, transitions, styles, speaker notes — and export to PDF, PPTX, movie,
+or HTML. All via natural language.
 
 This is a modernized fork of
 [ByAxe/keynote-mcp](https://github.com/ByAxe/keynote-mcp) (itself a fork of
 [easychen/keynote-mcp](https://github.com/easychen/keynote-mcp)). Every tool
-in this fork was validated against the Keynote 14.5 scripting dictionary and
-executed against a real Keynote — see [docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md).
-User input reaches AppleScript via `osascript` argv, never string
-interpolation, so titles containing quotes, backslashes, emoji, or CJK can't
-break (or hijack) the script.
+was validated against the Keynote 14.5 scripting dictionary and executed
+against a real Keynote — 155 live checks, 0 failed
+([docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md)). The scripting dictionary's
+full surface was mapped and probed
+([docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md)); what Keynote
+genuinely cannot be told to do is documented in
+[docs/CEILING.md](docs/CEILING.md). User input reaches AppleScript via
+`osascript` argv, never string interpolation, so titles containing quotes,
+backslashes, emoji, or CJK can't break (or hijack) the script.
 
 ## Quick Start
 
@@ -83,9 +89,15 @@ Capabilities → Skills → Upload skill.
 
 ```
 "Create a presentation about our Q1 results with 6 slides"
-"Add a slide with a code example showing the API"
-"Export the presentation as PDF"
+"Build the whole deck from this outline, boardroom style, with a revenue
+ chart on slide 3 and speaker notes"
+"Add a native table with the headcount numbers and a SUM row"
+"Export the presentation as PPTX"
 ```
+
+For multi-slide decks the model should reach for `build_deck` (one call for
+the whole deck) rather than element-by-element tools; `describe_deck` reads
+any open deck back as JSON for diffing or round-tripping.
 
 ## Troubleshooting
 
@@ -98,21 +110,38 @@ Capabilities → Skills → Upload skill.
 | Unsplash tools missing from tools/list | `UNSPLASH_KEY` not set | Set it in the MCP client config (opt-in feature) |
 | Build animations fail intermittently | Keynote must be frontmost; UI scripting is timing-sensitive | Retry once; keep Keynote visible and the screen unlocked while builds run |
 
-## Available Tools (45)
+## Available Tools (59)
 
 | Category | Tools |
 |----------|-------|
-| **Presentation** (9) | create, open, save, close, list, set/get theme, info, slide size |
-| **Slides** (9) | add, delete, duplicate, move, select, count, layouts, slide info |
-| **Content** (22) | text boxes / titles / subtitles (font, color, size — large fonts auto-sized, no clipping), bullet & numbered lists, code blocks, quotes, theme placeholders (`set_slide_content`), images, shapes with opacity, edit/move/resize/delete elements, speaker notes, clear slide, build-in animations |
-| **Export** (2) | screenshot slide, export PDF |
+| **Deck building** (2) | `build_deck` — an entire deck from one JSON spec or a markdown dialect (validated up front, per-element error isolation, one AppleScript session per ~5 slides, settled geometry reported, two-column auto-flow, styles); `describe_deck` — read a deck back into the same spec (diffable in git) |
+| **Presentation** (11) | create, open, save, close, list, set/get theme, info, slide size (get + live resize), document settings (slide numbers, autoplay/loop/restart) |
+| **Slides** (11) | add, delete, duplicate, move, select, count, layouts, slide info, transitions (all 43 effects), skip/unskip |
+| **Content** (22) | text boxes / titles / subtitles (font, color, size — exact placement, server-side centering), bullet & numbered lists, code blocks, quotes, theme placeholders (`set_slide_content`), images (with size + alt text), shapes with opacity, edit/move/resize/delete elements, speaker notes, clear slide, build-in animations |
+| **Native objects** (7) | tables (data, live `=SUM(…)` formulas, styled headers, column widths), charts (17 native types — bar/line/area/pie/scatter/stacked/3-D), lines, colored panels (rendered PNG — see below), per-range text styling (bold/color a word inside a box), replace image in place, rotation/reflection/lock |
+| **Export** (4) | screenshot slide, PDF (slides / with-notes / handouts + quality), PPTX / QuickTime movie / HTML / per-slide images / Keynote 09 |
 | **Unsplash** (3, opt-in) | search, add to slide, random image (requires `UNSPLASH_KEY`) |
 
 Full per-tool verification status: [docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md).
 
-Known Keynote limits (not fixable via AppleScript): shape fill color is
-read-only (use the opacity workaround), connection-line routing, build-order
-reordering, and "With Previous" timing require the Keynote UI.
+### Styles
+
+A deck-wide style — fonts, palette, margins, table header colors — comes
+from a built-in (`plain`, `boardroom`, `midnight`, `editorial`), a
+`.keynote-mcp.toml` next to the deck, or a TOML path passed as `style`.
+`build_deck`, `add_table`, and `add_colored_panel` consult it, so decks stay
+visually consistent without per-call coordinates and font names.
+
+### Known Keynote limits
+
+Not fixable via AppleScript — verified by live probes, documented with
+workarounds in [docs/CEILING.md](docs/CEILING.md): shape fill color is
+read-only (colored panels are therefore *rendered images*, not recolorable
+in Keynote), text alignment exists only inside tables, no hyperlinks, no
+grouping, no z-order control (creation order is paint order), no
+movie/audio insertion, chart data is write-once, tables are 2×2 minimum,
+and build-order/"With Previous"/connection-line routing require the
+Keynote UI.
 
 ## Environment variables
 
@@ -138,10 +167,14 @@ macos-latest for Python 3.11–3.13); `tests/integration/` is marked
 ```
 src/keynote_mcp/
   server.py       # MCP stdio server, tool routing
-  tools/          # presentation, slide, content, export, unsplash
-  utils/          # osascript runner (argv-based), error mapping, validation
+  tools/          # presentation, slide, content, objects (native tables/
+                  # charts), deck (build_deck/describe_deck), fragments
+                  # (shared AppleScript builders), export, unsplash
+  utils/          # osascript runner (argv-based), error mapping, validation,
+                  # styles (.keynote-mcp.toml), PNG panel rendering
 skills/           # keynote-presentation Claude Skill
-docs/             # ENVIRONMENT, TOOL_MATRIX, MCP_V2_MIGRATION, MODERNIZATION_REPORT
+docs/             # ENVIRONMENT, TOOL_MATRIX, CAPABILITY_MATRIX, CEILING,
+                  # MCP_V2_MIGRATION, MODERNIZATION_REPORT
 ```
 
 ## Standalone Binary

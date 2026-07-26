@@ -329,7 +329,10 @@ class TestContentTools:
     async def test_build_in_ui_timeout_is_extended(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "Window"
         await content_tools.add_build_in(2, "text", 3)
-        assert mock_subprocess_run.call_args.kwargs["timeout"] == 60.0
+        # the last call is the best-effort Format-pane restore (10s); the UI
+        # scripting call itself gets the extended 60s timeout
+        timeouts = [c.kwargs.get("timeout") for c in mock_subprocess_run.call_args_list]
+        assert 60.0 in timeouts
 
     async def test_builds_batch_rejects_garbage_indices(self, content_tools, mock_subprocess_run):
         result = await content_tools.add_builds_to_slide(1, "1,-2")

@@ -1,5 +1,6 @@
 """Content management tools."""
 
+import logging
 import os
 
 from mcp.types import TextContent, Tool
@@ -23,6 +24,8 @@ from .fragments import (
     shape_fragment,
     text_item_fragment,
 )
+
+logger = logging.getLogger(__name__)
 
 _DOC_ARG = {
     "type": "string",
@@ -1460,6 +1463,29 @@ class ContentTools:
             """
         )
 
+    def _restore_format_pane(self) -> None:
+        """Switch the inspector back to Format after a build tool ran.
+
+        The build tools leave the Animate inspector open, and with it open
+        ``make new line`` fails DETERMINISTICALLY with -10000 "AppleEvent
+        handler failed" (verified live; other make-new classes still work).
+        Best-effort: UI state must never fail the build call itself.
+        """
+        try:
+            self.runner.run(
+                """
+                tell application "System Events"
+                    tell application process "Keynote"
+                        click menu item "Format" of menu 1 of menu item "Inspector" of ¬
+                            menu 1 of menu bar item "View" of menu bar 1
+                    end tell
+                end tell
+                """,
+                timeout=10.0,
+            )
+        except Exception:
+            logger.debug("Could not restore the Format inspector pane", exc_info=True)
+
     async def add_build_in(
         self,
         slide_number: int,
@@ -1587,6 +1613,7 @@ class ContentTools:
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 
+            self._restore_format_pane()
             return [
                 TextContent(
                     type="text",
@@ -1597,6 +1624,7 @@ class ContentTools:
                 )
             ]
         except Exception as e:
+            self._restore_format_pane()
             return [TextContent(type="text", text=f"Failed to add build in: {e}")]
 
     async def remove_build_in(
@@ -1677,6 +1705,7 @@ class ContentTools:
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 
+            self._restore_format_pane()
             return [
                 TextContent(
                     type="text",
@@ -1687,6 +1716,7 @@ class ContentTools:
                 )
             ]
         except Exception as e:
+            self._restore_format_pane()
             return [TextContent(type="text", text=f"Failed to remove build in: {e}")]
 
     async def add_builds_to_slide(

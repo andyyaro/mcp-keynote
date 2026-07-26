@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-07-26
+
+Capability expansion to the practical ceiling of what Keynote's AppleScript
+dictionary allows. The dictionary was parsed programmatically and every
+ambiguous item probed against a live Keynote 14.5 first
+([docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md)); what the dictionary
+genuinely cannot do is stated in [docs/CEILING.md](docs/CEILING.md). 45 → 59
+tools; 155 live verification checks, 0 failed.
+
+### Added — declarative deck building
+
+- **`build_deck`**: an entire deck from one JSON spec or a small markdown
+  dialect. Whole-spec validation BEFORE anything is created (all errors at
+  once, with `slides[i].elements[j]` paths); per-element AppleScript `try`
+  isolation (one bad element reports, the rest of the deck builds); slides
+  batched 5 per osascript session; settled geometry for every element in the
+  reply; auto-flow layout inside style margins with `column: left/right`
+  two-column support; `on_exists: replace|error|unique` re-run semantics.
+  Benchmark (20-slide deck, live): 81 primitive tool calls / 21.8 s → 1 call
+  / 11.9 s / 6 osascript sessions.
+- **`describe_deck`**: reads an open presentation back into the same spec
+  format (layouts, transitions, skipped, notes, placeholders, elements with
+  settled geometry, table cell values with numbers and formulas preserved) —
+  decks round-trip and become diffable in git. Documented limits: charts
+  come back geometry-only (no data API) and embedded images keep only a
+  basename once the source file is gone.
+
+### Added — native objects (probed live first)
+
+- **`add_table`**: native Keynote tables from a 2-D data array — cell
+  values, live formulas (any string starting `=`), header styling from the
+  resolved style, column widths. Keynote enforces a 2×2 minimum (probed).
+- **`add_chart`**: native theme-styled charts via the Compatibility-Suite
+  `add chart` command (bar/line/area/pie/scatter, stacked, 3-D — 17 types).
+  The target slide is made the current slide first (otherwise Keynote
+  silently creates nothing — probed). Write-once: no chart-editing API
+  exists; update = delete + re-add. Pie slices come from the grouped axis;
+  the tool auto-groups by the axis that has multiple entries.
+- **`add_line`** (straight lines, rw endpoints), **`style_text_range`**
+  (per-character/word/paragraph color/font/size; bold = the bold face name),
+  **`replace_image`** (swap the file, keep geometry), **`set_element_style`**
+  (rotation, reflection, lock).
+- **`add_colored_panel`**: rounded-rect color panels rendered as PNG
+  (pure-Python, no Pillow) and placed as images — the documented route
+  around the read-only shape fill. Explicitly not recolorable in Keynote.
+
+### Added — slides, document, export
+
+- **`set_slide_transition`** (all 43 effects, duration/delay/automatic),
+  **`set_slide_skipped`**, **`set_slide_size`** (live document resize),
+  **`set_document_settings`** (slide numbers, auto loop/play/restart, idle).
+- **`export_presentation`**: PPTX, QuickTime movie (360p–2160p/native),
+  HTML bundle, per-slide images (PNG/JPEG/TIFF), Keynote 09. `export_pdf`
+  gained `layout` (slides / slides_with_notes / handouts), `image_quality`,
+  and `include_skipped`. `add_image` gained width/height/description
+  (VoiceOver alt text).
+
+### Added — styles
+
+- `.keynote-mcp.toml` style config (or a `style` argument: built-in name or
+  TOML path) defining fonts, palette, margins, table header styling; four
+  built-ins (`plain`, `boardroom`, `midnight`, `editorial`) with `extends`
+  support. Consulted by `build_deck`, `add_table`, `add_colored_panel`.
+  `parse_color` accepts `#RRGGBB` everywhere colors are accepted.
+
+### Changed
+
+- The element-creation AppleScript now has a single source
+  (`tools/fragments.py`) consumed by both the per-element tools and
+  `build_deck` — the verified invariants (argv-only user strings,
+  position-after-sizing, identity-located indices, settled-geometry
+  readback) hold everywhere by construction.
+
+### Fixed
+
+- Styles: TOML type validation now uses the dataclass annotations, so
+  `title_size = 70.5` is accepted (the float field's whole-number default
+  had made it demand an int).
+
+### Facts learned (recorded so nobody re-litigates)
+
+- `st` is a reserved AppleScript token (the ordinal suffix in `1st`) —
+  `set st to ""` is a syntax error. So are `before`, `nd`, `rd`, `th`.
+- Pie charts slice along the grouped axis; grouping by a single-entry axis
+  renders one 100% slice.
+- `make new group` is a complete silent no-op; element `duplicate` raises
+  "can not be copied"; z-order is creation order, unchangeable.
+- Movie/audio insertion silently creates nothing (or errors) — impossible.
+- While the **Animate inspector is open** (as the UI-scripting build tools
+  leave it), `make new line` fails DETERMINISTICALLY with -10000 "AppleEvent
+  handler failed" (other make-new classes keep working). The build tools now
+  restore the Format pane when they finish. First misdiagnosed as a
+  transient; the live harness caught it because it runs builds before lines.
+
 ## [2.2.0] - 2026-07-26
 
 Geometry honesty. A field build showed every add_* placed at y=Y settling at

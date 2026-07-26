@@ -253,10 +253,28 @@ def line_fragment(
 ) -> list[str]:
     for name, v in (("x1", x1), ("y1", y1), ("x2", x2), ("y2", y2)):
         validate_number(v, name, minimum=0)
-    lines = [
+    make_line = (
         "set newLine to make new line with properties "
         f"{{start point:{{{_fmt_num(x1)}, {_fmt_num(y1)}}}, "
         f"end point:{{{_fmt_num(x2)}, {_fmt_num(y2)}}}}}"
+    )
+    # `make new line` fails with -10000 "AppleEvent handler failed" while
+    # Keynote's Animate inspector is open (root-caused live; the build tools
+    # now restore the Format pane). Kept as defense in depth: one in-script
+    # retry, guarded by the line count so it can never duplicate a
+    # half-created line (lines have no phantom-count problem).
+    lines = [
+        "set lineCountBefore to count of lines of targetSlide",
+        "try",
+        make_line,
+        "on error errMsg number errNum",
+        "if errNum is -10000 and (count of lines of targetSlide) is lineCountBefore then",
+        "delay 0.4",
+        make_line,
+        "else",
+        "error errMsg number errNum",
+        "end if",
+        "end try",
     ]
     lines += _identity_index_lines("line", "newLine")
     lines += _emit_result(tag, "newLine")
