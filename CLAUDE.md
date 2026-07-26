@@ -33,7 +33,7 @@ src/keynote_mcp/
     presentation.py      — create/open/save/close/list, themes, slide size
     slide.py             — add/delete/duplicate/move/select slides, layouts
     content.py           — text boxes/titles/lists/code/quotes (font, color,
-                           auto-sized boxes for large fonts), theme
+                           auto-fit boxes, exact centering), theme
                            placeholders (set_slide_content), images, shapes,
                            edit/move/resize/delete elements, speaker notes,
                            clear_slide, build animations (UI scripting)
@@ -87,8 +87,16 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
 - Invalid indices surface as error **-1719** ("Invalid index"), not -1728.
 - Window titles don't reliably match document names — UI scripting targets
   `window 1` of the Keynote process.
-- Fonts > 48pt land in a tiny auto-sized box that truncates text; the server
-  absorbs this (auto-size box before setting size, re-set text after).
+- The legacy ">48pt tiny-box clipping" does NOT reproduce on Keynote 14.5 in
+  the server's single-osascript-call flow (probed at 96/150/300/500pt with
+  long/multiline/CJK text): auto-fit tracks the text at every size, Keynote
+  itself wraps lines that would outgrow the slide (box stayed ≤ ~1800pt),
+  and the auto-fit box hugs the rendered text — box center ≡ visual text
+  center within 0.5pt (pixel-measured). That equivalence is what makes
+  `centered` visually exact, so never pre-widen the box (the old
+  0.58·pt/char heuristic centered the box while the left-aligned text
+  inside sat ~110pt left of slide center at 96pt). Re-setting the text
+  after sizing is kept as cheap insurance against truncation regressions.
 - Text items are born at the theme default font size (48pt, default theme)
   and auto-fit when the size changes, keeping the box's vertical CENTER
   fixed — a position set before sizing drifts by (h_before−h_after)/2

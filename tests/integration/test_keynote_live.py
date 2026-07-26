@@ -8,9 +8,11 @@ without saving in teardown, and quits Keynote only if the fixture started it.
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from keynote_mcp.tools.content import ContentTools
 from keynote_mcp.tools.export import ExportTools
@@ -80,6 +82,58 @@ async def test_large_font_title_is_not_clipped(keynote_doc, content, slides):
     state = (await content.get_slide_content(2, doc_name=keynote_doc))[0].text
     assert title in state, f"96pt title was clipped: {state}"
     await slides.delete_slide(2, doc_name=keynote_doc)
+
+
+async def test_centered_visual_text_center_matches_requested_center(keynote_doc, content, slides):
+    """centered=True must center the RENDERED TEXT, not merely the box.
+
+    The two coincide only while the box is Keynote's natural auto-fit one
+    (box center == visual text center, measured within 0.5pt): the old >48pt
+    pre-widening heuristic kept the box centered while the left-aligned text
+    inside drifted ~110pt left at 96pt. Measures the rendered pixels of each
+    export, so a regression in either the centering math or the box sizing
+    fails here. The extent-ratio check at the end is the live guard against
+    visual clipping (the legacy ">48pt truncates to 1-2 characters" symptom).
+    """
+    export = ExportTools()
+    presentation = PresentationTools()
+    size_text = (await presentation.get_slide_size(doc_name=keynote_doc))[0].text
+    match = re.search(r"- Size: (\d+) x (\d+) pt", size_text)
+    assert match, size_text
+    slide_w = int(match.group(1))
+
+    rendered_widths: dict[int, float] = {}
+    for font_size in (24, 48, 96):
+        await slides.add_slide(doc_name=keynote_doc)
+        n = int((await slides.get_slide_count(doc_name=keynote_doc))[0].text.split(":")[1])
+        added = await content.add_title(
+            n,
+            "Centered Title",
+            font_size=font_size,
+            color="65535,0,0",
+            centered=True,
+            doc_name=keynote_doc,
+        )
+        assert "Added title" in added[0].text, added[0].text
+
+        shot = SCRATCH / f"integration-centered-{font_size}.png"
+        result = await export.screenshot_slide(n, str(shot), doc_name=keynote_doc)
+        assert "Captured screenshot" in result[0].text, result[0].text
+
+        image = Image.open(shot).convert("L")
+        scale = image.size[0] / slide_w
+        bbox = image.point(lambda v: 255 if v < 200 else 0).getbbox()
+        assert bbox, f"{font_size}pt: no rendered text pixels in {shot}"
+        visual_center = (bbox[0] + bbox[2] - 1) / 2 / scale
+        assert abs(visual_center - slide_w / 2) <= 4, (
+            f"{font_size}pt: visual text center {visual_center:.1f}pt is off the "
+            f"requested center {slide_w / 2}pt (box centered, text not?)"
+        )
+        rendered_widths[font_size] = (bbox[2] - bbox[0]) / scale
+        await slides.delete_slide(n, doc_name=keynote_doc)
+
+    assert rendered_widths[48] / rendered_widths[24] == pytest.approx(2.0, rel=0.2)
+    assert rendered_widths[96] / rendered_widths[48] == pytest.approx(2.0, rel=0.2)
 
 
 async def test_slide_lifecycle(keynote_doc, slides):

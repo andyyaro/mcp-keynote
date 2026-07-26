@@ -16,10 +16,14 @@ Build polished Keynote presentations using keynote-mcp MCP tools. This skill enc
 
 ## Font Sizes (server 2.x absorbs the clipping bug)
 
-Since keynote-mcp 2.0 the server auto-sizes text boxes for large fonts and
-restores any truncated text itself — just pass `font_size=96` and it works.
-You can still pass explicit `width`/`height` to `add_text_box` to control
-wrapping. Verify with a screenshot as usual.
+Since keynote-mcp 2.0 large fonts just work — pass `font_size=96` and the
+server lets Keynote's auto-fit box hug the rendered text and restores any
+truncated text itself. For horizontally centered titles/subtitles pass
+`centered=true` (visually exact, pixel-verified at 24/48/96pt) instead of
+computing x yourself — and don't combine centering with a manual `width`,
+which would offset the left-aligned text inside the wider box. You can still
+pass explicit `width`/`height` to `add_text_box` to control wrapping. Verify
+with a screenshot as usual.
 
 (On server 1.x the old manual workaround was: add → `get_slide_content` →
 `resize_element` → `edit_text_item`; see `references/font-size-workaround.md`.)
@@ -139,7 +143,7 @@ See `references/troubleshooting-and-limitations.md` for detailed limitations and
 3. `create_presentation` with theme
 4. Add all slides, set to Blank layout
 5. Build content using templates from `references/slide-templates.md`
-6. For large titles (>48pt): add → get index → resize → edit_text_item
+6. For large or centered titles: pass `font_size`/`centered=true` directly (server 2.x needs no resize/edit follow-up)
 7. Screenshot each slide → Read image → verify
 8. Fix overlaps: get_slide_content → calculate → move_element
 9. Add build animations if needed

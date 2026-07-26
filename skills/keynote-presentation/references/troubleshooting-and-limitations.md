@@ -4,7 +4,7 @@
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| Text shows 1-2 chars | font_size > 48 clips in auto-sized box | resize_element → edit_text_item (see font-size-workaround.md) |
+| Text shows 1-2 chars | Server running pre-2.2 code (old multi-call font flow) | Restart the MCP server; on old servers: resize_element → edit_text_item (see font-size-workaround.md) |
 | No background visible | Theme incompatible with Blank layout | Use Slate, Bold Colour, or Basic Black (see theme-reference.md) |
 | Elements overlap | Multi-line content taller than expected | get_slide_content → check y + height → move_element |
 | MCP returns old behavior | Server running old code after edits | Restart MCP server (/mcp or restart session) |

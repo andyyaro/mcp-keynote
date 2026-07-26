@@ -127,17 +127,22 @@ class TestSlideTools:
 
 
 class TestContentTools:
-    async def test_large_font_autosizes_box_and_restores_text(
+    async def test_large_font_keeps_autofit_box_and_restores_text(
         self, content_tools, mock_subprocess_run
     ):
-        mock_subprocess_run.return_value.stdout = "1"
+        # No pre-widening and no explicit height at >48pt: Keynote's auto-fit
+        # box hugs the rendered text at every size (verified live at
+        # 96/150/300/500pt), and a pre-widened box would break `centered` -
+        # the box centers while the left-aligned text inside lands off-center.
+        # An explicit height has no lasting effect anyway (snaps back to
+        # auto-fit). The text re-set stays, AFTER the font size, as insurance
+        # against auto-fit truncation regressions.
+        mock_subprocess_run.return_value.stdout = "1|100,200|672,119"
         await content_tools.add_title(1, "Big Title Here", font_size=96)
         script = last_script(mock_subprocess_run)
-        assert "set width of newItem" in script
-        assert "set height of newItem" in script
+        assert "set width of newItem" not in script
+        assert "set height of newItem" not in script
         assert "set object text of newItem to theText" in script
-        # width must come BEFORE font size, restore AFTER
-        assert script.index("set width") < script.index("set size of object text")
         assert script.index("set size of object text") < script.index(
             "set object text of newItem to theText"
         )
@@ -146,6 +151,23 @@ class TestContentTools:
         mock_subprocess_run.return_value.stdout = "1"
         await content_tools.add_title(1, "small", font_size=36)
         assert "set width of newItem" not in last_script(mock_subprocess_run)
+
+    async def test_centered_large_font_box_is_never_prewidened(
+        self, content_tools, mock_subprocess_run
+    ):
+        # `centered` centers the BOX; the rendered text centers with it only
+        # because the box is the natural auto-fit one. Any injected width
+        # would reintroduce the ~60-110pt leftward visual drift measured on
+        # the old 0.58*pt/char heuristic.
+        mock_subprocess_run.return_value.stdout = "1|624,400|672,119"
+        await content_tools.add_title(1, "Hello Big World", font_size=96, centered=True)
+        script = last_script(mock_subprocess_run)
+        assert "set width of newItem" not in script
+        assert "set height of newItem" not in script
+        assert "((width of targetDoc) - (width of newItem)) div 2" in script
+        # centering must see the settled box: after font size AND text restore
+        assert script.index("div 2") > script.index("set size of object text")
+        assert script.index("div 2") > script.index("set object text of newItem to theText")
 
     async def test_explicit_width_wins_over_autosize(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "1"

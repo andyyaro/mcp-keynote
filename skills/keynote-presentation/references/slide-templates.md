@@ -5,9 +5,8 @@ All coordinates assume 1920x1080 slide. CENTER means calculate x for centering (
 ## Hero slide
 
 ```yaml
-add_title(slide=1, title="Product Name", x=CENTER, y=260, font_size=96)
-# → resize + edit_text_item to fix clipping
-add_subtitle(slide=1, subtitle="One-line tagline", x=CENTER, y=440, font_size=32)
+add_title(slide=1, title="Product Name", y=260, font_size=96, centered=true)
+add_subtitle(slide=1, subtitle="One-line tagline", y=440, font_size=32, centered=true)
 add_text_box(slide=1, text="tag1 // tag2 // tag3", x=CENTER, y=520)
 add_text_box(slide=1, text="github.com/user/repo", x=CENTER, y=960)
 ```

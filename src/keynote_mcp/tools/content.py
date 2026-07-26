@@ -73,8 +73,8 @@ class ContentTools:
                         "width": {
                             "type": "number",
                             "description": (
-                                "Text box width in points (optional). Set this for large "
-                                "fonts so text does not clip."
+                                "Text box width in points (optional). Omit to auto-fit "
+                                "the text; a fixed width makes long text wrap inside it."
                             ),
                         },
                         "height": {
@@ -108,9 +108,9 @@ class ContentTools:
                         "centered": {
                             "type": "boolean",
                             "description": (
-                                "Horizontally center the box on the slide, computed "
-                                "server-side from the final box width (optional; "
-                                "overrides x)"
+                                "Horizontally center the text on the slide, computed "
+                                "server-side from the final auto-fit box width, which "
+                                "hugs the rendered text (optional; overrides x)"
                             ),
                         },
                         "doc_name": _DOC_ARG,
@@ -140,9 +140,9 @@ class ContentTools:
                         "centered": {
                             "type": "boolean",
                             "description": (
-                                "Horizontally center the box on the slide, computed "
-                                "server-side from the final box width (optional; "
-                                "overrides x)"
+                                "Horizontally center the text on the slide, computed "
+                                "server-side from the final auto-fit box width, which "
+                                "hugs the rendered text (optional; overrides x)"
                             ),
                         },
                         "doc_name": _DOC_ARG,
@@ -610,12 +610,18 @@ class ContentTools:
         item is not the last entry. The identity loop returns the index that
         get_slide_content / move_element / edit_text_item actually address.
 
-        Absorbs the Keynote font-clipping bug (fonts > 48pt land in a tiny
-        auto-sized box that truncates text to 1-2 characters): the box is
-        sized BEFORE the font size is applied - auto-computed from the text
-        when the caller gives no width - and the text is re-set afterwards to
-        restore any truncation. Callers never need the old resize-then-edit
-        workaround.
+        The box stays auto-sized unless the caller passes width/height.
+        Keynote's auto-fit tracks the rendered text at every font size
+        (verified live at 96/150/300/500pt, long/multiline/CJK text, on
+        Keynote 14.5 - the legacy ">48pt tiny-box clipping" belonged to the
+        old multi-call add/resize/edit flows and does not reproduce in this
+        single-call flow; Keynote itself wraps lines that would outgrow the
+        slide). The natural box is load-bearing for ``centered``: its center
+        coincides with the rendered text's center (measured within 0.5pt),
+        whereas any pre-widened box centers the BOX while the left-aligned
+        text inside lands off-center - so never pre-widen it. The text is
+        re-set after the font size as cheap insurance against auto-fit
+        truncation regressions.
 
         Position is applied AFTER all font/size mutations. Text items are
         born at the theme default font size (48pt measured) and auto-fit
@@ -632,14 +638,6 @@ class ContentTools:
         rgb = parse_color(color)
         if font_size is not None:
             font_size = validate_number(font_size, "font_size", minimum=1, maximum=500)
-            if font_size > 48 and width is None:
-                # ~0.58 px/pt per character (measured: 96pt=55px, 72pt=42px,
-                # 64pt=38px, 56pt=33px), plus a wrap-safety buffer.
-                lines = text.splitlines() or [""]
-                longest = max(len(line) for line in lines)
-                width = min(1800.0, longest * font_size * 0.58 + 60)
-                if height is None:
-                    height = len(lines) * font_size * 1.5 + 20
         box_w: float | None = None
         box_h: float | None = None
         if width is not None or height is not None:
@@ -667,16 +665,19 @@ class ContentTools:
             if rgb
             else "-- default color"
         )
-        # Re-setting the text after the font-size change restores anything the
-        # auto-sized box truncated (the absorbed clipping workaround).
+        # Re-setting the text after the font-size change is insurance: should
+        # auto-fit ever truncate the object text again (the legacy >48pt
+        # clipping), this restores it.
         restore_text = (
             "set object text of newItem to theText"
             if font_size is not None
             else "-- no restore needed"
         )
         # Server-side horizontal centering: runs AFTER sizing/text restore so
-        # the box width is final; keeps whatever y is in effect. Spares
-        # callers the read-width-then-move_element dance.
+        # the box width is final; keeps whatever y is in effect. Centering
+        # the box centers the rendered text only because the box is the
+        # natural auto-fit one (see docstring). Spares callers the
+        # read-width-then-move_element dance.
         center_h = (
             """set curPos to position of newItem
                         set position of newItem to ¬

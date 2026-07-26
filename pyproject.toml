@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "keynote-mcp"
-version = "2.2.0"
+version = "2.3.0"
 description = "An MCP server for controlling Apple Keynote presentations via AppleScript"
 readme = "README.md"
 license = "MIT"
@@ -52,6 +52,7 @@ dev = [
     "mypy>=1.13",
     "types-aiofiles",
     "pre-commit>=4.0",
+    "pillow>=10",  # integration tests measure rendered text pixels in slide exports
 ]
 
 [project.urls]

@@ -1,54 +1,29 @@
-# Font Size Bug — Detailed Workaround
+# Font Size — No Workaround Needed (kept for history)
 
-## The problem
+## Current behavior (server ≥ 2.2)
 
-`add_title` and `add_text_box` create a default-sized text box, THEN set the font size. If the font is large (>48pt), the text is clipped/truncated to 1-2 characters because the box is too small.
+Large fonts need NO workaround. `add_title` / `add_subtitle` / `add_text_box`
+apply the font size in the same call that creates the item, let Keynote's
+auto-fit size the box to the rendered text (verified live at 96/150/300/500pt),
+re-set the text as insurance, and return the settled geometry in the reply.
+Keynote wraps lines that would outgrow the slide.
 
-## Safe font sizes (no workaround needed)
+`centered=true` (add_title / add_subtitle) centers the rendered text exactly:
+the auto-fit box hugs the text, so centering the box centers the text
+(pixel-verified within 4pt at 24/48/96pt). Do not pass a manual `width`
+when you want centering — a wider box leaves the left-aligned text inside it
+off-center.
 
-| Tool | Max safe size |
-|------|--------------|
-| add_title | 48pt |
-| add_subtitle | 32pt |
-| add_bullet_list | 28pt |
-| add_numbered_list | 28pt |
-| add_code_block | 20pt |
-| add_text_box | default (~24pt) |
+## If you still see 1-2 characters (old server only)
 
-## Workaround for large titles (>48pt)
-
-### Step-by-step
+That was the v1 flow: the item was created at the default box size and the
+font applied in a later call, truncating the stored text. Fix on old servers:
 
 ```yaml
-# 1. Add the title at the desired font size (text WILL be clipped)
-add_title(slide_number=1, title="Keynote MCP", x=480, y=260, font_size=96)
-
-# 2. Find the element index
-get_slide_content(slide_number=1)
-# Returns: TEXT:4:::r:::480,260:::43,123  (text truncated to "r")
-
-# 3. Resize the box to fit the large text
-resize_element(slide_number=1, element_type="text", element_index=4, width=900, height=140)
-
-# 4. Restore the truncated text
-edit_text_item(slide_number=1, item_index=4, new_text="Keynote MCP")
+get_slide_content(slide_number=1)          # find the index and truncated text
+resize_element(..., width=900, height=140) # make room
+edit_text_item(..., new_text="Keynote MCP")# restore the text
 ```
 
-### Width/height guidelines for resize
-
-| Font size | Suggested box width | Suggested box height |
-|-----------|-------------------|---------------------|
-| 96pt | 900-1200 | 130-150 |
-| 72pt | 800-1000 | 100-120 |
-| 64pt | 700-900 | 90-110 |
-| 56pt | 600-800 | 80-100 |
-
-Adjust width based on text length: `width = char_count * px_per_char + 50` (buffer).
-
-### How to know if text was truncated
-
-After `get_slide_content`, the text field shows what Keynote actually displays:
-- Full text visible: `TEXT:4:::Keynote MCP:::480,260:::302,63` — OK
-- Truncated: `TEXT:4:::r:::480,260:::43,123` — NEEDS FIX
-
-If truncated, you MUST call `edit_text_item` to restore the original text.
+On a current server, seeing this means the MCP server is running old code —
+restart it (/mcp or restart the session).

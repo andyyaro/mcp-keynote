@@ -51,7 +51,7 @@ only are marked *(re-verified P8)*.
 | Tool | Args | Status | AppleScript mapping | Verification exercises |
 |------|------|--------|--------------------|------------------------|
 | `add_text_box` | slide_number, text, x?, y?, font_size?, font_name?, color?, width?, height?, doc_name? | verified *(re-verified P8)* | `make new text item with properties {object text:…}`; identity loop for the returned index; position applied AFTER sizing; settled geometry read back in the same call | Adversarial-string round-trip; index round-trip (create → move by returned index → read back the same element). Geometry honesty: placed x/y land exactly (position applied after font sizing; text boxes auto-fit around their vertical center when the font size changes from the 48pt default) and the reply's settled position/size matches `get_slide_content` verbatim. |
-| `add_title` | + color?, centered? | verified at 96pt — clipping bug absorbed *(re-verified P8)* | same helper | Index round-trip; 96pt clip absorption; server-side centering (x = (slide−box)/2 exact); exact placement at 36/48/96pt with reply geometry == `get_slide_content`. |
+| `add_title` | + color?, centered? | verified at 96pt — natural auto-fit box, visually exact centering *(re-verified 2026-07)* | same helper | Index round-trip; text intact at 96pt with NO pre-widening (auto-fit probed live at 96/150/300/500pt); `centered` verified against rendered pixels: visual text center == slide center within 4pt at 24/48/96pt (live test); exact placement at 36/48/96pt with reply geometry == `get_slide_content`. |
 | `add_subtitle` | + color?, centered? | verified *(re-verified P8)* | same helper | Index round-trip; centering; exact 24pt placement with reply geometry == `get_slide_content`. |
 | `add_bullet_list` | items[] | verified *(re-verified P8)* | same helper (joined with real newlines) | Index round-trip; exact multiline placement (4 lines, 24pt) with reply geometry == `get_slide_content`. |
 | `add_numbered_list` | items[] | verified *(re-verified P8)* | same helper | Index round-trip. |
@@ -109,7 +109,7 @@ only are marked *(re-verified P8)*.
 
 | Skill workaround | Where absorbed |
 |------------------|----------------|
-| Font clipping (>48pt): add → get index → `resize_element` → `edit_text_item` | `_add_text_element` auto-sizes the box from text length (~0.58 px/pt per char + buffer) before applying the font size, then re-sets the text to undo any truncation. Verified: 96pt title survives intact. Callers may still pass explicit `width`/`height`. |
+| Font clipping (>48pt): add → get index → `resize_element` → `edit_text_item` | Obsolete on Keynote 14.5 in `_add_text_element`'s single-call flow: auto-fit tracks the text at every size (probed 96/150/300/500pt, long/multiline/CJK) and Keynote wraps lines that would outgrow the slide. The earlier ~0.58 px/pt pre-widening (and its explicit height, which auto-fit discards instantly) was removed — it broke `centered` by ~110pt: the box centered while the left-aligned text inside did not. The post-size text re-set is kept as insurance. Callers may still pass explicit `width`/`height`. |
 | "Call `select_slide` before `add_build_in` or the popover fails (-2700)" | `add_build_in` / `remove_build_in` issue the slide selection as a separate osascript call internally (`_select_slide_for_ui`). |
 | "add_builds_to_slide auto-skips bullet dots" | Already server-side; kept. |
 | `color` on add_title/add_subtitle (skill documented it; server lacked it) | Parameter added to both tools. |
