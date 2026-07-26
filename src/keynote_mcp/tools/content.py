@@ -101,6 +101,10 @@ class ContentTools:
                             "description": "Font size (optional, default 36)",
                         },
                         "font_name": {"type": "string", "description": "Font name (optional)"},
+                        "color": {
+                            "type": "string",
+                            "description": "Text color as 'r,g,b' with values 0-65535 (optional)",
+                        },
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["slide_number", "title"],
@@ -121,6 +125,10 @@ class ContentTools:
                             "description": "Font size (optional, default 24)",
                         },
                         "font_name": {"type": "string", "description": "Font name (optional)"},
+                        "color": {
+                            "type": "string",
+                            "description": "Text color as 'r,g,b' with values 0-65535 (optional)",
+                        },
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["slide_number", "subtitle"],
@@ -219,6 +227,30 @@ class ContentTools:
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["slide_number", "quote"],
+                },
+            ),
+            Tool(
+                name="set_slide_content",
+                description=(
+                    "Set the slide's theme title and/or body placeholders. Uses the "
+                    "theme's own fonts and colors, so styling stays consistent - prefer "
+                    "this over manual text boxes on themed layouts."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "slide_number": {"type": "integer", "description": "Slide number"},
+                        "title": {
+                            "type": "string",
+                            "description": "Text for the theme title placeholder (optional)",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Text for the theme body placeholder (optional)",
+                        },
+                        "doc_name": _DOC_ARG,
+                    },
+                    "required": ["slide_number"],
                 },
             ),
             Tool(
@@ -553,15 +585,26 @@ class ContentTools:
     ) -> str:
         """Create a text item; returns its 1-based index on the slide.
 
-        Order of operations works around the Keynote font-clipping bug: the
-        text box is created and sized BEFORE the font size is enlarged, so a
-        large font never lands in a tiny auto-sized box.
+        Absorbs the Keynote font-clipping bug (fonts > 48pt land in a tiny
+        auto-sized box that truncates text to 1-2 characters): the box is
+        sized BEFORE the font size is applied - auto-computed from the text
+        when the caller gives no width - and the text is re-set afterwards to
+        restore any truncation. Callers never need the old resize-then-edit
+        workaround.
         """
         validate_slide_number(slide_number)
         x_pos, y_pos = validate_coordinates(x, y)
         rgb = parse_color(color)
         if font_size is not None:
             font_size = validate_number(font_size, "font_size", minimum=1, maximum=500)
+            if font_size > 48 and width is None:
+                # ~0.58 px/pt per character (measured: 96pt=55px, 72pt=42px,
+                # 64pt=38px, 56pt=33px), plus a wrap-safety buffer.
+                lines = text.splitlines() or [""]
+                longest = max(len(line) for line in lines)
+                width = min(1800.0, longest * font_size * 0.58 + 60)
+                if height is None:
+                    height = len(lines) * font_size * 1.5 + 20
         if width is not None or height is not None:
             box_w, box_h = validate_dimensions(width, height)
         else:
@@ -591,6 +634,13 @@ class ContentTools:
             if rgb
             else "-- default color"
         )
+        # Re-setting the text after the font-size change restores anything the
+        # auto-sized box truncated (the absorbed clipping workaround).
+        restore_text = (
+            "set object text of newItem to theText"
+            if font_size is not None
+            else "-- no restore needed"
+        )
 
         return self.runner.run(
             f"""
@@ -608,6 +658,7 @@ class ContentTools:
                         {set_height}
                         {set_font}
                         {set_size}
+                        {restore_text}
                         {set_color}
                         return count of text items
                     end tell
@@ -654,12 +705,13 @@ class ContentTools:
         y: float | None = None,
         font_size: float | None = None,
         font_name: str = "",
+        color: str = "",
         doc_name: str = "",
     ) -> list[TextContent]:
         """Add title."""
         try:
             index = await self._add_text_element(
-                slide_number, title, x, y, font_size or 36, font_name, "", doc_name
+                slide_number, title, x, y, font_size or 36, font_name, color, doc_name
             )
             return [
                 TextContent(
@@ -678,12 +730,13 @@ class ContentTools:
         y: float | None = None,
         font_size: float | None = None,
         font_name: str = "",
+        color: str = "",
         doc_name: str = "",
     ) -> list[TextContent]:
         """Add subtitle."""
         try:
             index = await self._add_text_element(
-                slide_number, subtitle, x, y, font_size or 24, font_name, "", doc_name
+                slide_number, subtitle, x, y, font_size or 24, font_name, color, doc_name
             )
             return [
                 TextContent(
@@ -806,6 +859,68 @@ class ContentTools:
             ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to add quote: {e}")]
+
+    async def set_slide_content(
+        self,
+        slide_number: int,
+        title: str | None = None,
+        body: str | None = None,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        """Set the theme title/body placeholder text on a slide."""
+        try:
+            validate_slide_number(slide_number)
+            if title is None and body is None:
+                return [
+                    TextContent(
+                        type="text", text="Nothing to set: provide title and/or body."
+                    )
+                ]
+            set_title = (
+                """
+                        set title showing of targetSlide to true
+                        set object text of default title item of targetSlide to theTitle"""
+                if title is not None
+                else "-- no title"
+            )
+            set_body = (
+                """
+                        set body showing of targetSlide to true
+                        set object text of default body item of targetSlide to theBody"""
+                if body is not None
+                else "-- no body"
+            )
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    set theTitle to item 2 of argv
+                    set theBody to item 3 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set targetSlide to slide {slide_number} of targetDoc
+                        {set_title}
+                        {set_body}
+                    end tell
+                end run
+                """,
+                doc_name,
+                title or "",
+                body or "",
+            )
+            parts = []
+            if title is not None:
+                parts.append("title")
+            if body is not None:
+                parts.append("body")
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Set theme {' and '.join(parts)} on slide {slide_number}.",
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to set slide content: {e}")]
 
     async def add_image(
         self,
@@ -1239,6 +1354,22 @@ class ContentTools:
             'tell application "Keynote" to return name of front document'
         ).strip()
 
+    def _select_slide_for_ui(self, slide_number: int) -> None:
+        """Select the slide in a separate osascript call before UI scripting.
+
+        Absorbed workaround: without this separate call, the Animate inspector
+        popover fails with error -2700 after a slide change.
+        """
+        self.runner.run(
+            f"""
+            tell application "Keynote"
+                activate
+                set current slide of front document to ¬
+                    slide {slide_number} of front document
+            end tell
+            """
+        )
+
     async def add_build_in(
         self,
         slide_number: int,
@@ -1254,6 +1385,7 @@ class ContentTools:
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
             win_title = self._get_window_title()
+            self._select_slide_for_ui(slide_number)
 
             # Full UI scripting flow:
             # 1. Select element  2. Open Animate inspector  3. Build In tab
@@ -1389,6 +1521,7 @@ class ContentTools:
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
             win_title = self._get_window_title()
+            self._select_slide_for_ui(slide_number)
 
             self.runner.run(
                 f"""

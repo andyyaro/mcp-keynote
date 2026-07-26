@@ -46,6 +46,19 @@ class TestAppleScriptErrorMapping:
         assert "-1728" in message
         assert "get_slide_count" in message
 
+    def test_1719_invalid_index_is_not_found(self):
+        # Keynote 14.5 reports out-of-range slide indices exactly like this
+        # (with a curly quote), verified live.
+        stderr = (
+            "30:63: execution error: Keynote got an error: "
+            "Can’t get slide 99 of document 1. Invalid index. (-1719)"
+        )
+        with pytest.raises(AppleScriptError) as exc:
+            handle_applescript_error(stderr)
+        message = str(exc.value)
+        assert "get_slide_count" in message
+        assert "Accessibility" not in message
+
     def test_assistive_access_names_accessibility_pane(self):
         stderr = "execution error: osascript is not allowed assistive access. (-25211)"
         with pytest.raises(AppleScriptError) as exc:

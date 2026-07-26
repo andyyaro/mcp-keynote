@@ -37,9 +37,10 @@ _ACCESSIBILITY_FIX = (
     "this permission."
 )
 _NOT_FOUND_FIX = (
-    "AppleScript could not find the referenced object (error -1728). The "
-    "slide number, element index, or document name probably does not exist - "
-    "check with get_slide_count / get_slide_content / list_presentations."
+    "AppleScript could not find the referenced object (error -1728/-1719: "
+    "object not found or invalid index). The slide number, element index, or "
+    "document name probably does not exist - check with get_slide_count / "
+    "get_slide_content / list_presentations."
 )
 
 
@@ -59,10 +60,17 @@ def handle_applescript_error(error_output: str) -> None:
     if code == -1743 or "not authorized to send apple events" in lowered:
         raise AppleScriptError(f"{_AUTOMATION_FIX}\nOriginal error: {error_output}")
 
-    if "assistive access" in lowered or code in (-25211, -1719):
+    if "assistive access" in lowered or code == -25211:
         raise AppleScriptError(f"{_ACCESSIBILITY_FIX}\nOriginal error: {error_output}")
 
-    if code == -1728 or "can't get" in lowered or "can’t get" in lowered:
+    # -1728 = object not found; -1719 = invalid index ("Can't get slide 99...").
+    # Keynote 14.5 reports bad slide/element indices as -1719.
+    if (
+        code in (-1728, -1719)
+        or "can't get" in lowered
+        or "can’t get" in lowered
+        or "invalid index" in lowered
+    ):
         raise AppleScriptError(f"{_NOT_FOUND_FIX}\nOriginal error: {error_output}")
 
     if code == -600 or "isn't running" in lowered or "isn’t running" in lowered:

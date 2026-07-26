@@ -14,19 +14,15 @@ metadata:
 
 Build polished Keynote presentations using keynote-mcp MCP tools. This skill encodes domain expertise about Keynote's AppleScript quirks, layout math, and design patterns.
 
-## CRITICAL: Font Size Bug
+## Font Sizes (server 2.x absorbs the clipping bug)
 
-`add_title` with font_size > 48 creates a tiny text box that clips to 1-2 characters.
+Since keynote-mcp 2.0 the server auto-sizes text boxes for large fonts and
+restores any truncated text itself — just pass `font_size=96` and it works.
+You can still pass explicit `width`/`height` to `add_text_box` to control
+wrapping. Verify with a screenshot as usual.
 
-**Workaround** (always use for large titles):
-1. `add_title(slide_number=1, title="My Title", x=480, y=260, font_size=96)`
-2. `get_slide_content(slide_number=1)` — find the element index N
-3. `resize_element(slide_number=1, element_type="text", element_index=N, width=900, height=140)`
-4. `edit_text_item(slide_number=1, item_index=N, new_text="My Title")` — restore truncated text
-
-**Safe sizes (no workaround needed):** title <=48pt, subtitle <=32pt, bullets <=28pt, code <=20pt
-
-See `references/font-size-workaround.md` for detailed examples.
+(On server 1.x the old manual workaround was: add → `get_slide_content` →
+`resize_element` → `edit_text_item`; see `references/font-size-workaround.md`.)
 
 ## Workflow
 
@@ -124,11 +120,11 @@ See `references/existing-presentation-guide.md` for patterns.
 
 | Problem | Fix |
 |---------|-----|
-| Text shows 1-2 chars | resize_element + edit_text_item |
+| Text shows 1-2 chars | Server 2.x prevents this; on old servers: resize_element + edit_text_item |
 | No background visible | Use Slate, Bold Colour, or Basic Black |
 | Elements overlap | get_slide_content → check heights → move_element |
 | MCP old behavior | Restart server (/mcp) |
-| add_build_in popover error | Call `select_slide` first, then retry |
+| add_build_in popover error | Server 2.x selects the slide itself; retry once, then check Accessibility permission |
 
 See `references/troubleshooting-and-limitations.md` for detailed limitations and known issues.
 

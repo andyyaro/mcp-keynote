@@ -198,6 +198,7 @@ class KeynoteMCPServer:
                 y=arguments.get("y"),
                 font_size=arguments.get("font_size"),
                 font_name=arguments.get("font_name", ""),
+                color=arguments.get("color", ""),
                 doc_name=doc_name,
             )
         elif name == "add_subtitle":
@@ -208,6 +209,7 @@ class KeynoteMCPServer:
                 y=arguments.get("y"),
                 font_size=arguments.get("font_size"),
                 font_name=arguments.get("font_name", ""),
+                color=arguments.get("color", ""),
                 doc_name=doc_name,
             )
         elif name == "add_bullet_list":
@@ -249,6 +251,13 @@ class KeynoteMCPServer:
                 y=arguments.get("y"),
                 font_size=arguments.get("font_size"),
                 font_name=arguments.get("font_name", ""),
+                doc_name=doc_name,
+            )
+        elif name == "set_slide_content":
+            return await self.content_tools.set_slide_content(
+                slide_number=arguments["slide_number"],
+                title=arguments.get("title"),
+                body=arguments.get("body"),
                 doc_name=doc_name,
             )
         elif name == "add_image":
