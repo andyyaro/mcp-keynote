@@ -12,6 +12,7 @@ import pytest
 
 from keynote_mcp.utils.applescript_runner import AppleScriptRunner
 from keynote_mcp.utils.error_handler import AppleScriptError
+from keynote_mcp.utils.session import SESSION
 
 
 def last_cmd(mock_run) -> list:
@@ -138,7 +139,10 @@ class TestOpenPresentation:
 
         mock_subprocess_run.side_effect = fake_run
         result = await presentation_tools.open_presentation(str(deck))
-        assert result[0].text == "Opened presentation: deck.key"
+        assert result[0].text.startswith("Opened presentation: deck.key")
+        # The opened document becomes the session default, and says so.
+        assert "session document" in result[0].text
+        assert SESSION.get_default() == "deck.key"
         opens = [c for c in mock_subprocess_run.call_args_list if c.args[0][0] == "/usr/bin/open"]
         assert len(opens) == 1
         for c in mock_subprocess_run.call_args_list:

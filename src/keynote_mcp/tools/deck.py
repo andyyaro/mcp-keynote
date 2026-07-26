@@ -37,9 +37,10 @@ from typing import Any
 
 from mcp.types import TextContent, Tool
 
-from ..utils import AppleScriptRunner, ParameterError, parse_color
+from ..utils import SESSION, AppleScriptRunner, ParameterError, parse_color
 from ..utils.render import render_panel_png
 from ..utils.styles import DeckStyle, resolve_style
+from .base import DocumentTargetedTools
 from .fragments import (
     CHART_TYPES,
     RESOLVE_DOC,
@@ -60,7 +61,7 @@ from .presentation import _default_save_path, _normalize_key_path
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
 _ELEMENT_TYPES = {
@@ -761,7 +762,7 @@ def _wrap_try(fragment: list[str], tag: str) -> list[str]:
     ]
 
 
-class DeckTools:
+class DeckTools(DocumentTargetedTools):
     """build_deck / describe_deck."""
 
     def __init__(self) -> None:
@@ -983,6 +984,9 @@ class DeckTools:
             )
             doc_name, theme_note, layouts_joined = setup.split(_FS)
             layouts = {name.strip() for name in layouts_joined.split("|||")}
+            # The deck a caller just built is what the next call means, exactly
+            # as for create_presentation/open_presentation.
+            SESSION.set_default(doc_name)
 
             # Validate every slide's layout against the live theme; a miss
             # deletes the fresh document so nothing half-built remains.
@@ -1201,6 +1205,7 @@ class DeckTools:
 
     async def describe_deck(self, doc_name: str = "") -> list[TextContent]:
         try:
+            doc_name = self._doc(doc_name)
             head = self.runner.run(
                 f"""
                 on run argv

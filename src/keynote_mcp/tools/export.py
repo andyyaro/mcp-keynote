@@ -14,20 +14,21 @@ from ..utils import (
     validate_file_path,
     validate_slide_number,
 )
+from .base import DocumentTargetedTools
 
 logger = logging.getLogger(__name__)
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
+# docName always arrives CONCRETE: every public tool method resolves it in
+# Python via DocumentTargetedTools._doc first, so there is deliberately no
+# `front document` branch here. That branch was the field report's issue #1 -
+# a call omitting doc_name silently targeted whichever deck was frontmost.
 _RESOLVE_DOC = """
-        if docName is "" then
-            set targetDoc to front document
-        else
-            set targetDoc to document docName
-        end if"""
+        set targetDoc to document docName"""
 
 # Exports of large decks can outlive the default osascript timeout.
 _EXPORT_TIMEOUT = 120.0
@@ -103,7 +104,7 @@ _COUNT_UNFILLED_SCRIPT = """
 """
 
 
-class ExportTools:
+class ExportTools(DocumentTargetedTools):
     """Export and screenshot tools class"""
 
     def __init__(self) -> None:
@@ -287,6 +288,7 @@ class ExportTools:
     ) -> list[TextContent]:
         """Export a single slide as an image."""
         temp_folder = ""
+        doc_name = self._doc(doc_name)
         try:
             validate_slide_number(slide_number)
             output_path = validate_file_path(output_path)
@@ -405,6 +407,7 @@ class ExportTools:
                     f"Must be one of {sorted(_PDF_QUALITY)}."
                 )
             skipped_flag = "true" if include_skipped else "false"
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -471,6 +474,7 @@ class ExportTools:
                     f" with properties {{image format:{_IMAGE_FORMATS[image_format]}, "
                     f"skipped slides:{skipped_flag}}}"
                 )
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv

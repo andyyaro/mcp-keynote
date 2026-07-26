@@ -222,6 +222,157 @@ def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
 
 
+async def check_document_resolution(pres, slides, content, export, objects):
+    """PHASE 9 Task 1 — the right document, named in the reply.
+
+    Reproduces the field report's issue #1 exactly: two decks open, the session
+    document is A, but B is frontmost because the user clicked it. Every
+    doc_name-less call must still act on A, and every reply must say so.
+
+    The rendered half matters most. A and B get panels of DIFFERENT colors at
+    the SAME coordinates, so a screenshot taken without doc_name proves which
+    document was really used - a reply that merely claims 'A' while exporting B
+    is the precise defect being fixed, and only pixels can tell them apart.
+    """
+    from keynote_mcp.utils.session import SESSION
+
+    a_key = SCRATCH / "phase9-docA.key"
+    b_key = SCRATCH / "phase9-docB.key"
+    for path in (a_key, b_key):
+        shutil.rmtree(path, ignore_errors=True)
+        path.unlink(missing_ok=True)
+
+    a_rgb, b_rgb = (200, 30, 30), (30, 60, 200)
+    panel_box = (150, 150, 500, 350)
+
+    check(
+        "phase9: create doc A",
+        await pres.create_presentation("phase9-docA", save_path=str(a_key)),
+        "Created presentation",
+    )
+    check(
+        "phase9: A gets a RED panel",
+        await objects.add_colored_panel(
+            1, *panel_box, color=",".join(str(c * 257) for c in a_rgb), doc_name="phase9-docA.key"
+        ),
+    )
+    check(
+        "phase9: create doc B",
+        await pres.create_presentation("phase9-docB", save_path=str(b_key)),
+        "Created presentation",
+    )
+    check(
+        "phase9: B gets a BLUE panel",
+        await objects.add_colored_panel(
+            1, *panel_box, color=",".join(str(c * 257) for c in b_rgb), doc_name="phase9-docB.key"
+        ),
+    )
+
+    # create_presentation set the session document to B (the most recent).
+    info_b = text_of(await pres.get_presentation_info())
+    record(
+        "phase9: the session document is the most recently created one (B)",
+        "phase9-docB" in info_b,
+        info_b.replace("\n", " | ")[:120],
+    )
+
+    # Now make A the session document the way a caller would.
+    check(
+        "phase9: open_presentation(A) sets the session document",
+        await pres.open_presentation(str(a_key)),
+        "session document",
+    )
+
+    # ...and put B in FRONT, the way a user clicking B would. This is the
+    # exact state in which every doc_name-less call used to target B.
+    pres.runner.run(
+        """
+        on run argv
+            set docName to item 1 of argv
+            tell application "Keynote"
+                activate
+                repeat with w in windows
+                    if name of w is docName then
+                        set index of w to 1
+                        exit repeat
+                    end if
+                end repeat
+                return name of front document
+            end tell
+        end run
+        """,
+        "phase9-docB.key",
+    )
+    front = pres.runner.run_inline_script(
+        'tell application "Keynote" to return name of front document'
+    )
+    record(
+        "phase9: B really is frontmost (the trap is armed)",
+        front == "phase9-docB.key",
+        f"front document is {front!r}",
+    )
+
+    # THE CHECK: no doc_name, B frontmost, session document A.
+    info = text_of(await pres.get_presentation_info())
+    record(
+        "phase9: a doc_name-less call targets the SESSION document, not the front one",
+        "phase9-docA" in info and "phase9-docB" not in info,
+        info.replace("\n", " | ")[:140],
+    )
+
+    # RENDERED: the export must be A's red panel, not B's blue one. The slide
+    # width is READ, never assumed - a hardcoded 1024 against this document's
+    # 1920 sampled outside the panel and reported plain white.
+    size_text = text_of(await pres.get_slide_size(doc_name="phase9-docA.key"))
+    m = re.search(r"(\d+)\s*x\s*(\d+)", size_text)
+    slide_w = int(m.group(1)) if m else 1024
+    img, scale = await render_slide(export, 1, "phase9-resolution", slide_w)
+    if img is not None:
+        sampled = at(img, scale, panel_box[0] + panel_box[2] / 2, panel_box[1] + panel_box[3] / 2)
+        record(
+            "phase9: RENDERED the doc_name-less screenshot shows A's panel, not B's",
+            near(sampled, a_rgb, tol=24),
+            f"sampled={sampled} A={a_rgb} B={b_rgb}",
+        )
+
+    # Ambiguity: with the session default gone and two documents open, the
+    # server must name them instead of guessing.
+    SESSION.clear_default()
+    ambiguous = text_of(await pres.get_presentation_info())
+    record(
+        "phase9: ambiguous target errors and NAMES the open documents",
+        "phase9-docA.key" in ambiguous
+        and "phase9-docB.key" in ambiguous
+        and "doc_name" in ambiguous,
+        ambiguous.replace("\n", " | ")[:180],
+    )
+
+    # The echo, through the real MCP entry point.
+    from keynote_mcp.server import KeynoteMCPServer, _echo_resolved_document
+
+    srv = KeynoteMCPServer()
+    SESSION.note_resolved("")
+    echoed = text_of(
+        _echo_resolved_document(
+            await srv._dispatch("get_slide_count", {"doc_name": "phase9-docA.key"})
+        )
+    )
+    record(
+        "phase9: every reply echoes the resolved document",
+        "[document: phase9-docA.key]" in echoed,
+        echoed.replace("\n", " | ")[:140],
+    )
+
+    check(
+        "phase9: close doc A",
+        await pres.close_presentation(doc_name="phase9-docA.key", should_save=False),
+    )
+    check(
+        "phase9: close doc B",
+        await pres.close_presentation(doc_name="phase9-docB.key", should_save=False),
+    )
+
+
 async def check_fill_is_unwritable(pres, slides, content, export, objects):
     """PHASE 9 Task 0 — pin the fill ceiling in errors AND in pixels.
 

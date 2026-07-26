@@ -25,6 +25,7 @@ from .tools import (
     UnsplashTools,
 )
 from .utils import (
+    SESSION,
     AppleScriptError,
     FileOperationError,
     KeynoteError,
@@ -93,6 +94,30 @@ _UNSUPPORTED_ARG_ALTERNATIVES: dict[str, str] = {
     "bold": "style_text_range with the bold PostScript face name",
     "italic": "style_text_range with the italic PostScript face name",
 }
+
+
+def _echo_resolved_document(
+    result: Sequence[TextContent | ImageContent | EmbeddedResource],
+) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+    """Append the document a call actually acted on to its reply.
+
+    The field report's highest-value ask, and the cheapest: every reply names
+    its target, so a call that landed on the wrong deck is self-evident instead
+    of silently confident. ``screenshot_slide`` once returned "the export
+    matches the editor view" for slides belonging to a presentation nobody had
+    asked about, and nothing in the response gave it away.
+
+    Applied centrally at the MCP entry point rather than in each of ~50 tools,
+    so a new tool cannot forget it. Skipped when the reply already names the
+    document (create/open say it themselves) or when no document was resolved.
+    """
+    doc = SESSION.last_resolved
+    if not doc or not result:
+        return result
+    last = result[-1]
+    if not isinstance(last, TextContent) or doc in last.text:
+        return result
+    return [*result[:-1], TextContent(type="text", text=f"{last.text}\n[document: {doc}]")]
 
 
 def _configure_logging() -> None:
@@ -204,7 +229,12 @@ class KeynoteMCPServer:
                 rejection = self._reject_unknown_arguments(name, arguments or {})
                 if rejection:
                     return [TextContent(type="text", text=f"Parameter error: {rejection}")]
-                return await self._dispatch(name, arguments or {})
+                # Cleared first so a tool that touches no document (list_
+                # presentations, get_available_themes) cannot echo a stale name
+                # left by the previous call.
+                SESSION.note_resolved("")
+                result = await self._dispatch(name, arguments or {})
+                return _echo_resolved_document(result)
             except KeyError as e:
                 return [
                     TextContent(

@@ -21,12 +21,12 @@ from __future__ import annotations
 
 from ..utils import AppleScriptRunner, ParameterError, validate_number, validate_slide_number
 
+# docName always arrives CONCRETE: callers resolve it in Python via
+# DocumentTargetedTools._doc before building a script, so there is deliberately
+# no `front document` branch. That branch was the field report's issue #1 - a
+# call omitting doc_name silently targeted whichever deck was frontmost.
 RESOLVE_DOC = """
-        if docName is "" then
-            set targetDoc to front document
-        else
-            set targetDoc to document docName
-        end if"""
+        set targetDoc to document docName"""
 
 # Trusted literal maps - ONLY values from these dicts may reach script source.
 CHART_TYPES: dict[str, str] = {
@@ -113,6 +113,23 @@ class Argv:
     def ref(self, value: str) -> str:
         self.values.append(value)
         return f"(item {len(self.values)} of argv)"
+
+    def reserve_doc(self) -> int:
+        """Claim argv slot 1 for the document name, to be filled later.
+
+        ``run_single_fragment`` reads the document name from item 1, so the slot
+        must be allocated before the fragment builders add anything. But the
+        NAME must not be resolved that early: resolving is an Apple event, and
+        resolving before the fragment builders have validated their arguments
+        means invalid input either wastes a round trip or - worse - reports
+        "3 presentations are open" instead of "Invalid coordinate". So the slot
+        is reserved here and filled by ``fill`` after validation.
+        """
+        self.values.append("")
+        return 0
+
+    def fill(self, slot: int, value: str) -> None:
+        self.values[slot] = value
 
 
 def _fmt_num(value: float) -> str:

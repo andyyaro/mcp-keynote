@@ -6,11 +6,12 @@ import time
 
 from mcp.types import TextContent, Tool
 
-from ..utils import AppleScriptRunner, validate_file_path, validate_number
+from ..utils import SESSION, AppleScriptRunner, validate_file_path, validate_number
+from .base import DocumentTargetedTools
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
 # open_presentation polls for the opened document to appear; the first poll
@@ -65,15 +66,15 @@ def _normalize_key_path(path: str) -> str:
 # AppleScript fragment: resolve argv item 1 into targetDoc. Used inside a
 # `tell application "Keynote"` block; docName arrives via argv, never
 # interpolated into source.
+# docName always arrives CONCRETE: every public tool method resolves it in
+# Python via DocumentTargetedTools._doc first, so there is deliberately no
+# `front document` branch here. That branch was the field report's issue #1 -
+# a call omitting doc_name silently targeted whichever deck was frontmost.
 _RESOLVE_DOC = """
-        if docName is "" then
-            set targetDoc to front document
-        else
-            set targetDoc to document docName
-        end if"""
+        set targetDoc to document docName"""
 
 
-class PresentationTools:
+class PresentationTools(DocumentTargetedTools):
     """Presentation management tools class"""
 
     def __init__(self) -> None:
@@ -334,10 +335,15 @@ class PresentationTools:
             doc_name, _, rest = result.partition("|")
             theme_note, _, layout_note = rest.partition("|")
             notes = f"{theme_note}; {layout_note}" if layout_note else theme_note
+            SESSION.set_default(doc_name)
             return [
                 TextContent(
                     type="text",
-                    text=f"Created presentation '{doc_name}' ({notes}), saved to {resolved_path}",
+                    text=(
+                        f"Created presentation '{doc_name}' ({notes}), saved to "
+                        f"{resolved_path}\nThis is now the session document: calls "
+                        f"that omit doc_name will target it."
+                    ),
                 )
             ]
         except Exception as e:
@@ -370,7 +376,20 @@ class PresentationTools:
                 except Exception:
                     name = ""
                 if name:
-                    return [TextContent(type="text", text=f"Opened presentation: {name}")]
+                    # The document a caller just opened is what the next call
+                    # means. Without this the next doc_name-less call resolved
+                    # to whatever was frontmost - the field report's issue #1.
+                    SESSION.set_default(name)
+                    return [
+                        TextContent(
+                            type="text",
+                            text=(
+                                f"Opened presentation: {name}\n"
+                                f"This is now the session document: calls that omit "
+                                f"doc_name will target it."
+                            ),
+                        )
+                    ]
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(_OPEN_POLL_INTERVAL)
@@ -396,6 +415,7 @@ class PresentationTools:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
             else:
                 save_path = ""
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -470,6 +490,7 @@ class PresentationTools:
         """Close a presentation."""
         try:
             save_flag = "true" if should_save else "false"
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -488,6 +509,7 @@ class PresentationTools:
                 """,
                 doc_name,
             )
+            SESSION.clear_default(result or doc_name)
             return [TextContent(type="text", text=f"Closed presentation: {result}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to close presentation: {e}")]
@@ -519,6 +541,7 @@ class PresentationTools:
     ) -> list[TextContent]:
         """Set presentation theme."""
         try:
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -554,6 +577,7 @@ class PresentationTools:
     async def get_presentation_info(self, doc_name: str = "") -> list[TextContent]:
         """Get presentation info."""
         try:
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -614,6 +638,7 @@ class PresentationTools:
     async def get_slide_size(self, doc_name: str = "") -> list[TextContent]:
         """Get slide size, aspect ratio, and layout reference info."""
         try:
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -660,6 +685,7 @@ class PresentationTools:
         try:
             w = int(validate_number(width, "width", minimum=200, maximum=10000))
             h = int(validate_number(height, "height", minimum=200, maximum=10000))
+            doc_name = self._doc(doc_name)
             result = self.runner.run(
                 f"""
                 on run argv
@@ -730,6 +756,7 @@ class PresentationTools:
                     )
                 ]
             body = "\n".join(ops)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv

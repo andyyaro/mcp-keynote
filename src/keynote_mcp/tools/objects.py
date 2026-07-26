@@ -24,6 +24,7 @@ from ..utils import (
 )
 from ..utils.render import render_panel_png
 from ..utils.styles import resolve_style
+from .base import DocumentTargetedTools
 from .fragments import (
     RESOLVE_DOC,
     Argv,
@@ -36,7 +37,7 @@ from .fragments import (
 
 _DOC_ARG = {
     "type": "string",
-    "description": "Document name (optional, defaults to front document)",
+    "description": "Document name. Optional: defaults to the session document set by the last create_presentation/open_presentation, or to the only open presentation. With several open and no session default, the call fails and names them rather than guessing.",
 }
 
 # Element classes addressable by the styling tools. Values are trusted
@@ -64,7 +65,7 @@ _EDIT_TAG = (
 )
 
 
-class ObjectTools:
+class ObjectTools(DocumentTargetedTools):
     """Native object tools built on the Phase A probe results."""
 
     def __init__(self) -> None:
@@ -381,7 +382,7 @@ class ObjectTools:
             x_pos, y_pos = validate_coordinates(x, y)
             deck_style = resolve_style(style)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = table_fragment(
                 argv,
                 "TB",
@@ -399,6 +400,11 @@ class ObjectTools:
                 header_color=parse_color(deck_style.table_header_color),
                 column_widths=column_widths,
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             rows, cols = len(data), len(data[0])
             return [
@@ -431,7 +437,7 @@ class ObjectTools:
         try:
             validate_slide_number(slide_number)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = chart_fragment(
                 argv,
                 "CH",
@@ -445,6 +451,11 @@ class ObjectTools:
                 width=width,
                 height=height,
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
@@ -472,8 +483,13 @@ class ObjectTools:
         try:
             validate_slide_number(slide_number)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = line_fragment("LN", x1=x1, y1=y1, x2=x2, y2=y2)
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, _pos, _size = run_single_fragment(
                 self.runner, doc_name, slide_number, argv, lines
             )
@@ -515,7 +531,7 @@ class ObjectTools:
             png_path = os.path.join(tmp_dir, "panel.png")
             render_panel_png(png_path, width, height, rgb, corner, opacity)
             argv = Argv()
-            argv.ref(doc_name)
+            doc_slot = argv.reserve_doc()
             lines = image_fragment(
                 argv,
                 "PN",
@@ -526,6 +542,11 @@ class ObjectTools:
                 height=height,
                 description="colored panel",
             )
+            # Resolved AFTER the fragment builder has validated its
+            # arguments, so invalid input never spends an Apple event and
+            # never reports a document-ambiguity error in its place.
+            doc_name = self._doc(doc_name)
+            argv.fill(doc_slot, doc_name)
             index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
@@ -581,6 +602,7 @@ class ObjectTools:
             if rgb:
                 ops.append(f"set color of {range_expr} to {{{rgb[0]}, {rgb[1]}, {rgb[2]}}}")
             body = "\n".join(ops)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -637,6 +659,7 @@ class ObjectTools:
                 ]
             # The bare-text form of `file name` raises -1703; POSIX file works
             # and preserves geometry (probed live).
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
@@ -712,6 +735,7 @@ class ObjectTools:
                     "reflection_showing/reflection_value/locked."
                 )
             body = "\n".join(ops)
+            doc_name = self._doc(doc_name)
             self.runner.run(
                 f"""
                 on run argv
