@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-07-26
+
+Fixes for five defects surfaced by a live field test (a real 4-slide deck
+build) that Phase 3's happy-path verification missed. Details in
+`docs/MODERNIZATION_REPORT.md` § Field test findings; per-tool re-verification
+in `docs/TOOL_MATRIX.md` (91 live checks, 0 failed).
+
+### Changed — behavior
+
+- **`create_presentation` always saves.** Leaving the document unsaved armed
+  a trap: the first save opens a modal sheet that blocks the AppleEvent
+  queue, then Keynote default-saves to iCloud as `Untitled.key`. Without
+  `save_path` the document now goes to `<title>.key` in `~/Documents`
+  (override the directory with `KEYNOTE_MCP_SAVE_DIR`), uniquified, and the
+  response includes the resolved path. The first slide now defaults to the
+  Blank layout (matching `add_slide`); `set_slide_content` remains the
+  opt-in to theme placeholders and works on Blank slides.
+- **`open_presentation` goes through LaunchServices** (`open -a Keynote` +
+  poll). The AppleScript `open` verb wedges Keynote's AppleEvent queue for
+  any file outside its sandbox container; LaunchServices grants the per-file
+  sandbox extension a double-click would. Verified from `~/Downloads` and
+  `~/Desktop`.
+- **`save_presentation` refuses plain save on a never-saved document**
+  (fast, with guidance) instead of opening the modal sheet; new `save_path`
+  argument rescues unsaved documents. Re-pathing a saved document is
+  refused — Keynote's AppleScript save-as hangs outside the sandbox.
+- **`add_*` tools return the true element index** (located by object
+  identity), the same index `get_slide_content` / `move_element` /
+  `edit_text_item` consume. Previously `count of text items` over-reported
+  (e.g. 6 for the element addressed as 4).
+- **`get_slide_content` / `get_slide_info` no longer report phantom text
+  items.** Keynote counts the hidden default title/body placeholder objects
+  among "text items" (as 0x0 empties — and twice when showing); both tools
+  now filter by identity. Five adds report exactly five items. `clear_slide`
+  preserves placeholders by identity instead of the empty-text-at-0,0
+  heuristic.
+- **`screenshot_slide` reports what its export omits**: Keynote drops
+  unfilled placeholder text boxes from slide-image exports, so the image is
+  not a faithful editor view; the response now counts the omitted boxes.
+
+### Added
+
+- **`centered` parameter on `add_title`/`add_subtitle`** — server-side
+  horizontal centering computed from the final box width.
+- **Wedged-queue detection**: on an osascript timeout a 3-second probe
+  distinguishes a modal dialog from a wedged AppleEvent queue; once wedged,
+  subsequent calls fail fast with the `killall Keynote` recovery path
+  instead of burning full timeouts.
+- **`KEYNOTE_MCP_SAVE_DIR`** environment variable — default directory for
+  `create_presentation` without `save_path`.
+
 ## [2.0.0] - 2026-07-26
 
 This fork ([andyyaro/mcp-keynote](https://github.com/andyyaro/mcp-keynote))

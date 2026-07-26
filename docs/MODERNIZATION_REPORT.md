@@ -1,10 +1,12 @@
-# Modernization report — keynote-mcp 2.0.0
+# Modernization report — keynote-mcp 2.x
 
 Branch `modernize`, 2026-07-25/26. Environment ground truth in
 [ENVIRONMENT.md](ENVIRONMENT.md); per-tool verification in
 [TOOL_MATRIX.md](TOOL_MATRIX.md). Every claim below was verified by running
-something — the sdef dump, 277 tests, a 57-check live driver
-(`scripts/verify_tools.py`), or the end-to-end `claude mcp add` cycle.
+something — the sdef dump, the unit suite (295 tests at 2.1.0), a live
+driver (`scripts/verify_tools.py`, 57 checks at 2.0.0, 91 at 2.1.0), or the
+end-to-end `claude mcp add` cycle. §"Field test findings" at the end records
+what the 2.0.0 verification missed and why.
 
 ## What was broken, and how I know
 
@@ -133,3 +135,78 @@ and the `.scpt` loader were unreachable — every tool used inline scripts, and
    all address this, but it will remain the top support issue.
 6. **Unsplash API drift** (lowest) — opt-in, isolated, unit-tested against
    today's response shape only.
+
+## Field test findings (Phase 8, 2026-07-26)
+
+A live 4-slide deck build — the first use of the server on work it did not
+generate for itself — surfaced five defects that Phase 3's 57-check
+verification had marked "verified". This section documents the gap rather
+than quietly patching it.
+
+### The root failure: verification that only ate its own cooking
+
+`scripts/verify_tools.py` exercised documents **it created itself, with an
+explicit `save_path`**. That single choice hid three classes of failure:
+
+1. **`open_presentation` "verified" but wedging in the field.** The harness
+   opened `.scratch/phase3-test.key` — a file Keynote itself had saved
+   moments earlier, which leaves a per-file sandbox extension behind. So the
+   AppleScript `open` verb worked in the harness and wedged the AppleEvent
+   queue on any genuinely foreign file (zero windows, every subsequent event
+   timing out, -1712 even at 90 s; only force-quitting Keynote recovers).
+2. **`save_presentation` "verified" but trapping in the field.** The harness
+   only ever saved documents that already had a file. On an untitled
+   document, plain `save` opens a modal sheet that blocks the queue until
+   timeout — after which Keynote completes a default save to iCloud as
+   `Untitled.key`, so the "failed" call half-succeeded in the wrong place
+   under the wrong name.
+3. **Indices and counts taken on faith.** The harness confirmed elements
+   existed but never fed a returned index back into a sibling tool.
+   `add_title` reported "index 6" for the element `get_slide_content` and
+   `move_element` addressed as 4 — any caller trusting the response moved
+   the wrong element.
+
+### What the field defects actually were (and the mechanism found)
+
+- **Phantom text items, not a leak.** The observed "every add_* call leaves
+  a 0x0 empty text item" was a misdiagnosis of mechanism, with a real
+  observable: Keynote counts the slide's `default title item`/`default body
+  item` objects among "text items" even when hidden (surfacing as 0x0
+  empties at 0,0) and **twice** when showing (once in z-order, once
+  trailing). Established by live experiment: an empty Blank slide reports
+  `count of text items` = 2 with `count of iWork items` = 0, and on a themed
+  slide `text item 2 is default title item` and `text item 5 is default
+  title item` are both true. Fix: identity-filtered enumeration everywhere
+  (`get_slide_content`, `get_slide_info`, `clear_slide`) and
+  identity-located return indices in `_add_text_element`.
+- **The index mismatch falls out of the same mechanism**: `count of text
+  items` over-reports and the new item is not last (phantoms trail it).
+- **Screenshot dishonesty.** Keynote's slide-image export omits unfilled
+  placeholder boxes, so a clean-looking PNG "verified" a slide the editor
+  showed full of placeholder boxes. `screenshot_slide` now counts what the
+  export omitted and says the image is not a faithful editor view.
+- **Unfilled default placeholders on slide 1.** New documents opened on a
+  themed title layout whose placeholders the add_* tools overlap rather than
+  fill. Policy decision: slide 1 now defaults to the Blank layout (matching
+  `add_slide`); `set_slide_content` is the documented opt-in to theme
+  placeholders and works on Blank slides.
+- **x=0 titles.** `add_title`/`add_subtitle` gained `centered` — the
+  read-width-then-move dance is now server-side, consistent with the Phase 3
+  font-clipping absorption.
+
+### Why Phase 3 missed it — and the process change
+
+Phase 3's standard was "ran against a real document and read the effect
+back". The gap: every input was one the server had just produced, so the
+sandbox, save-sheet, and index-space failure modes were structurally
+unreachable. The harness (now 91 checks, 0 failed) additionally exercises:
+the untitled-document save path and its refusal guard, opens from
+~/Downloads **and** ~/Desktop with a queue-liveness probe after, a
+create→move-by-returned-index→read-back round-trip for all seven add_*
+text tools, the phantom regression (five adds → exactly five items),
+screenshot honesty in both directions, and centering math against slide
+width. [TOOL_MATRIX.md](TOOL_MATRIX.md) now records per tool what its
+verification actually exercises, so "verified" can be audited instead of
+trusted. Defense in depth for the wedge that slipped through: the runner
+probes on any timeout and fails fast with the `killall Keynote` recovery
+once the queue is wedged (unit-pinned; deliberately not wedged live).

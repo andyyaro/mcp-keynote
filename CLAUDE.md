@@ -94,6 +94,39 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
   routing have no AppleScript API; builds use System Events UI scripting
   (Accessibility permission), the rest is manual-only.
 
+### Field-test facts (Phase 8 — the sandbox/save/placeholder traps)
+
+- **Never send AppleScript `open` for a file outside Keynote's sandbox
+  container** (~/Downloads, ~/Desktop, …): it wedges the AppleEvent queue
+  entirely — zero windows, every subsequent event times out (-1712 even at
+  90 s), and only force-quitting Keynote recovers. `open_presentation` uses
+  LaunchServices (`open -a Keynote`) + a poll for the document; keep it that
+  way. (Phase 3's open check passed only because Keynote itself had just
+  saved the file, which leaves a sandbox extension behind.)
+- **The first `save` of an unsaved document opens a modal save sheet** that
+  blocks the queue until timeout — and Keynote then completes a default save
+  to iCloud as `Untitled.key`, so the "failed" call half-succeeded in the
+  wrong place. Hence: `create_presentation` always saves (default
+  `~/Documents`, `KEYNOTE_MCP_SAVE_DIR` override) and `save_presentation`
+  refuses a pathless save on a never-saved doc. Save-as to a new path on an
+  already-saved doc hangs invisibly — refused too.
+- **`count of text items` lies.** The slide's `default title item` /
+  `default body item` objects are counted even when hidden (surfacing as 0x0
+  empty entries at 0,0) and TWICE when showing (in z-order and again
+  trailing). Real items always come first, so real indices are stable.
+  Filter by object identity (`text item i is defaultTitleItem`); identity
+  comparison through the app works. `count of iWork items` is truthful.
+- **`make new text item` does not append last** in the text-item index
+  space (phantoms trail it) — locate the created item's index by identity,
+  never report the count as the index.
+- **Slide-image exports omit unfilled placeholder boxes**, so a screenshot
+  is not a faithful editor view — `screenshot_slide` counts what it omitted.
+- **`POSIX path of (file of doc)` inline fails to coerce (-1700)** right
+  after a save; capture `file of doc` into a variable first.
+- New presentations default slide 1 to the **Blank layout** (documented
+  policy, matching `add_slide`); `set_slide_content` opts back into theme
+  placeholders by setting `title/body showing` before filling.
+
 ## Development
 
 ```bash
@@ -117,3 +150,11 @@ UI-scripting tests take over window focus and keystrokes.
 - `add_build_in` needs Keynote frontmost and an unlocked screen.
 - Check original property values (`get_slide_content`) before modifying
   existing presentations; don't assume defaults.
+- If every Keynote call suddenly times out, the AppleEvent queue is wedged
+  (see field-test facts): the runner's probe reports it and the only fix is
+  `killall Keynote` + relaunch + `open_presentation`. A scripted `quit` is
+  itself an Apple event and will hang too.
+- A tool marked "verified" in TOOL_MATRIX.md is only as good as what its
+  check exercises — the matrix now records that per tool. When adding a
+  check, prefer inputs the server did NOT produce itself (foreign files,
+  unsaved docs, indices from responses), not just its own happy path.
