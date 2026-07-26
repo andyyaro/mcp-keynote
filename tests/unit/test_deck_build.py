@@ -205,6 +205,9 @@ class TestDescribeDeck:
     _HEAD = f"doc.key{_FS}White{_FS}1920{_FS}1080{_FS}1"
     _RECORDS = _RS.join(
         [
+            # "D" delimits a slide: describe_deck now batches several slides
+            # into one osascript session instead of one call per slide.
+            f"D{_FS}1",
             f"L{_FS}Blank",
             f"K{_FS}true",
             f"X{_FS}fade through color{_FS}1.5{_FS}0.5{_FS}true",
@@ -298,7 +301,12 @@ class TestDescribeDeck:
 
     async def test_no_transition_effect_is_omitted(self, deck_tools, mock_subprocess_run):
         records = _RS.join(
-            [f"L{_FS}Blank", f"K{_FS}false", f"X{_FS}no transition effect{_FS}0{_FS}0{_FS}false"]
+            [
+                f"D{_FS}1",
+                f"L{_FS}Blank",
+                f"K{_FS}false",
+                f"X{_FS}no transition effect{_FS}0{_FS}0{_FS}false",
+            ]
         )
         self._wire(mock_subprocess_run, records)
         spec = json.loads((await deck_tools.describe_deck())[0].text)

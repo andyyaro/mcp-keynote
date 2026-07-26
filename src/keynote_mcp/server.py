@@ -642,7 +642,13 @@ class KeynoteMCPServer:
                 style=arguments.get("style", ""),
             )
         elif name == "describe_deck":
-            return await self.deck_tools.describe_deck(doc_name=doc_name)
+            return await self.deck_tools.describe_deck(
+                doc_name=doc_name,
+                slide_range=arguments.get("slide_range", ""),
+                element_types=arguments.get("element_types"),
+                detail=arguments.get("detail", "full"),
+                round_coordinates=arguments.get("round_coordinates", True),
+            )
 
         # Export and screenshot tools
         elif name == "screenshot_slide":

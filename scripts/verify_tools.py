@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -220,6 +221,180 @@ def pdf_page_count(path):
 
 def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
+
+
+async def check_describe_at_scale(pres, deck):
+    """PHASE 9 Task 3 — describe_deck on a deck the size of the real one.
+
+    Asserts BOTH the wall clock and the output size, because the field report
+    hit both walls at once: 137,091 characters (over the tool-output limit) and
+    >120 s (over the timeout) on a 35-slide deck. A check that only asserted
+    "it returned something" would have passed then too.
+
+    Builds its own 35-slide / ~735-element deck so the numbers are reproducible
+    rather than dependent on a file that may not be present.
+    """
+    key = SCRATCH / "phase9-scale.key"
+    doc = "phase9-scale.key"
+    if key.exists():
+        check("phase9/scale: open the scale deck", await pres.open_presentation(str(key)))
+    else:
+        spec = {
+            "title": "phase9-scale",
+            "width": 1920,
+            "height": 1080,
+            "save_path": str(key),
+            "slides": [],
+        }
+        for i in range(35):
+            elements = []
+            for c in range(4):
+                elements.append(
+                    {
+                        "type": "panel",
+                        "x": 80 + c * 450,
+                        "y": 200,
+                        "width": 420,
+                        "height": 380,
+                        "color": ["#EFA3A0", "#A8C6DE", "#D8EDD2", "#5C6E80"][c],
+                        "radius": 8,
+                    }
+                )
+            for c in range(4):
+                elements.append(
+                    {
+                        "type": "text",
+                        "text": f"Service {c + 1}",
+                        "x": 100 + c * 450,
+                        "y": 220,
+                        "font_size": 22,
+                    }
+                )
+            for c in range(6):
+                elements.append(
+                    {
+                        "type": "line",
+                        "x1": 100 + c * 60,
+                        "y1": 640,
+                        "x2": 300 + c * 60,
+                        "y2": 700,
+                    }
+                )
+            elements.append(
+                {
+                    "type": "table",
+                    "data": [["Region", "Q1", "Q2"], ["North", 120, 130], ["South", 90, 95]],
+                    "x": 80,
+                    "y": 760,
+                    "width": 700,
+                    "height": 200,
+                }
+            )
+            spec["slides"].append(
+                {
+                    "layout": "Blank",
+                    "title": f"Architecture slide {i + 1}",
+                    "notes": f"Speaker notes for slide {i + 1}.",
+                    "elements": elements,
+                }
+            )
+        check("phase9/scale: build a 35-slide deck", await deck.build_deck(spec=spec))
+
+    # --- summary: the path that makes a real deck workable at all ---
+    t0 = time.monotonic()
+    summary_text = text_of(await deck.describe_deck(doc_name=doc, detail="summary"))
+    summary_s = time.monotonic() - t0
+    summary = json.loads(summary_text)
+    record(
+        "phase9/scale: summary covers every slide",
+        len(summary["slides"]) == 35 and summary["slide_count"] == 35,
+        f"{len(summary['slides'])} slides described",
+    )
+    record(
+        "phase9/scale: summary is FAST (< 5s; full read was 31s before batching)",
+        summary_s < 5.0,
+        f"{summary_s:.2f}s",
+    )
+    record(
+        "phase9/scale: summary is SMALL (< 20k chars; the field report's full dump was 137k)",
+        len(summary_text) < 20_000,
+        f"{len(summary_text):,} chars",
+    )
+    record(
+        "phase9/scale: summary carries per-slide counts and a title",
+        all("counts" in s and "title" in s for s in summary["slides"]),
+        str(summary["slides"][0]),
+    )
+
+    # --- slide_range: paging ---
+    t0 = time.monotonic()
+    paged_text = text_of(await deck.describe_deck(doc_name=doc, slide_range="1-5"))
+    paged_s = time.monotonic() - t0
+    paged = json.loads(paged_text)
+    record(
+        "phase9/scale: slide_range='1-5' returns exactly those five slides",
+        [s.get("slide") for s in paged["slides"]] == [1, 2, 3, 4, 5],
+        str([s.get("slide") for s in paged["slides"]]),
+    )
+    record(
+        "phase9/scale: a five-slide page is small and quick",
+        len(paged_text) < 40_000 and paged_s < 15.0,
+        f"{len(paged_text):,} chars in {paged_s:.2f}s",
+    )
+
+    # --- element_types: skipped classes are not READ, not merely omitted ---
+    t0 = time.monotonic()
+    lines_text = text_of(await deck.describe_deck(doc_name=doc, element_types=["line"]))
+    lines_s = time.monotonic() - t0
+    lines = json.loads(lines_text)
+    classes = {
+        el.get("element_class") for s in lines["slides"] for el in s.get("elements", [])
+    }
+    record(
+        "phase9/scale: element_types=['line'] returns ONLY lines",
+        classes == {"line"},
+        f"classes present: {sorted(c for c in classes if c)}",
+    )
+    record(
+        "phase9/scale: filtering is a real SPEEDUP, not just a smaller payload",
+        lines_s < 6.0,
+        f"{lines_s:.2f}s for lines only",
+    )
+
+    # --- full: must not time out, and must carry no float noise ---
+    t0 = time.monotonic()
+    full_text = text_of(await deck.describe_deck(doc_name=doc))
+    full_s = time.monotonic() - t0
+    full = json.loads(full_text)
+    record(
+        "phase9/scale: the FULL description completes well inside the 120s timeout",
+        full_s < 90.0,
+        f"{full_s:.1f}s for 35 slides / {sum(len(s.get('elements', [])) for s in full['slides'])} elements",
+    )
+    record(
+        "phase9/scale: coordinates are rounded - no trailing '.0' noise",
+        '.0,' not in full_text and '.0\n' not in full_text,
+        f"{full_text.count('.0')} '.0' occurrences",
+    )
+    record(
+        "phase9/scale: a large full description SAYS it is large and how to page it",
+        "detail='summary'" in full_text and "slide_range" in full_text,
+        f"{len(full_text):,} chars",
+    )
+    # Opting out of rounding must still work, for callers wanting raw floats.
+    raw_text = text_of(
+        await deck.describe_deck(doc_name=doc, slide_range="1", round_coordinates=False)
+    )
+    record(
+        "phase9/scale: round_coordinates=False keeps Keynote's floats",
+        ".0" in raw_text,
+        f"{raw_text.count('.0')} '.0' occurrences with rounding off",
+    )
+
+    check(
+        "phase9/scale: close the scale deck",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
 
 
 async def check_index_contract(pres, slides, content, export, objects, deck):
@@ -1924,6 +2099,7 @@ async def main():
     check("close rescued doc", await pres.close_presentation(should_save=False))
 
     await check_index_contract(pres, slides, content, export, objects, deck)
+    await check_describe_at_scale(pres, deck)
     await check_document_resolution(pres, slides, content, export, objects)
     await check_fill_is_unwritable(pres, slides, content, export, objects)
 

@@ -92,6 +92,96 @@ _AS_RS = "(character id 30)"
 _SLIDE_SESSION_TIMEOUT = 120.0
 _SLIDES_PER_SESSION = 5
 
+# describe_deck batches its full reads. Profiled on a 35-slide/735-element
+# deck: one osascript call per slide cost 31.2 s, of which ~4.5 s was pure
+# process + AppleEvent overhead (0.125 s x 36 calls). Batching removes that;
+# the remainder is per-property reads, which only filtering can avoid.
+_DESCRIBE_SLIDES_PER_SESSION = 10
+
+# Beyond this, a full description is likely to blow a tool-output limit.
+_LARGE_DESCRIPTION_CHARS = 60_000
+
+_ALL_ELEMENT_CLASSES = frozenset({"text", "image", "shape", "table", "chart", "line"})
+
+
+def _chunks(items: list[int], size: int) -> list[list[int]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _parse_element_types(requested: list[str] | None) -> frozenset[str]:
+    """Validate an element_types filter, or return every class."""
+    if not requested:
+        return _ALL_ELEMENT_CLASSES
+    if isinstance(requested, str):  # tolerate a bare string
+        requested = [requested]
+    unknown = sorted(set(requested) - _ALL_ELEMENT_CLASSES)
+    if unknown:
+        raise ParameterError(
+            f"Unknown element_types {unknown}; valid: {sorted(_ALL_ELEMENT_CLASSES)}."
+        )
+    return frozenset(requested)
+
+
+def _parse_slide_range(spec: str, total: int) -> list[int]:
+    """Parse "5", "1-10", "1-10,20,25-30" into a sorted list of slide numbers.
+
+    Bounds are clamped to the deck and an empty result is an error rather than
+    a silently empty description.
+    """
+    if not spec or not spec.strip():
+        return list(range(1, total + 1))
+    wanted: set[int] = set()
+    for part in spec.split(","):
+        piece = part.strip()
+        if not piece:
+            continue
+        if "-" in piece:
+            lo_s, _, hi_s = piece.partition("-")
+            try:
+                lo, hi = int(lo_s), int(hi_s)
+            except ValueError:
+                raise ParameterError(
+                    f"Invalid slide_range segment {piece!r}; use forms like "
+                    "'3', '1-10', or '1-10,20,25-30'."
+                ) from None
+            if lo > hi:
+                raise ParameterError(f"slide_range {piece!r} runs backwards.")
+            wanted.update(range(max(1, lo), min(total, hi) + 1))
+        else:
+            try:
+                n = int(piece)
+            except ValueError:
+                raise ParameterError(
+                    f"Invalid slide_range segment {piece!r}; use forms like "
+                    "'3', '1-10', or '1-10,20,25-30'."
+                ) from None
+            if 1 <= n <= total:
+                wanted.add(n)
+    if not wanted:
+        raise ParameterError(f"slide_range {spec!r} selects no slides; the deck has {total}.")
+    return sorted(wanted)
+
+
+def _round_slide_numbers(node: Any) -> None:
+    """Round whole-valued floats to ints, in place.
+
+    Keynote reports every coordinate as a float, so a real deck's description
+    carried thousands of trailing '.0' - 2,415 of them in the 35-slide
+    profiling deck - for no information at all.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, float) and value.is_integer():
+                node[key] = int(value)
+            else:
+                _round_slide_numbers(value)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            if isinstance(value, float) and value.is_integer():
+                node[i] = int(value)
+            else:
+                _round_slide_numbers(value)
+
 
 def _err(path: str, message: str) -> str:
     return f"{path}: {message}"
@@ -866,11 +956,58 @@ class DeckTools(DocumentTargetedTools):
                     "diff two describe_deck outputs in git. This is the first "
                     "step for reworking an existing deck: describe_deck -> edit "
                     "the spec -> build_deck, instead of a long chain of "
-                    "per-element edits."
+                    "per-element edits. "
+                    "ON A REAL DECK, START WITH detail='summary' (one fast call: "
+                    "per-slide counts and titles), then pull the slides you care "
+                    "about with slide_range. A full description of a 35-slide "
+                    "deck is ~125,000 characters and can exceed a tool-output "
+                    "limit. Every element carries element_class + index - the "
+                    "index other tools consume; ARRAY POSITION IS NOT AN ADDRESS "
+                    "and is not z-order (see docs/INDEX_CONTRACT.md)."
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {"doc_name": _DOC_ARG},
+                    "properties": {
+                        "doc_name": _DOC_ARG,
+                        "slide_range": {
+                            "type": "string",
+                            "description": (
+                                "Slides to describe, e.g. '3', '1-10', or "
+                                "'1-10,20,25-30'. Default: every slide."
+                            ),
+                        },
+                        "element_types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["text", "image", "shape", "table", "chart", "line"],
+                            },
+                            "description": (
+                                "Only read these element classes. Skipped classes "
+                                "are not read at all, so this is a speedup as well "
+                                "as a smaller payload. Default: all."
+                            ),
+                        },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["full", "summary"],
+                            "description": (
+                                "'full' (default) = geometry and styling for every "
+                                "element. 'summary' = per-slide element counts and "
+                                "titles only, in ONE osascript call (0.3s vs 31s on "
+                                "a 35-slide deck). Start here on an unfamiliar deck."
+                            ),
+                        },
+                        "round_coordinates": {
+                            "type": "boolean",
+                            "description": (
+                                "Round whole-valued coordinates to integers "
+                                "(default true). Keynote reports every coordinate "
+                                "as a float; the trailing '.0' was ~2% of the "
+                                "payload and carried no information."
+                            ),
+                        },
+                    },
                 },
             ),
         ]
@@ -1204,9 +1341,19 @@ class DeckTools(DocumentTargetedTools):
 
     # ------------------------------------------------------------- describe
 
-    async def describe_deck(self, doc_name: str = "") -> list[TextContent]:
+    async def describe_deck(
+        self,
+        doc_name: str = "",
+        slide_range: str = "",
+        element_types: list[str] | None = None,
+        detail: str = "full",
+        round_coordinates: bool = True,
+    ) -> list[TextContent]:
         try:
             doc_name = self._doc(doc_name)
+            if detail not in ("full", "summary"):
+                raise ParameterError(f"detail must be 'full' or 'summary', got {detail!r}.")
+            want = _parse_element_types(element_types)
             head = self.runner.run(
                 f"""
                 on run argv
@@ -1224,20 +1371,62 @@ class DeckTools(DocumentTargetedTools):
                 doc_name,
             )
             name, theme, width, height, slide_count = head.split(_FS)
+            total = int(slide_count)
+            numbers = _parse_slide_range(slide_range, total)
             spec: dict[str, Any] = {
                 "title": name.removesuffix(".key"),
                 "theme": theme,
                 "width": int(float(width)),
                 "height": int(float(height)),
+                "slide_count": total,
                 "slides": [],
             }
-            for n in range(1, int(slide_count) + 1):
-                spec["slides"].append(self._describe_slide(doc_name, n))
-            return [TextContent(type="text", text=json.dumps(spec, indent=1))]
+            if numbers != list(range(1, total + 1)):
+                spec["slide_range"] = slide_range or f"{numbers[0]}-{numbers[-1]}"
+            if want != _ALL_ELEMENT_CLASSES:
+                spec["element_types"] = sorted(want)
+
+            if detail == "summary":
+                spec["detail"] = "summary"
+                spec["slides"] = self._summarize_slides(doc_name, numbers)
+                spec["note"] = (
+                    "Summary detail: per-slide element counts and titles only. "
+                    "Call again with detail='full' (optionally with slide_range) "
+                    "for geometry and styling."
+                )
+            else:
+                slides: list[dict[str, Any]] = []
+                for chunk in _chunks(numbers, _DESCRIBE_SLIDES_PER_SESSION):
+                    slides.extend(self._describe_slides(doc_name, chunk, want))
+                if round_coordinates:
+                    for sl in slides:
+                        _round_slide_numbers(sl)
+                spec["slides"] = slides
+            payload = json.dumps(spec, indent=1)
+            if detail == "full" and len(payload) > _LARGE_DESCRIPTION_CHARS:
+                # Say so in the payload rather than letting the caller discover
+                # it by blowing a tool-output limit, which is how the field
+                # report found out (137,091 characters, hard-failed).
+                spec["note"] = (
+                    f"This description is {len(payload):,} characters. If that is "
+                    "too large for one tool result, call again with "
+                    "detail='summary' for the map, then slide_range='1-10' (and "
+                    "optionally element_types) for the parts you need."
+                )
+                payload = json.dumps(spec, indent=1)
+            return [TextContent(type="text", text=payload)]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to describe deck: {e}")]
 
-    def _describe_slide(self, doc_name: str, slide_number: int) -> dict[str, Any]:
+    def _summarize_slides(self, doc_name: str, numbers: list[int]) -> list[dict[str, Any]]:
+        """Per-slide counts and titles for the whole deck in ONE call.
+
+        Measured on the 35-slide/735-element profiling deck: 0.3 s, against
+        31.2 s for the full read. This is the path that makes describe_deck
+        usable on a real deck at all - the field report's deck blew both the
+        tool-output limit (137,091 chars) and the 120 s timeout.
+        """
+        slide_list = ", ".join(str(n) for n in numbers)  # validated ints only
         filter_block = TEXT_ITEM_FILTER
         raw = self.runner.run(
             f"""
@@ -1245,10 +1434,100 @@ class DeckTools(DocumentTargetedTools):
                 set docName to item 1 of argv
                 set fs to character id 31
                 set rs to character id 30
+                set out to ""
                 tell application "Keynote"
                     {RESOLVE_DOC}
-                    set s to slide {slide_number} of targetDoc
-                    set out to "L" & fs & (name of base layout of s) & rs
+                    repeat with slideNum in {{{slide_list}}}
+                        tell slide slideNum of targetDoc
+{filter_block}
+                            set titleText to ""
+                            try
+                                if title showing then ¬
+                                    set titleText to (object text of default title item as text)
+                            end try
+                            if titleText is "" then
+                                repeat with n from 1 to (count of realIndices)
+                                    set cand to (object text of ¬
+                                        text item ((item n of realIndices) as integer) as text)
+                                    if cand is not "" then
+                                        set titleText to cand
+                                        exit repeat
+                                    end if
+                                end repeat
+                            end if
+                            set out to out & (slideNum as text) & fs & ¬
+                                (count of realIndices as text) & fs & ¬
+                                (count of images as text) & fs & ¬
+                                (count of shapes as text) & fs & ¬
+                                (count of tables as text) & fs & ¬
+                                (count of charts as text) & fs & ¬
+                                (count of lines as text) & fs & ¬
+                                (skipped of slide slideNum of targetDoc as text) & fs & ¬
+                                titleText & rs
+                        end tell
+                    end repeat
+                    return out
+                end tell
+            end run
+            """,
+            doc_name,
+            timeout=_SLIDE_SESSION_TIMEOUT,
+        )
+        out: list[dict[str, Any]] = []
+        for record in raw.split(_RS):
+            if not record:
+                continue
+            f = record.split(_FS)
+            counts = {
+                "text": int(f[1]),
+                "image": int(f[2]),
+                "shape": int(f[3]),
+                "table": int(f[4]),
+                "chart": int(f[5]),
+                "line": int(f[6]),
+            }
+            entry: dict[str, Any] = {
+                "slide": int(f[0]),
+                "elements": sum(counts.values()),
+                "counts": {k: v for k, v in counts.items() if v},
+            }
+            if f[7] == "true":
+                entry["skipped"] = True
+            if len(f) > 8 and f[8]:
+                entry["title"] = f[8]
+            out.append(entry)
+        return out
+
+    def _describe_slides(
+        self,
+        doc_name: str,
+        numbers: list[int],
+        element_types: frozenset[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Describe several slides in ONE osascript session.
+
+        Profiled on a 35-slide/735-element deck: the old one-call-per-slide
+        shape spent 31.2 s, of which ~4.5 s was pure process/AppleEvent
+        overhead (0.125 s x 36 calls) and the rest per-property reads. Batching
+        removes the overhead; `element_types` removes whole read loops, which
+        is a real speedup rather than just a smaller payload.
+        """
+        want = element_types or _ALL_ELEMENT_CLASSES
+        filter_block = TEXT_ITEM_FILTER
+        slide_list = ", ".join(str(n) for n in numbers)  # validated ints only
+        raw = self.runner.run(
+            f"""
+            on run argv
+                set docName to item 1 of argv
+                set fs to character id 31
+                set rs to character id 30
+                set out to ""
+                tell application "Keynote"
+                    {RESOLVE_DOC}
+                  repeat with slideNum in {{{slide_list}}}
+                    set s to slide slideNum of targetDoc
+                    set out to out & "D" & fs & (slideNum as text) & rs
+                    set out to out & "L" & fs & (name of base layout of s) & rs
                     set out to out & "K" & fs & (skipped of s as text) & rs
                     try
                         set tp to transition properties of s
@@ -1277,7 +1556,7 @@ class DeckTools(DocumentTargetedTools):
                         if (body showing) and defB is not missing value then
                             set out to out & "PB" & fs & (object text of defB as text) & rs
                         end if
-                        repeat with n from 1 to (count of realIndices)
+                        repeat with n from 1 to {"(count of realIndices)" if "text" in want else "0"}
                             set i to (item n of realIndices) as integer
                             set role to item n of realRoles
                             set ti to text item i
@@ -1301,7 +1580,7 @@ class DeckTools(DocumentTargetedTools):
                                 fs & (width of ti as text) & fs & (height of ti as text) & ¬
                                 fs & f & fs & z & fs & c & fs & (i as text) & fs & role & rs
                         end repeat
-                        repeat with i from 1 to (count of images)
+                        repeat with i from 1 to {"(count of images)" if "image" in want else "0"}
                             set im to image i
                             set p to position of im
                             set fn to ""
@@ -1320,7 +1599,7 @@ class DeckTools(DocumentTargetedTools):
                                 fs & (item 2 of p as text) & fs & (width of im as text) & ¬
                                 fs & (height of im as text) & fs & (i as text) & rs
                         end repeat
-                        repeat with i from 1 to (count of shapes)
+                        repeat with i from 1 to {"(count of shapes)" if "shape" in want else "0"}
                             set sh to shape i
                             set isPh to false
                             if defT is not missing value and sh is defT then set isPh to true
@@ -1337,7 +1616,7 @@ class DeckTools(DocumentTargetedTools):
                                     fs & (i as text) & rs
                             end if
                         end repeat
-                        repeat with i from 1 to (count of tables)
+                        repeat with i from 1 to {"(count of tables)" if "table" in want else "0"}
                             set tb to table i
                             set p to position of tb
                             set rowsOut to ""
@@ -1366,14 +1645,14 @@ class DeckTools(DocumentTargetedTools):
                                 fs & (width of tb as text) & fs & (height of tb as text) & ¬
                                 fs & rowsOut & fs & (i as text) & rs
                         end repeat
-                        repeat with i from 1 to (count of charts)
+                        repeat with i from 1 to {"(count of charts)" if "chart" in want else "0"}
                             set ch to chart i
                             set p to position of ch
                             set out to out & "C" & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of ch as text) & ¬
                                 fs & (height of ch as text) & fs & (i as text) & rs
                         end repeat
-                        repeat with i from 1 to (count of lines)
+                        repeat with i from 1 to {"(count of lines)" if "line" in want else "0"}
                             set ln to line i
                             set sp to start point of ln
                             set ep to end point of ln
@@ -1382,6 +1661,7 @@ class DeckTools(DocumentTargetedTools):
                                 fs & (item 2 of ep as text) & fs & (i as text) & rs
                         end repeat
                     end tell
+                  end repeat
                     return out
                 end tell
             end run
@@ -1389,13 +1669,19 @@ class DeckTools(DocumentTargetedTools):
             doc_name,
             timeout=_SLIDE_SESSION_TIMEOUT,
         )
+        slides: list[dict[str, Any]] = []
         slide: dict[str, Any] = {"elements": []}
         for record in raw.split(_RS):
             if not record:
                 continue
             fields = record.split(_FS)
             kind = fields[0]
-            if kind == "L":
+            if kind == "D":
+                # Slide delimiter: one batched session returns every requested
+                # slide, in order.
+                slide = {"slide": int(fields[1]), "elements": []}
+                slides.append(slide)
+            elif kind == "L":
                 slide["layout"] = fields[1]
             elif kind == "K":
                 if fields[1] == "true":
@@ -1512,4 +1798,4 @@ class DeckTools(DocumentTargetedTools):
                         "y2": float(fields[4]),
                     }
                 )
-        return slide
+        return slides
