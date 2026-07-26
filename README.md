@@ -14,8 +14,10 @@ This is a modernized fork of
 [ByAxe/keynote-mcp](https://github.com/ByAxe/keynote-mcp) (itself a fork of
 [easychen/keynote-mcp](https://github.com/easychen/keynote-mcp)). Every tool
 was validated against the Keynote 14.5 scripting dictionary and executed
-against a real Keynote — 155 live checks, 0 failed
-([docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md)). The scripting dictionary's
+against a real Keynote — 196 live checks, 0 failed
+([docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md)). Checks on anything visual
+assert the rendered pixels or the exported file's contents, not just a count
+that came back. The scripting dictionary's
 full surface was mapped and probed
 ([docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md)); what Keynote
 genuinely cannot be told to do is documented in

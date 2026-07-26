@@ -174,10 +174,10 @@ def ink_fraction(image, scale, box=None, tol=24):
     """Share of the region covered by drawn detail."""
     region = _crop(image, scale, box) if box else image
     total = region.width * region.height
-    return (sum(_ink_mask(region, tol).getdata()) / 255.0 / total) if total else 0.0
+    return (_ink_mask(region, tol).histogram()[-1] / total) if total else 0.0
 
 
-def fill_areas(image, scale, box, min_fraction=0.02, ring=8):
+def fill_areas(image, scale, box, min_fraction=0.02, ring=8, min_relative=0.25):
     """Distinct flat fills inside a region that are NOT background, largest first.
 
     This is the pie discriminator: the one-100%-slice defect yields ONE entry
@@ -185,7 +185,11 @@ def fill_areas(image, scale, box, min_fraction=0.02, ring=8):
     the filter - Slate's second chart series is neutral gray (172,172,172),
     which a saturation filter drops, reporting a healthy 3-slice pie as 2.
     Instead, colors that also appear in a thin ring just outside the region
-    are treated as background (this is what makes it work on a gradient).
+    are treated as background (this is what makes it work on a gradient), and
+    ``min_relative`` keeps only fills within a factor of the largest one, so
+    leftover gradient banding cannot pad the count. Calibrated against the
+    archived defect: `.scratch/pie-1.png` (the shipped one-slice bug) yields
+    1, the corrected chart yields exactly one per slice.
     """
     x, y, w, h = box
     region = _crop(image, scale, box)
@@ -199,6 +203,9 @@ def fill_areas(image, scale, box, min_fraction=0.02, ring=8):
         if n >= min_fraction * total and around.get(color, 0) - n < max(40, 0.1 * n)
     ]
     out.sort(key=lambda t: -t[1])
+    if out and min_relative:
+        floor = out[0][1] * min_relative
+        out = [(color, n) for color, n in out if n >= floor]
     return out
 
 
@@ -609,14 +616,16 @@ async def main():
         )
         bg = dominant(geo_img)
         greens = [
-            p
-            for p in crop.getdata()
-            if max(abs(a - b) for a, b in zip(p, bg, strict=False)) > 40 and p[1] > p[0] + 25 and p[1] > p[2] + 25
+            (color, n)
+            for n, color in (crop.getcolors(crop.width * crop.height) or [])
+            if max(abs(a - b) for a, b in zip(color, bg, strict=False)) > 40
+            and color[1] > color[0] + 25
+            and color[1] > color[2] + 25
         ]
         record(
             "add_code_block(color) renders green glyphs, not theme-colored ones",
-            len(greens) > 20,
-            f"{len(greens)} green ink pixels in the box",
+            sum(n for _, n in greens) > 20,
+            f"{sum(n for _, n in greens)} green ink pixels in the box",
         )
     check("delete geometry slide", await slides.delete_slide(4), "Deleted slide 4")
 
@@ -1042,7 +1051,7 @@ async def main():
         # A slide number is a few hundred pixels of ink on an otherwise
         # unchanged slide: the render must change, but only slightly.
         changed = ImageChops.difference(numbers_off_img, numbers_on_img).convert("L")
-        moved = sum(1 for v in changed.getdata() if v > 40)
+        moved = sum(changed.histogram()[41:])
         total = numbers_on_img.width * numbers_on_img.height
         record(
             "slide numbers are actually DRAWN when the setting is on",
@@ -1377,7 +1386,7 @@ async def main():
             # A theme is nothing BUT what it draws; the reply text proves none
             # of it. Basic Black over Slate must repaint most of the slide.
             delta = ImageChops.difference(theme_before, theme_after).convert("L")
-            moved = sum(1 for v in delta.getdata() if v > 40)
+            moved = sum(delta.histogram()[41:])
             total = theme_after.width * theme_after.height
             record(
                 "set_presentation_theme repaints the slide",

@@ -12,7 +12,38 @@ dictionary allows. The dictionary was parsed programmatically and every
 ambiguous item probed against a live Keynote 14.5 first
 ([docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md)); what the dictionary
 genuinely cannot do is stated in [docs/CEILING.md](docs/CEILING.md). 45 → 59
-tools; 155 live verification checks, 0 failed.
+tools; 196 live verification checks, 0 failed.
+
+### Hardened before merge — verification that looks at the render
+
+All 155 live checks asserted counts, properties, or file existence; none
+looked at what Keynote drew. That is how a pie chart shipped rendering as a
+single 100% slice while `count of charts is 1` passed. The harness now
+inspects the export (`screenshot_slide` + Pillow) or the exported file's
+contents wherever it can — chart slice counts and areas, panel and table
+header colors, image bitmaps, text ink/clipping/centering, opacity, line
+paths, slide numbers, theme repaints, PDF page counts, pptx slide parts,
+image dimensions — and the two classes no static export can show (build
+animations, transitions) say so in TOOL_MATRIX.md instead of looking as
+strong as the rest. 196 checks, 0 failed.
+
+Four defects it found, each of which had passed every structural check:
+
+- `build_deck`: an element that pinned only one coordinate fell through to
+  fully-manual placement, which left the other coordinate unset. Two elements
+  with `column: left`/`right` plus a `y` drew on top of each other at x=0,
+  and a title with only a `y` drew flush against the slide edge — through a
+  zero-error build and a clean `describe_deck` round-trip. Now only a fully
+  placed element skips the flow.
+- `screenshot_slide`: it marks every slide skipped to isolate one for export
+  and restored them at the end of the *same* script, so an export that
+  outlived its timeout left the whole deck skipped. Read, export and restore
+  are now separate calls with the restore in a `finally`.
+- `export_presentation(images, include_skipped=True)`: ignored by Keynote
+  (probed at the raw-AppleScript level; the same property works for PDF). The
+  reply and the schema now say so.
+- A corrupt fixture PNG proved `replace_image` could set `file name` while
+  the image vanished from the slide — the check asserted the property.
 
 ### Added — declarative deck building
 

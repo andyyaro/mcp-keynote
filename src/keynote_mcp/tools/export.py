@@ -253,11 +253,15 @@ class ExportTools:
                 on run argv
                     set docName to item 1 of argv
                     set flagText to item 2 of argv
+                    -- Split OUTSIDE the Keynote tell block: `text item` is a
+                    -- Keynote class (a slide's text box), so `text items of
+                    -- <string>` inside the block is sent to Keynote and fails
+                    -- with -1728 "Can't get every text item of ...".
+                    set AppleScript's text item delimiters to ","
+                    set parts to text items of flagText
+                    set AppleScript's text item delimiters to ""
                     tell application "Keynote"
                         {_RESOLVE_DOC}
-                        set AppleScript's text item delimiters to ","
-                        set parts to text items of flagText
-                        set AppleScript's text item delimiters to ""
                         set n to count of slides of targetDoc
                         repeat with i from 1 to (count of parts)
                             if i is less than or equal to n then
