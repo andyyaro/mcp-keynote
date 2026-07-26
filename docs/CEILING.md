@@ -89,15 +89,62 @@ playback control (`start`/`stop`/slide switcher), document passwords
 themes via `make new document with data` (unprobed — no `.kth` can be
 created by script), `print`.
 
+## UI state affects scripting
+
+Keynote's scripting layer is not independent of its window. What the app is
+showing — which inspector pane is open, which slide is current, which slides
+are flagged skipped, whether it is frontmost — changes what AppleScript
+commands do, and **nothing in the dictionary lets a script read or set most
+of it**. This is a class, not a single bug, and it has three properties worth
+internalizing:
+
+1. **The failure looks transient and is not.** The known instance below was
+   first written off as a flake because an isolated repro passed — the repro
+   never opened the inspector. It reproduced 100% of the time once the
+   inspector was open, and 0% otherwise; the ordering of the full run was the
+   whole variable.
+2. **The blast radius crosses tools.** The tool that changes the state and
+   the tool that then fails need have nothing to do with each other.
+3. **A user with Keynote open is part of the system.** Anyone clicking around
+   in Keynote while the server runs can put it in the failing state, and no
+   amount of server-side care prevents that. The server can only avoid
+   *causing* it and say so when it can't.
+
+**Known instance (probed).** With the **Animate inspector** open,
+`make new line` fails deterministically with -10000 "AppleEvent handler
+failed". Other `make new …` classes keep working, which is what makes it so
+misleading. The build tools (`add_build_in`, `remove_build_in`,
+`add_builds_to_slide`) are the only things here that open that pane, and they
+now switch the inspector back to Format when they finish
+(`_restore_format_pane`, best-effort — UI state must never fail the call it
+rides along with). If you drive the inspector by hand mid-session, switch
+back to Format before adding lines.
+
+**Mitigation pattern — for any tool that changes app or document state the
+caller did not ask to change:**
+
+- Restore it, and restore it in a `finally`, from state captured in **Python**
+  rather than in an AppleScript variable. A single script that mutates and
+  restores loses the restore entirely if the script is killed by a timeout or
+  a modal dialog. `screenshot_slide` marks every slide skipped to isolate one
+  slide for export; it reads the flags in one call, exports in another, and
+  restores in a `finally` — because an export that outlives its timeout used
+  to leave the user's deck with every slide skipped, after which exports
+  produce nothing and playback shows nothing, with no hint why.
+- Make the restore best-effort and log loudly if it fails; never let cleanup
+  turn a working call into a failed one.
+- Where the state change is the point (the `add_chart` / `build_deck` switch
+  of `current slide`, which Keynote requires or it silently creates nothing;
+  `select_slide`), leave it changed and say so in the tool description.
+
 ## Operational limits (not API limits)
 
 - One osascript call at a time; a modal Keynote dialog blocks everything
   (bounded timeouts + wedge detection ship in the runner).
 - UI-scripting build tools need Keynote frontmost, an unlocked screen, an
   English UI, and tolerate occasional timing misses.
-- With the Animate inspector open, `make new line` fails deterministically
-  with -10000 "AppleEvent handler failed" (other creates keep working). The
-  build tools restore the Format pane when they finish; if you drive the
-  inspector by hand mid-session, switch back to Format before adding lines.
+- Scripting outcomes depend on Keynote's visible UI state, which no tool
+  fully controls — see "UI state affects scripting" above for the class, the
+  known `make new line` / Animate-inspector instance, and the restore pattern.
 - Movie export renders in near-real time (minutes for real decks).
 - TCC permissions attach to the app that launched the server.

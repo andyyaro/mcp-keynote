@@ -180,6 +180,15 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
   restore the Format pane when they finish (`_restore_format_pane`). This
   was first misdiagnosed as a transient — the isolated repro passed because
   it never opened the inspector; only the full-harness ordering exposed it.
+  The general fact — scripting outcomes depend on Keynote's visible UI state,
+  which no tool controls — is a section of `docs/CEILING.md` ("UI state
+  affects scripting"). Its rule for new code: if a tool changes app or
+  document state the caller did not ask for, capture the old state in
+  **Python**, restore it in a `finally`, and make the restore best-effort.
+  Restoring inside the same script is not enough — a timeout or a modal
+  dialog kills the script before the restore line runs. `screenshot_slide`
+  had exactly that hole: it skips every slide to isolate one for export, and
+  a slow export left the user's whole deck skipped.
 - Element-creation AppleScript lives ONLY in `tools/fragments.py`; new
   element kinds get a fragment there so build_deck and the single tool stay
   identical. New tool = schema + method + `server._dispatch` case + fragment

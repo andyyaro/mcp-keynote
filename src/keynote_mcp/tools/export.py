@@ -1,6 +1,7 @@
 """Export and screenshot tools."""
 
 import glob
+import logging
 import os
 import shutil
 import tempfile
@@ -13,6 +14,8 @@ from ..utils import (
     validate_file_path,
     validate_slide_number,
 )
+
+logger = logging.getLogger(__name__)
 
 _DOC_ARG = {
     "type": "string",
@@ -216,6 +219,65 @@ class ExportTools:
             ),
         ]
 
+    def _read_skipped_states(self, doc_name: str) -> str:
+        """Every slide's `skipped` flag as a compact "1,0,1" string."""
+        raw = self.runner.run(
+            f"""
+            on run argv
+                set docName to item 1 of argv
+                tell application "Keynote"
+                    {_RESOLVE_DOC}
+                    set out to ""
+                    repeat with s in slides of targetDoc
+                        if skipped of s then
+                            set out to out & "1,"
+                        else
+                            set out to out & "0,"
+                        end if
+                    end repeat
+                    return out
+                end tell
+            end run
+            """,
+            doc_name,
+        )
+        return raw.strip().rstrip(",")
+
+    def _restore_skipped_states(self, doc_name: str, flags: str) -> None:
+        """Put the `skipped` flags back. Best-effort: never masks the real error."""
+        if not flags:
+            return
+        try:
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    set flagText to item 2 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set AppleScript's text item delimiters to ","
+                        set parts to text items of flagText
+                        set AppleScript's text item delimiters to ""
+                        set n to count of slides of targetDoc
+                        repeat with i from 1 to (count of parts)
+                            if i is less than or equal to n then
+                                set skipped of slide i of targetDoc to ((item i of parts) is "1")
+                            end if
+                        end repeat
+                    end tell
+                end run
+                """,
+                doc_name,
+                flags,
+            )
+        except Exception:
+            logger.warning(
+                "Could not restore slides' skipped state after a screenshot export. "
+                "If the deck now plays or exports as empty, unskip its slides in "
+                "Keynote (Slide > Skip Slide) or with set_slide_skipped.",
+                exc_info=True,
+            )
+
     async def screenshot_slide(
         self, slide_number: int, output_path: str, format: str = "png", doc_name: str = ""
     ) -> list[TextContent]:
@@ -232,35 +294,41 @@ class ExportTools:
 
             # Export only the target slide by skipping all others, then restore
             # each slide's original skipped state.
-            self.runner.run(
-                f"""
-                on run argv
-                    set docName to item 1 of argv
-                    set outputFolder to item 2 of argv
-                    tell application "Keynote"
-                        {_RESOLVE_DOC}
-                        tell targetDoc
-                            set savedStates to skipped of every slide
-                            set skipped of every slide to true
-                            set skipped of slide {slide_number} to false
+            #
+            # The read and the restore are SEPARATE osascript calls on purpose.
+            # Doing all three in one script means an export that outlives the
+            # timeout (or a modal dialog) kills the script before the restore
+            # line, leaving the user's document with EVERY slide skipped -
+            # after which exports produce nothing and playback shows nothing,
+            # with no hint why. Holding the states in Python lets the restore
+            # run in a `finally`, whatever happened to the export.
+            saved_states = self._read_skipped_states(doc_name)
+            try:
+                self.runner.run(
+                    f"""
+                    on run argv
+                        set docName to item 1 of argv
+                        set outputFolder to item 2 of argv
+                        tell application "Keynote"
+                            {_RESOLVE_DOC}
+                            tell targetDoc
+                                set skipped of every slide to true
+                                set skipped of slide {slide_number} to false
+                            end tell
+                            try
+                                export targetDoc as slide images to (POSIX file outputFolder) ¬
+                                    with properties {{image format:{export_format}, ¬
+                                    skipped slides:false}}
+                            end try
                         end tell
-                        try
-                            export targetDoc as slide images to (POSIX file outputFolder) ¬
-                                with properties {{image format:{export_format}, ¬
-                                skipped slides:false}}
-                        end try
-                        tell targetDoc
-                            repeat with i from 1 to count of savedStates
-                                set skipped of slide i to item i of savedStates
-                            end repeat
-                        end tell
-                    end tell
-                end run
-                """,
-                doc_name,
-                temp_folder,
-                timeout=_EXPORT_TIMEOUT,
-            )
+                    end run
+                    """,
+                    doc_name,
+                    temp_folder,
+                    timeout=_EXPORT_TIMEOUT,
+                )
+            finally:
+                self._restore_skipped_states(doc_name, saved_states)
 
             generated = sorted(glob.glob(os.path.join(temp_folder, f"*.{extension}")))
             if not generated:

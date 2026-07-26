@@ -350,8 +350,35 @@ class TestExportTools:
     ):
         await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
         script = last_script(mock_subprocess_run)
-        assert "set savedStates to skipped of every slide" in script
-        assert "item i of savedStates" in script
+        # The restore is its own call, and it is the LAST one.
+        assert "set skipped of slide i of targetDoc" in script
+
+    async def test_screenshot_restores_skip_state_even_when_the_export_fails(
+        self, export_tools, mock_subprocess_run, tmp_path
+    ):
+        """A timeout mid-export must not leave every slide skipped.
+
+        Skipping all slides and restoring them in ONE script means a killed
+        script never reaches the restore, and the user's deck is left playing
+        and exporting as empty with no explanation.
+        """
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            script = kwargs.get("input", "")
+            calls.append(script)
+            if "skipped of every slide to true" in script:
+                raise subprocess.TimeoutExpired(cmd, 120)
+            if "repeat with s in slides" in script:
+                return subprocess.CompletedProcess(cmd, 0, "0,1,0", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        mock_subprocess_run.side_effect = fake_run
+        result = await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
+        assert "Failed" in result[0].text  # the export failure still surfaces
+        restores = [c for c in calls if "set skipped of slide i of targetDoc" in c]
+        assert restores, "the skipped states were never put back"
+        assert "0,1,0" in mock_subprocess_run.call_args.args[0]
 
     async def test_screenshot_moves_generated_file(
         self, export_tools, mock_subprocess_run, tmp_path
@@ -360,11 +387,11 @@ class TestExportTools:
 
         def fake_run(cmd, **kwargs):
             # Simulate Keynote writing into the temp export folder (argv item 2)
-            folder = cmd[3]
             (tmp_path / "check").mkdir(exist_ok=True)
             import pathlib
 
-            pathlib.Path(folder, "slide.001.png").write_bytes(b"x" * 10)
+            if len(cmd) > 3:  # the export call carries the temp folder as argv 2
+                pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
@@ -385,7 +412,8 @@ class TestExportTools:
             script = kwargs.get("input", "")
             if "emptyCount" in script:
                 return subprocess.CompletedProcess(cmd, 0, "2", "")
-            pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
+            if len(cmd) > 3:
+                pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
@@ -404,7 +432,8 @@ class TestExportTools:
             script = kwargs.get("input", "")
             if "emptyCount" in script:
                 return subprocess.CompletedProcess(cmd, 0, "0", "")
-            pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
+            if len(cmd) > 3:
+                pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
