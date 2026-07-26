@@ -15,7 +15,9 @@ from keynote_mcp.utils.styles import (
 
 class TestBuiltins:
     def test_expected_names(self):
-        assert set(BUILTIN_STYLES) == {"plain", "boardroom", "midnight", "editorial"}
+        # "sdh" ships as a TOML file inside the package (Phase 9 Task 9), so
+        # the shipped-style loader is exercised by simply importing the module.
+        assert set(BUILTIN_STYLES) == {"plain", "boardroom", "midnight", "editorial", "sdh"}
 
     def test_resolve_boardroom(self):
         style = resolve_style("boardroom")

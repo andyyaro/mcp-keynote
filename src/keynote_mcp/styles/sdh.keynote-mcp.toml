@@ -1,0 +1,274 @@
+# Ships with keynote-mcp as the built-in style "sdh".
+#
+# Generated from a REAL design system: .scratch/SDH-Visual-Identity/tokens.json,
+# reverse-engineered from a 35-slide technical architecture deck. This file is
+# the first test of the style system against input nobody invented for it.
+#
+# WHAT THIS STYLE CANNOT CARRY, and why - see docs/CEILING.md:
+#   - gradients, textures, drop shadows: the renderer draws flat colour only,
+#     and Keynote cannot fill anything at all
+#   - underline: rich text exposes only font, size and colour
+#   - circles/badges: there is no `shape type`; non-rectangles are images
+#   - orthogonal connector ROUTING: `line` has fixed endpoints, no routing
+#   - per-slide dark mode: one style is resolved per deck
+# Everything below IS applied by build_deck.
+
+[style]
+name = "sdh"
+version = "1.0.0"
+description = "SDH visual identity: Libre Caslon Condensed narrative + Hoefler Text diagram labels, semantic colour, semantic strokes"
+keynote_theme = "Basic White"
+width = 1920
+height = 1080
+
+# The five legacy element-keyed slots, mapped to their closest named role.
+title_font = "LibreCaslonCondensed-Medium"
+title_size = 72
+title_color = "#000000"
+subtitle_font = "LibreCaslonCondensed-MediumItalic"
+subtitle_size = 48
+subtitle_color = "#000000"
+body_font = "LibreCaslonCondensed-Medium"
+body_size = 28
+body_color = "#000000"
+code_font = "LibreCaslonCondensed-Bold"
+code_size = 19
+code_color = "#000000"
+quote_font = "HoeflerText-Italic"
+quote_size = 30
+quote_color = "#000000"
+
+# ---- named type roles: the 22 styles the deck actually uses -------------
+[style.type."title.deck"]
+font = "LibreCaslonCondensed-Medium"
+size = 85
+color = "#000000"
+[style.type."title.slide"]
+font = "LibreCaslonCondensed-Medium"
+size = 72
+color = "#000000"
+[style.type."title.canvas"]
+font = "LibreCaslonCondensed-Medium"
+size = 69
+color = "#000000"
+[style.type."presenter"]
+font = "LibreCaslonCondensed-MediumItalic"
+size = 48
+color = "#000000"
+[style.type."body.rail"]
+font = "LibreCaslonCondensed-Medium"
+size = 28
+color = "#000000"
+[style.type."body.card"]
+font = "LibreCaslonCondensed-Regular"
+size = 30
+color = "#000000"
+[style.type."card.title"]  # underline is NOT applicable via AppleScript
+font = "LibreCaslonCondensed-Bold"
+size = 30
+color = "#FFFFFF"
+[style.type."card.titleItalic"]
+font = "LibreCaslonCondensed-BoldItalic"
+size = 30
+color = "#FFFFFF"
+[style.type."heading.diagram"]  # underline is NOT applicable via AppleScript
+font = "LibreCaslonCondensed-Bold"
+size = 30
+color = "#000000"
+[style.type."label.sub"]
+font = "LibreCaslonCondensed-Bold"
+size = 21
+color = "#FFFFFF"
+[style.type."code.endpoint"]
+font = "LibreCaslonCondensed-Bold"
+size = 19
+color = "#000000"
+[style.type."footnote"]
+font = "LibreCaslonCondensed-Regular"
+size = 23
+color = "#000000"
+[style.type."chip.account"]
+font = "LibreCaslonCondensed-Regular"
+size = 12
+color = "#FFFFFF"
+[style.type."persona"]
+font = "HoeflerText-Regular"
+size = 39
+color = "#000000"
+[style.type."label.service"]
+font = "HoeflerText-Regular"
+size = 22
+color = "#000000"
+[style.type."label.dense"]
+font = "HoeflerText-Regular"
+size = 20
+color = "#000000"
+[style.type."label.tiny"]
+font = "HoeflerText-Regular"
+size = 19
+color = "#000000"
+[style.type."annotation"]
+font = "HoeflerText-Italic"
+size = 30
+color = "#000000"
+[style.type."annotation.lg"]
+font = "HoeflerText-Italic"
+size = 48
+color = "#000000"
+[style.type."chip.badge"]  # uppercase: author it in the text
+font = "HoeflerText-Black"
+size = 15
+color = "#000000"
+[style.type."chip.inverse"]
+font = "HoeflerText-Black"
+size = 18
+color = "#FFFFFF"
+[style.type."footnote.diagram"]
+font = "HoeflerText-Black"
+size = 24
+color = "#000000"
+
+# ---- palette: colour as a referent, not decoration ----------------------
+[style.palette]
+# zone
+"zone.public" = "#E1F6DD"  # Internet-facing / public account
+"zone.private" = "#98C1DA"  # Private account (data plane)
+"zone.control" = "#6E8091"  # Management / Security account (control plane)
+"zone.org" = "#8A2052"  # Organization boundary bar
+"zone.prod" = "#F19B91"  # Production environment / OU
+"zone.sandbox" = "#4CA98F"  # Sandbox / Dev environment / OU
+"zone.neutral" = "#D5D5D5"  # Management-account inset, title background
+# concept
+"concept.identity" = "#864262"  # Identity / auth / secrets
+"concept.client" = "#589F96"  # Client / browser / caller
+"concept.gateway" = "#668FAC"  # Gateway / transport / library
+"concept.compute" = "#A46559"  # Compute / mutation
+# accent
+"accent.primary" = "#8A2052"
+"accent.deep" = "#830041"
+"accent.crimson" = "#A62B17"
+"accent.navy" = "#1E4C7C"
+"accent.teal" = "#2D6A65"
+"accent.pink" = "#F19AC8"
+"accent.brick" = "#A4342B"
+"accent.rose" = "#701421"
+"accent.hot" = "#FC2190"
+"surface.paper" = "#FBFAF6"
+"surface.white" = "#FFFFFF"
+"text.default" = "#000000"
+"text.inverse" = "#FFFFFF"
+
+# ---- connectors: in this deck the stroke IS the semantics ---------------
+[style.connectors.config]
+color = "#000000"
+width = 5
+dash = "solid"
+meaning = "One-time operation / static configuration"
+[style.connectors.logical]
+color = "#000000"
+width = 3
+dash = "dotted"
+meaning = "Logical relationship, invocation, read path"
+[style.connectors.auth]
+color = "#C8C8C8"
+width = 3
+dash = "solid"
+meaning = "Authentication flow"
+[style.connectors.data]
+color = "#8A2052"
+width = 5
+dash = "solid"
+meaning = "Retrieve / Update"
+[style.connectors.dataReturn]
+color = "#8A2052"
+width = 3
+dash = "dotted"
+meaning = "Return leg of retrieve/update"
+[style.connectors.logStream]
+color = "#F19AC8"
+width = 4
+dash = "dotted"
+meaning = "Log stream / organization trail"
+[style.connectors.monitoring]
+color = "#4A90D9"
+width = 4
+dash = "dotted"
+meaning = "Monitoring / collection"
+[style.connectors.denied]
+color = "#AAAAAA"
+width = 3
+dash = "dotted"
+meaning = "Denied / not-taken path"
+
+# ---- canvas zones -------------------------------------------------------
+[style.zones.title]
+x = 0
+y = 13
+width = 1920
+height = 97
+align = "center"
+[style.zones.canvas]
+x = 0
+y = 119
+width = 1920
+height = 856
+[style.zones.legend]
+x = 0
+y = 1016
+width = 1920
+height = 44
+[style.zones.sideRail]
+x = 1370
+y = 350
+width = 480
+height = 110
+
+# ---- grid modules: n-up with a real gutter ------------------------------
+[style.modules.accountColumn5up]
+width = 367
+height = 540
+pitch = 373
+origin_x = 27
+origin_y = 119
+[style.modules.accountColumn3up]
+width = 351
+height = 540
+pitch = 356
+origin_x = 27
+origin_y = 119
+[style.modules.accountCell4up]
+width = 299
+height = 305
+pitch = 304
+origin_x = 27
+origin_y = 119
+[style.modules.unitRow]
+width = 1343
+height = 323
+pitch = 330
+origin_x = 27
+origin_y = 119
+[style.modules.conceptCard3up]
+width = 312
+height = 460
+pitch = 331
+origin_x = 27
+origin_y = 119
+[style.modules.conceptPanel3up]
+width = 443
+height = 540
+pitch = 495
+origin_x = 27
+origin_y = 119
+[style.modules.definitionBox3up]
+width = 354
+height = 248
+pitch = 483
+origin_x = 27
+origin_y = 119
+[style.modules.wideStrip]
+width = 1035
+height = 196
+pitch = 1035
+origin_x = 27
+origin_y = 119

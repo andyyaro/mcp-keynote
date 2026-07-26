@@ -310,7 +310,36 @@ def _num(value: Any, path: str, errors: list[str], minimum: float = -1e9) -> flo
     return float(value)
 
 
-def _validate_element(el: Any, path: str, errors: list[str]) -> None:
+def _validate_named_refs(el: dict[str, Any], path: str, errors: list[str], style: Any) -> None:
+    """Check a spec's names against the style that will resolve them."""
+    checks = (
+        ("role", style.type, "type role"),
+        ("connector", style.connectors, "connector"),
+        ("zone", style.zones, "zone"),
+        ("module", style.modules, "grid module"),
+    )
+    for key, table, label in checks:
+        name = el.get(key)
+        if name is not None and str(name) not in table:
+            errors.append(
+                _err(
+                    f"{path}.{key}",
+                    f"unknown {label} {name!r}; style {style.name!r} defines: "
+                    f"{sorted(table) or '(none)'}",
+                )
+            )
+    color = el.get("color", "")
+    if isinstance(color, str) and color.startswith("@") and color[1:] not in style.palette:
+        errors.append(
+            _err(
+                f"{path}.color",
+                f"unknown palette colour {color!r}; style {style.name!r} defines: "
+                f"{sorted(style.palette) or '(none)'}",
+            )
+        )
+
+
+def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) -> None:
     if not isinstance(el, dict):
         errors.append(_err(path, "element must be an object"))
         return
@@ -322,14 +351,22 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
         return
     for key in ("x", "y", "width", "height", "font_size"):
         _num(el.get(key), f"{path}.{key}", errors, minimum=0)
+    if el.get("index") is not None and (
+        not isinstance(el.get("index"), int) or int(el["index"]) < 1
+    ):
+        errors.append(_err(f"{path}.index", "grid module index must be an integer >= 1"))
     if el.get("column") not in (None, "left", "right"):
         errors.append(_err(path, "column must be 'left' or 'right'"))
     color = el.get("color", "")
-    if color:
+    if color and not str(color).startswith("@"):
+        # "@name" is a palette reference resolved against the style; its
+        # existence is checked by _validate_named_refs, not by parse_color.
         try:
             parse_color(str(color))
         except ParameterError as e:
             errors.append(_err(f"{path}.color", str(e)))
+    if style is not None:
+        _validate_named_refs(el, path, errors, style)
 
     if etype in ("title", "subtitle", "text", "code", "quote"):
         if not isinstance(el.get("text"), str) or not el.get("text"):
@@ -345,9 +382,18 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
         elif not os.path.isfile(os.path.expanduser(p)):
             errors.append(_err(path, f"image file does not exist: {p}"))
     elif etype == "panel":
-        for key in ("x", "y", "width", "height"):
-            if el.get(key) is None:
-                errors.append(_err(path, f"panel needs explicit '{key}'"))
+        # A named zone or grid module supplies the geometry at flow time, so
+        # only a panel with neither needs all four spelled out.
+        if not el.get("zone") and not el.get("module"):
+            for key in ("x", "y", "width", "height"):
+                if el.get(key) is None:
+                    errors.append(
+                        _err(
+                            path,
+                            f"panel needs explicit '{key}' (or a 'zone'/'module' "
+                            "naming one of the style's)",
+                        )
+                    )
     elif etype == "table":
         data = el.get("data")
         if not isinstance(data, list) or len(data) < 2:
@@ -398,8 +444,13 @@ def _validate_element(el: Any, path: str, errors: list[str]) -> None:
             _num(el.get("stroke_width"), f"{path}.stroke_width", errors, minimum=0.1)
 
 
-def validate_spec(spec: Any) -> list[str]:
-    """Validate a whole deck spec; returns ALL problems, not just the first."""
+def validate_spec(spec: Any, style: DeckStyle | None = None) -> list[str]:
+    """Validate a whole deck spec; returns ALL problems, not just the first.
+
+    ``style`` is optional so existing callers and tests keep working, but when
+    it IS given, every named reference (role, palette colour, connector, zone,
+    grid module) is checked here rather than failing mid-build on slide 23.
+    """
     errors: list[str] = []
     if not isinstance(spec, dict):
         return ["spec must be a JSON object"]
@@ -440,7 +491,7 @@ def validate_spec(spec: Any) -> list[str]:
             errors.append(_err(f"{path}.elements", "must be an array"))
             continue
         for j, el in enumerate(elements):
-            _validate_element(el, f"{path}.elements[{j}]", errors)
+            _validate_element(el, f"{path}.elements[{j}]", errors, style)
     return errors
 
 
@@ -726,6 +777,24 @@ def _flow_slide(
     for el in slide.get("elements", []):
         el = dict(el)
         etype = el["type"]
+        # A named ZONE or grid MODULE resolves to coordinates before the flow
+        # engine runs, so a spec can say "the 3rd account column" instead of
+        # hand-computing x = 429 / 785 / 1141. Explicit x/y still win.
+        if el.get("zone"):
+            zone = style.zones.get(str(el["zone"]))
+            if zone is None:
+                raise ParameterError(
+                    f"Unknown zone {el['zone']!r}. "
+                    f"Style {style.name!r} defines: {sorted(style.zones) or '(none)'}"
+                )
+            for key in ("x", "y", "width", "height"):
+                if key in zone and el.get(key) is None:
+                    el[key] = float(zone[key])
+        if el.get("module"):
+            mx, my, mw, mh = style.module_origin(str(el["module"]), int(el.get("index", 1)))
+            for key, value in (("x", mx), ("y", my), ("width", mw), ("height", mh)):
+                if el.get(key) is None and value:
+                    el[key] = value
         column = el.pop("column", None)
         # Only a FULLY placed element skips the flow. Pinning one coordinate
         # used to opt out of layout entirely, which left the other coordinate
@@ -826,12 +895,23 @@ def _element_fragment(
     el: dict[str, Any], tag: str, argv: Argv, style: DeckStyle, panels_dir: str
 ) -> list[str]:
     etype = el["type"]
-    color = str(el.get("color", ""))
+    # A "@name" colour is a reference into the style's palette, so a spec can
+    # say what a colour MEANS ("@zone.private") instead of repeating a hex.
+    color = style.resolve_color(str(el.get("color", "")))
     if etype in ("title", "subtitle", "text", "code", "quote"):
+        # `role` names one of the style's own type styles (label.service,
+        # chip.badge, ...). 22 named roles against 5 element-keyed slots was
+        # the single largest source of duplication in a real spec.
+        named: dict[str, Any] = dict(style.type_role(str(el["role"]))) if el.get("role") else {}
         role = {"text": "body"}.get(etype, etype)
-        font = el.get("font_name") or getattr(style, f"{role}_font")
-        size = el.get("font_size") or getattr(style, f"{role}_size")
-        rgb = parse_color(color or getattr(style, f"{role}_color"))
+        font = str(el.get("font_name") or named.get("font") or getattr(style, f"{role}_font"))
+        raw_size = el.get("font_size") or named.get("size") or getattr(style, f"{role}_size")
+        size = float(raw_size) if raw_size is not None else None
+        rgb = parse_color(
+            color
+            or style.resolve_color(str(named.get("color", "")))
+            or getattr(style, f"{role}_color")
+        )
         text = el["text"]
         if etype == "quote":
             text = f"“{text}”"
@@ -961,12 +1041,18 @@ def _element_fragment(
         # carries meaning is a rendered PNG. Its parameters go in the filename
         # so describe_deck reports it back as a styled_line, not an anonymous
         # image - see utils/rendered_assets.py.
-        srgb = parse_color(color or "#000000") or (0, 0, 0)
+        # `connector` names one of the style's semantic strokes ("data",
+        # "denied", "logStream"), so a diagram declares MEANING and the style
+        # owns what that looks like.
+        conn = style.connector(str(el["connector"])) if el.get("connector") else {}
+        srgb = parse_color(
+            color or style.resolve_color(str(conn.get("color", ""))) or "#000000"
+        ) or (0, 0, 0)
         hex_color = rgb65535_to_hex(",".join(str(c) for c in srgb))
-        stroke_w = float(el.get("stroke_width", 2.0))
-        dash = str(el.get("dash", "solid"))
-        start_arrow = bool(el.get("start_arrow", False))
-        end_arrow = bool(el.get("end_arrow", False))
+        stroke_w = float(el.get("stroke_width", conn.get("width", 2.0)))
+        dash = str(el.get("dash", conn.get("dash", "solid")))
+        start_arrow = bool(el.get("start_arrow", conn.get("start_arrow", False)))
+        end_arrow = bool(el.get("end_arrow", conn.get("end_arrow", False)))
         scratch_png = os.path.join(panels_dir, f"{tag}-stroke.png")
         ox, oy, box_w, box_h, _pw, _ph = render_stroke_png(
             scratch_png,
@@ -1207,7 +1293,13 @@ class DeckTools(DocumentTargetedTools):
             if spec is None:  # pragma: no cover - guarded above
                 raise ParameterError("No spec resolved.")
 
-            errors = validate_spec(spec)
+            # The style is resolved BEFORE validation so every named reference
+            # (role, palette colour, connector, zone, grid module) is checked
+            # up front, with the rest of the spec, instead of failing mid-build.
+            style_name = style or str(spec.get("style", ""))
+            deck_style = resolve_style(style_name, near_path=save_path or spec.get("save_path", ""))
+
+            errors = validate_spec(spec, deck_style)
             if errors:
                 listing = "\n".join(f"- {e}" for e in errors)
                 return [
@@ -1220,8 +1312,6 @@ class DeckTools(DocumentTargetedTools):
                     )
                 ]
 
-            style_name = style or str(spec.get("style", ""))
-            deck_style = resolve_style(style_name, near_path=save_path or spec.get("save_path", ""))
             theme = str(spec.get("theme", "") or deck_style.keynote_theme)
             width = int(spec.get("width") or deck_style.width)
             height = int(spec.get("height") or deck_style.height)
