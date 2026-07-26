@@ -49,6 +49,70 @@ PNGs placed as images (`add_colored_panel`, and `panel` elements in
 replacing, not in Keynote's inspector. Diagram boxes are panels + text +
 plain lines composed in z-order.
 
+## Fill color: re-probed at v3.1.0 and still impossible (Phase 9 Task 0)
+
+An external field report asserted that `set_element_style` **can** write shape
+fill, which would have made `add_colored_panel`'s PNG workaround obsolete —
+this repo has twice shipped a workaround that outlived its cause, so the claim
+was treated as probably true until probed. It is false. Evidence
+(`.scratch/probe_task0_fill.py`, `.scratch/probe_task0_results.json`):
+
+- **12 write routes × 5 themes** (White, Black, Gradient, Slate, Bold Color),
+  including raw four-char-code chevrons that bypass the dictionary's access
+  flags: every one fails. `set background fill type … to color fill` → -10006;
+  `set background color` → -10006; `set color` → -10006; `set «class bkft» to
+  «constant ****fico»` → -10006; `set fill color` / `set background fill` are
+  not even terms (-2740 compile errors).
+- **Nothing is hidden.** `properties of shape 1` returns the complete record,
+  and it is exactly the sdef's: `opacity, parent, class, reflection showing,
+  background fill type, position, object text, width, rotation, reflection
+  value, height, locked`. No fill color, no `shape type`, no `corner radius`,
+  no stroke. The `line` record is equally bare: `start point, end point,
+  position, width, height, rotation, reflection showing, reflection value,
+  locked, parent, class` — **no stroke color, width, dash, or arrowheads**,
+  which is why `styled_line` must render a PNG.
+- **The pixels agree.** A shape's rendered interior is byte-identical before
+  and after all five write attempts.
+- **The read side works** and is worth exposing: `background fill type` returns
+  one of `no fill / color fill / gradient fill / advanced gradient fill /
+  image fill / advanced image fill`. So `describe_deck` can honestly report
+  *that* a shape is filled and with what KIND of fill — never with what color.
+
+**Where the false belief came from, and the real defect it exposed.** Every
+tool schema accepted unknown arguments and `_dispatch` read only the names it
+knew, so `set_element_style(fill_color="#EFA3A0")` was **dropped and reported
+as success** — indistinguishable from working. That is now a hard error naming
+the accepted arguments and the right alternative
+(`server._reject_unknown_arguments`, `additionalProperties: false` stamped on
+every schema centrally in `all_tools()`). A silently ignored argument is worse
+than a rejected one; it manufactures capabilities.
+
+### The one native filled rectangle that does exist (and why it isn't the default)
+
+Table **cell** `background color` is rw (it is a `range` property, not an
+iWork-item one). A 3×3 table with header/footer counts zeroed and
+`merge selection range` over `A1:C3` collapses to a single cell and renders as
+a **perfectly uniform, borderless colored rectangle** (measured: 240,000 of
+240,000 pixels one color). It is native, recolorable in Keynote's inspector,
+and round-trippable — everything the PNG panel is not. It is still not the
+default, for four measured reasons:
+
+1. **The color is wrong by ~6%.** Requested `#EFA3A0`, rendered `(244,179,175)`
+   after converting the export out of Display P3 — off by (+5,+16,+15). The
+   same color through `add_colored_panel`'s renderer lands on `(239,163,160)`,
+   i.e. **exactly** `#EFA3A0`. Reproduced on merged and unmerged cells, with
+   and without header rows, so it is inherent to `background color`, not to
+   `merge`. Cause not determined. *This also means `add_table`'s header/zebra
+   colors do not render as the exact hex requested.*
+2. No corner radius, so no rounded panels.
+3. `merge` is rejected on a 2×2 (-10000); the working floor is 3×3.
+4. It is semantically a table — it lands in `count of tables`, exports as a
+   table, and a reader of the deck sees a table.
+
+Recorded because it is a real option for a caller who needs a *recolorable*
+zone and can accept an approximate color; `add_colored_panel` stays the
+default because it is exact and supports radius.
+
 ## CANNOT — confirmed, do not re-attempt
 
 Every item is (P) probed live with the recorded error, or (D) absent from
@@ -57,7 +121,7 @@ errors probed).
 
 | Wanted | Why it's impossible | Workaround shipped |
 |---|---|---|
-| Shape/text fill color | (P) `background fill type` read-only, no color property (-10006 both routes) | `add_colored_panel` rendered PNGs; opacity on the theme fill |
+| Shape/text fill color | (P) `background fill type` read-only, no color property; **re-probed Phase 9**: 12 routes × 5 themes all -10006/-2740, raw chevrons included, render unchanged, `properties` record has no fill key | `add_colored_panel` rendered PNGs (colorimetrically exact); opacity on the theme fill; merged-table cell for a recolorable-but-inexact zone |
 | Text alignment (center/right) on text items | (P) -10006; alignment exists only on table ranges | server-side `centered` box placement |
 | Hyperlinks | (P) no class; `make new hyperlink` → -2753 | none — link text is inert |
 | Grouping / ungrouping | (P) `make new group` silently creates nothing (iWork items 0→0); moving into a group → -1719 | build in paint order; move pieces together |

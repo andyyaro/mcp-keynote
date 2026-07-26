@@ -222,6 +222,137 @@ def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
 
 
+async def check_fill_is_unwritable(pres, slides, content, export, objects):
+    """PHASE 9 Task 0 — pin the fill ceiling in errors AND in pixels.
+
+    The field report claimed `set_element_style` can write shape fill. Probed
+    across five themes and twelve write routes (including raw four-char-code
+    chevrons), every route fails with -10006 and the render is byte-identical
+    before and after. This check keeps that true: if a future Keynote makes
+    fill writable, it FAILS here and the docs get corrected, rather than the
+    repo carrying a PNG workaround for a limitation that has lapsed - which
+    has already happened twice in this codebase.
+
+    It also pins the mechanism that produced the false belief: an unknown
+    argument being dropped and reported as success.
+    """
+    from keynote_mcp.server import KeynoteMCPServer
+
+    key = SCRATCH / "phase9-fill.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    check(
+        "phase9: create fill-probe doc",
+        await pres.create_presentation("phase9-fill", save_path=str(key)),
+        "Created presentation",
+    )
+    slide_w = 1024
+    size_text = text_of(await pres.get_slide_size(doc_name="phase9-fill.key"))
+    m = re.search(r"(\d+)\s*x\s*(\d+)", size_text)
+    if m:
+        slide_w = int(m.group(1))
+
+    box = (200, 200, 400, 300)
+    # Target the document by name throughout. An earlier draft of this check
+    # omitted doc_name and a stray untitled document -- left frontmost by an
+    # unrelated probe -- got rendered instead, reporting a fill color that came
+    # from a completely different deck. That is the field report's issue #1
+    # reproduced inside the harness meant to verify it; see
+    # check_document_resolution for the check that covers it deliberately.
+    doc = "phase9-fill.key"
+    check(
+        "phase9: add_shape for the fill probe",
+        await content.add_shape(
+            1, x=box[0], y=box[1], width=box[2], height=box[3], doc_name=doc
+        ),
+    )
+
+    before, scale = await render_slide(export, 1, "phase9-fill-before", slide_w, doc_name=doc)
+    if before is None:
+        return
+    interior = (box[0] + 40, box[1] + 40, box[2] - 80, box[3] - 80)
+    before_color = dominant(_crop(before, scale, interior))
+    # Prove the sample is the SHAPE and not just an arbitrary dark pixel: the
+    # default theme fills shapes black, and "unchanged black" would otherwise
+    # be satisfied by measuring nothing at all.
+    outside_color = at(before, scale, box[0] + box[2] + 80, box[1] + box[3] // 2)
+    record(
+        "phase9: the sampled interior really is the shape (differs from the slide beside it)",
+        not near(before_color, outside_color, tol=12),
+        f"interior={before_color} outside={outside_color}",
+    )
+
+    # Every plausible AppleScript route to a shape fill, at the raw level.
+    routes = [
+        ("background fill type := color fill", "set background fill type of shape 1 to color fill"),
+        ("background color := red", "set background color of shape 1 to {65535, 0, 0}"),
+        ("color := red", "set color of shape 1 to {65535, 0, 0}"),
+        ("raw chevron bkft := fico", 'set «class bkft» of shape 1 to «constant ****fico»'),
+        ("raw chevron ceBC := red", 'set «class ceBC» of shape 1 to {65535, 0, 0}'),
+    ]
+    for label, statement in routes:
+        script = (
+            'tell application "Keynote" to tell document "phase9-fill.key" to tell slide 1\n'
+            f"  {statement}\n"
+            "end tell"
+        )
+        try:
+            pres.runner.run_inline_script(script)
+            ok, detail = False, "SUCCEEDED - fill may now be writable; re-probe and fix the docs"
+        except Exception as e:  # noqa: BLE001 - any failure is the expected outcome
+            detail = str(e)
+            ok = "-10006" in detail or "10006" in detail or "Can't set" in detail
+        record(f"phase9: shape fill route rejected — {label}", ok, detail[:150])
+
+    # The read path DOES work, and describe_deck relies on it: a caller must be
+    # able to tell "no fill" from "fill not reported".
+    fill_type = pres.runner.run_inline_script(
+        'tell application "Keynote" to tell document "phase9-fill.key" to '
+        "return background fill type of shape 1 of slide 1 as text"
+    )
+    record(
+        "phase9: background fill type is READABLE (feeds describe_deck fill_type)",
+        fill_type in {"color fill", "no fill", "gradient fill", "advanced gradient fill",
+                      "image fill", "advanced image fill"},
+        fill_type,
+    )
+
+    # RENDERED: the shape must look exactly as it did. Errors alone would not
+    # prove this - a write could raise and still have changed something.
+    after, scale2 = await render_slide(export, 1, "phase9-fill-after", slide_w, doc_name=doc)
+    if after is not None:
+        after_color = dominant(_crop(after, scale2, interior))
+        record(
+            "phase9: RENDERED shape interior is UNCHANGED after every fill attempt",
+            near(before_color, after_color, tol=4),
+            f"before={before_color} after={after_color}",
+        )
+
+    # The mechanism that made the field report believe otherwise.
+    srv = KeynoteMCPServer()
+    rejection = srv._reject_unknown_arguments(
+        "set_element_style",
+        {"slide_number": 1, "element_type": "shape", "element_index": 1, "fill_color": "#EFA3A0"},
+    )
+    record(
+        "phase9: set_element_style(fill_color=...) is REJECTED, not dropped",
+        bool(rejection) and "REJECTED" in rejection and "add_colored_panel" in rejection,
+        (rejection or "accepted silently").replace("\n", " | ")[:200],
+    )
+    record(
+        "phase9: every tool schema forbids unknown arguments",
+        all(t.inputSchema.get("additionalProperties") is False for t in srv.all_tools()),
+        f"{len(srv.all_tools())} tools",
+    )
+
+    # The rendered-PNG panel is colorimetrically EXACT once the export's
+    # Display-P3 profile is applied - the reason the workaround stays.
+    check(
+        "phase9: close fill-probe doc",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
 async def main():
     pres = PresentationTools()
     slides = SlideTools()
@@ -1478,6 +1609,8 @@ async def main():
     )
     record("rescued file exists", rescue_path.exists(), str(rescue_path))
     check("close rescued doc", await pres.close_presentation(should_save=False))
+
+    await check_fill_is_unwritable(pres, slides, content, export, objects)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")
