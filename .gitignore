@@ -168,6 +168,7 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
+.scratch/
 tmp/
 temp/
 *.keynote
