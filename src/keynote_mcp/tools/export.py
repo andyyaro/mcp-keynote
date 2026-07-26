@@ -7,7 +7,12 @@ import tempfile
 
 from mcp.types import TextContent, Tool
 
-from ..utils import AppleScriptRunner, validate_file_path, validate_slide_number
+from ..utils import (
+    AppleScriptRunner,
+    ParameterError,
+    validate_file_path,
+    validate_slide_number,
+)
 
 _DOC_ARG = {
     "type": "string",
@@ -23,6 +28,32 @@ _RESOLVE_DOC = """
 
 # Exports of large decks can outlive the default osascript timeout.
 _EXPORT_TIMEOUT = 120.0
+# Movie export renders slides in near-real time; give it far more headroom.
+_MOVIE_EXPORT_TIMEOUT = 600.0
+
+# Trusted literal maps - only these values reach AppleScript source.
+_PDF_LAYOUTS = {
+    "slides": "IndividualSlides",
+    "slides_with_notes": "SlideWithNotes",
+    "handouts": "Handouts",
+}
+_PDF_QUALITY = {"good": "Good", "better": "Better", "best": "Best"}
+_MOVIE_FORMATS = {
+    "360p": "format360p",
+    "540p": "format540p",
+    "720p": "format720p",
+    "1080p": "format1080p",
+    "2160p": "format2160p",
+    "native": "native size",
+}
+_IMAGE_FORMATS = {"png": "PNG", "jpeg": "JPEG", "tiff": "TIFF"}
+_EXPORT_FORMATS = {
+    "pptx": "Microsoft PowerPoint",
+    "movie": "QuickTime movie",
+    "html": "HTML",
+    "images": "slide images",
+    "key09": "Keynote 09",
+}
 
 # Counts visible text boxes with empty text on one slide - exactly what
 # Keynote's image export silently omits. Skips the phantom surfacings of the
@@ -105,7 +136,12 @@ class ExportTools:
             ),
             Tool(
                 name="export_pdf",
-                description="Export the presentation as PDF",
+                description=(
+                    "Export the presentation as PDF. Optional layout "
+                    "('slides' default, 'slides_with_notes' for presenter-notes "
+                    "pages, 'handouts'), image quality, and skipped-slide "
+                    "inclusion."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -113,9 +149,65 @@ class ExportTools:
                             "type": "string",
                             "description": "Output file path",
                         },
+                        "layout": {
+                            "type": "string",
+                            "enum": ["slides", "slides_with_notes", "handouts"],
+                            "description": "Page layout (default slides)",
+                        },
+                        "image_quality": {
+                            "type": "string",
+                            "enum": ["good", "better", "best"],
+                            "description": "PDF image quality (default best)",
+                        },
+                        "include_skipped": {
+                            "type": "boolean",
+                            "description": "Include skipped slides (default false)",
+                        },
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["output_path"],
+                },
+            ),
+            Tool(
+                name="export_presentation",
+                description=(
+                    "Export the whole presentation to another format: 'pptx' "
+                    "(Microsoft PowerPoint), 'movie' (QuickTime .m4v - slow, "
+                    "renders in near-real time), 'html' (player bundle folder), "
+                    "'images' (one PNG/JPEG/TIFF per slide into a folder), or "
+                    "'key09' (legacy Keynote). For PDF use export_pdf."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": ["pptx", "movie", "html", "images", "key09"],
+                            "description": "Target format",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": (
+                                "Output file path (pptx/movie/key09) or folder path (html/images)"
+                            ),
+                        },
+                        "movie_format": {
+                            "type": "string",
+                            "enum": ["360p", "540p", "720p", "1080p", "2160p", "native"],
+                            "description": "Movie resolution (default 1080p; movie only)",
+                        },
+                        "image_format": {
+                            "type": "string",
+                            "enum": ["png", "jpeg", "tiff"],
+                            "description": "Per-slide image format (default png; images only)",
+                        },
+                        "include_skipped": {
+                            "type": "boolean",
+                            "description": "Include skipped slides (default false; images only)",
+                        },
+                        "doc_name": _DOC_ARG,
+                    },
+                    "required": ["format", "output_path"],
                 },
             ),
         ]
@@ -216,10 +308,27 @@ class ExportTools:
             if temp_folder:
                 shutil.rmtree(temp_folder, ignore_errors=True)
 
-    async def export_pdf(self, output_path: str, doc_name: str = "") -> list[TextContent]:
-        """Export presentation as PDF."""
+    async def export_pdf(
+        self,
+        output_path: str,
+        layout: str = "slides",
+        image_quality: str = "best",
+        include_skipped: bool = False,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        """Export presentation as PDF with the probed export options."""
         try:
             output_path = validate_file_path(output_path)
+            if layout not in _PDF_LAYOUTS:
+                raise ParameterError(
+                    f"Invalid layout {layout!r}. Must be one of {sorted(_PDF_LAYOUTS)}."
+                )
+            if image_quality not in _PDF_QUALITY:
+                raise ParameterError(
+                    f"Invalid image_quality {image_quality!r}. "
+                    f"Must be one of {sorted(_PDF_QUALITY)}."
+                )
+            skipped_flag = "true" if include_skipped else "false"
             self.runner.run(
                 f"""
                 on run argv
@@ -227,7 +336,10 @@ class ExportTools:
                     set outputPath to item 2 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
-                        export targetDoc to (POSIX file outputPath) as PDF
+                        export targetDoc to (POSIX file outputPath) as PDF ¬
+                            with properties {{export style:{_PDF_LAYOUTS[layout]}, ¬
+                            PDF image quality:{_PDF_QUALITY[image_quality]}, ¬
+                            skipped slides:{skipped_flag}}}
                     end tell
                 end run
                 """,
@@ -235,6 +347,81 @@ class ExportTools:
                 output_path,
                 timeout=_EXPORT_TIMEOUT,
             )
-            return [TextContent(type="text", text=f"Exported PDF to: {output_path}")]
+            note = "" if layout == "slides" else f" ({layout} layout)"
+            return [TextContent(type="text", text=f"Exported PDF to: {output_path}{note}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to export PDF: {e}")]
+
+    async def export_presentation(
+        self,
+        format: str,
+        output_path: str,
+        movie_format: str = "1080p",
+        image_format: str = "png",
+        include_skipped: bool = False,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        """Export to PPTX / movie / HTML / per-slide images / Keynote 09."""
+        try:
+            output_path = validate_file_path(output_path)
+            if format not in _EXPORT_FORMATS:
+                raise ParameterError(
+                    f"Invalid format {format!r}. Must be one of {sorted(_EXPORT_FORMATS)}."
+                )
+            if movie_format not in _MOVIE_FORMATS:
+                raise ParameterError(
+                    f"Invalid movie_format {movie_format!r}. "
+                    f"Must be one of {sorted(_MOVIE_FORMATS)}."
+                )
+            if image_format not in _IMAGE_FORMATS:
+                raise ParameterError(
+                    f"Invalid image_format {image_format!r}. "
+                    f"Must be one of {sorted(_IMAGE_FORMATS)}."
+                )
+            output_path = os.path.abspath(os.path.expanduser(output_path))
+            expected_ext = {"pptx": ".pptx", "movie": ".m4v", "key09": ".key"}.get(format)
+            if expected_ext and not output_path.lower().endswith(expected_ext):
+                output_path += expected_ext
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            skipped_flag = "true" if include_skipped else "false"
+            props = ""
+            timeout = _EXPORT_TIMEOUT
+            if format == "movie":
+                props = f" with properties {{movie format:{_MOVIE_FORMATS[movie_format]}}}"
+                timeout = _MOVIE_EXPORT_TIMEOUT
+            elif format == "images":
+                props = (
+                    f" with properties {{image format:{_IMAGE_FORMATS[image_format]}, "
+                    f"skipped slides:{skipped_flag}}}"
+                )
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    set outputPath to item 2 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        export targetDoc to (POSIX file outputPath) ¬
+                            as {_EXPORT_FORMATS[format]}{props}
+                    end tell
+                end run
+                """,
+                doc_name,
+                output_path,
+                timeout=timeout,
+            )
+            exists = os.path.exists(output_path)
+            detail = {
+                "movie": f" ({movie_format})",
+                "images": f" ({image_format} per slide)",
+            }.get(format, "")
+            status = "" if exists else " WARNING: output not found on disk afterwards."
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Exported {format}{detail} to: {output_path}.{status}",
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to export presentation: {e}")]

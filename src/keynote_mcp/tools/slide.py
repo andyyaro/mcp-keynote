@@ -3,6 +3,7 @@
 from mcp.types import TextContent, Tool
 
 from ..utils import AppleScriptRunner, validate_slide_number
+from .fragments import transition_fragment
 
 _DOC_ARG = {
     "type": "string",
@@ -159,6 +160,69 @@ class SlideTools:
                 inputSchema={
                     "type": "object",
                     "properties": {"doc_name": _DOC_ARG},
+                },
+            ),
+            Tool(
+                name="set_slide_transition",
+                description=(
+                    "Set the slide's transition to the next slide. Effects "
+                    "include: none (no_transition_effect), dissolve, push, wipe, "
+                    "move_in, reveal, magic_move, cube, flip, fade_through_color, "
+                    "fade_and_move, drop, scale, confetti, iris, and more (all 43 "
+                    "of Keynote's transition effects, spaces as underscores)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "doc_name": _DOC_ARG,
+                        "slide_number": {"type": "integer", "description": "Slide number"},
+                        "effect": {
+                            "type": "string",
+                            "description": (
+                                "Transition effect name with underscores, e.g. "
+                                "'dissolve', 'push', 'magic_move', "
+                                "'no_transition_effect'"
+                            ),
+                        },
+                        "duration": {
+                            "type": "number",
+                            "description": "Transition duration in seconds (default 1.0)",
+                        },
+                        "delay": {
+                            "type": "number",
+                            "description": (
+                                "Seconds to wait before the transition starts "
+                                "(default 0; only meaningful with automatic=true)"
+                            ),
+                        },
+                        "automatic": {
+                            "type": "boolean",
+                            "description": (
+                                "Start automatically after `delay` instead of on "
+                                "click (default false)"
+                            ),
+                        },
+                    },
+                    "required": ["slide_number", "effect"],
+                },
+            ),
+            Tool(
+                name="set_slide_skipped",
+                description=(
+                    "Skip or unskip a slide (skipped slides don't play and are "
+                    "excluded from exports unless requested)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "doc_name": _DOC_ARG,
+                        "slide_number": {"type": "integer", "description": "Slide number"},
+                        "skipped": {
+                            "type": "boolean",
+                            "description": "true to skip, false to unskip",
+                        },
+                    },
+                    "required": ["slide_number", "skipped"],
                 },
             ),
         ]
@@ -479,3 +543,77 @@ class SlideTools:
             return [TextContent(type="text", text="No available layouts found")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to get layouts: {e}")]
+
+    async def set_slide_transition(
+        self,
+        slide_number: int,
+        effect: str,
+        duration: float = 1.0,
+        delay: float = 0.0,
+        automatic: bool = False,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        """Set a slide's transition (probed live: set + read back works)."""
+        try:
+            validate_slide_number(slide_number)
+            lines = transition_fragment(
+                effect=effect, duration=duration, delay=delay, automatic=automatic
+            )
+            body = "\n".join(lines)
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set targetSlide to slide {slide_number} of targetDoc
+                        {body}
+                        set tp to transition properties of targetSlide
+                        return (transition effect of tp as text) & "|" & ¬
+                            (transition duration of tp as text)
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            applied_effect, _, applied_duration = result.partition("|")
+            timing = f"automatic after {delay:g}s" if automatic else "on click"
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Set slide {slide_number} transition to "
+                        f"'{applied_effect}' ({applied_duration}s, {timing})"
+                    ),
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to set slide transition: {e}")]
+
+    async def set_slide_skipped(
+        self, slide_number: int, skipped: bool, doc_name: str = ""
+    ) -> list[TextContent]:
+        """Skip/unskip a slide."""
+        try:
+            validate_slide_number(slide_number)
+            flag = "true" if skipped else "false"
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        if not (exists slide {slide_number} of targetDoc) then
+                            error "No slide {slide_number}" number -1719
+                        end if
+                        set skipped of slide {slide_number} of targetDoc to {flag}
+                        return skipped of slide {slide_number} of targetDoc as text
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            state = "skipped" if result.strip() == "true" else "not skipped"
+            return [TextContent(type="text", text=f"Slide {slide_number} is now {state}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to set slide skipped: {e}")]

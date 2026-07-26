@@ -15,7 +15,15 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import EmbeddedResource, ImageContent, TextContent, Tool
 
-from .tools import ContentTools, ExportTools, PresentationTools, SlideTools, UnsplashTools
+from .tools import (
+    ContentTools,
+    DeckTools,
+    ExportTools,
+    ObjectTools,
+    PresentationTools,
+    SlideTools,
+    UnsplashTools,
+)
 from .utils import (
     AppleScriptError,
     FileOperationError,
@@ -45,6 +53,8 @@ class KeynoteMCPServer:
         self.slide_tools = SlideTools()
         self.content_tools = ContentTools()
         self.export_tools = ExportTools()
+        self.object_tools = ObjectTools()
+        self.deck_tools = DeckTools()
         self.unsplash_tools: UnsplashTools | None
         try:
             self.unsplash_tools = UnsplashTools()
@@ -66,6 +76,8 @@ class KeynoteMCPServer:
             tools.extend(self.presentation_tools.get_tools())
             tools.extend(self.slide_tools.get_tools())
             tools.extend(self.content_tools.get_tools())
+            tools.extend(self.object_tools.get_tools())
+            tools.extend(self.deck_tools.get_tools())
             tools.extend(self.export_tools.get_tools())
             if self.unsplash_tools:
                 tools.extend(self.unsplash_tools.get_tools())
@@ -270,6 +282,9 @@ class KeynoteMCPServer:
                 image_path=arguments["image_path"],
                 x=arguments.get("x"),
                 y=arguments.get("y"),
+                width=arguments.get("width"),
+                height=arguments.get("height"),
+                description=arguments.get("description", ""),
                 doc_name=doc_name,
             )
         elif name == "get_slide_content":
@@ -362,6 +377,129 @@ class KeynoteMCPServer:
                 doc_name=doc_name,
             )
 
+        # Native objects, styling, and declarative deck tools
+        elif name == "add_table":
+            return await self.object_tools.add_table(
+                slide_number=arguments["slide_number"],
+                data=arguments["data"],
+                x=arguments.get("x"),
+                y=arguments.get("y"),
+                width=arguments.get("width"),
+                height=arguments.get("height"),
+                header_row=arguments.get("header_row", True),
+                header_column=arguments.get("header_column", False),
+                font_name=arguments.get("font_name", ""),
+                font_size=arguments.get("font_size"),
+                column_widths=arguments.get("column_widths"),
+                style=arguments.get("style", ""),
+                doc_name=doc_name,
+            )
+        elif name == "add_chart":
+            return await self.object_tools.add_chart(
+                slide_number=arguments["slide_number"],
+                chart_type=arguments["chart_type"],
+                row_names=arguments["row_names"],
+                column_names=arguments["column_names"],
+                data=arguments["data"],
+                group_by=arguments.get("group_by", "row"),
+                x=arguments.get("x"),
+                y=arguments.get("y"),
+                width=arguments.get("width"),
+                height=arguments.get("height"),
+                doc_name=doc_name,
+            )
+        elif name == "add_line":
+            return await self.object_tools.add_line(
+                slide_number=arguments["slide_number"],
+                x1=arguments["x1"],
+                y1=arguments["y1"],
+                x2=arguments["x2"],
+                y2=arguments["y2"],
+                doc_name=doc_name,
+            )
+        elif name == "add_colored_panel":
+            return await self.object_tools.add_colored_panel(
+                slide_number=arguments["slide_number"],
+                x=arguments["x"],
+                y=arguments["y"],
+                width=arguments["width"],
+                height=arguments["height"],
+                color=arguments.get("color", ""),
+                radius=arguments.get("radius"),
+                opacity=arguments.get("opacity", 100),
+                style=arguments.get("style", ""),
+                doc_name=doc_name,
+            )
+        elif name == "style_text_range":
+            return await self.object_tools.style_text_range(
+                slide_number=arguments["slide_number"],
+                item_index=arguments["item_index"],
+                start=arguments["start"],
+                end=arguments["end"],
+                unit=arguments.get("unit", "characters"),
+                color=arguments.get("color", ""),
+                font_name=arguments.get("font_name", ""),
+                font_size=arguments.get("font_size"),
+                doc_name=doc_name,
+            )
+        elif name == "replace_image":
+            return await self.object_tools.replace_image(
+                slide_number=arguments["slide_number"],
+                image_index=arguments["image_index"],
+                image_path=arguments["image_path"],
+                doc_name=doc_name,
+            )
+        elif name == "set_element_style":
+            return await self.object_tools.set_element_style(
+                slide_number=arguments["slide_number"],
+                element_type=arguments["element_type"],
+                element_index=arguments["element_index"],
+                rotation=arguments.get("rotation"),
+                reflection_showing=arguments.get("reflection_showing"),
+                reflection_value=arguments.get("reflection_value"),
+                locked=arguments.get("locked"),
+                doc_name=doc_name,
+            )
+        elif name == "set_slide_transition":
+            return await self.slide_tools.set_slide_transition(
+                slide_number=arguments["slide_number"],
+                effect=arguments["effect"],
+                duration=arguments.get("duration", 1.0),
+                delay=arguments.get("delay", 0.0),
+                automatic=arguments.get("automatic", False),
+                doc_name=doc_name,
+            )
+        elif name == "set_slide_skipped":
+            return await self.slide_tools.set_slide_skipped(
+                slide_number=arguments["slide_number"],
+                skipped=arguments["skipped"],
+                doc_name=doc_name,
+            )
+        elif name == "set_slide_size":
+            return await self.presentation_tools.set_slide_size(
+                width=arguments["width"],
+                height=arguments["height"],
+                doc_name=doc_name,
+            )
+        elif name == "set_document_settings":
+            return await self.presentation_tools.set_document_settings(
+                slide_numbers_showing=arguments.get("slide_numbers_showing"),
+                auto_loop=arguments.get("auto_loop"),
+                auto_play=arguments.get("auto_play"),
+                auto_restart=arguments.get("auto_restart"),
+                maximum_idle_duration=arguments.get("maximum_idle_duration"),
+                doc_name=doc_name,
+            )
+        elif name == "build_deck":
+            return await self.deck_tools.build_deck(
+                spec=arguments.get("spec"),
+                markdown=arguments.get("markdown", ""),
+                save_path=arguments.get("save_path", ""),
+                style=arguments.get("style", ""),
+            )
+        elif name == "describe_deck":
+            return await self.deck_tools.describe_deck(doc_name=doc_name)
+
         # Export and screenshot tools
         elif name == "screenshot_slide":
             return await self.export_tools.screenshot_slide(
@@ -372,7 +510,20 @@ class KeynoteMCPServer:
             )
         elif name == "export_pdf":
             return await self.export_tools.export_pdf(
-                output_path=arguments["output_path"], doc_name=doc_name
+                output_path=arguments["output_path"],
+                layout=arguments.get("layout", "slides"),
+                image_quality=arguments.get("image_quality", "best"),
+                include_skipped=arguments.get("include_skipped", False),
+                doc_name=doc_name,
+            )
+        elif name == "export_presentation":
+            return await self.export_tools.export_presentation(
+                format=arguments["format"],
+                output_path=arguments["output_path"],
+                movie_format=arguments.get("movie_format", "1080p"),
+                image_format=arguments.get("image_format", "png"),
+                include_skipped=arguments.get("include_skipped", False),
+                doc_name=doc_name,
             )
 
         # Unsplash image tools

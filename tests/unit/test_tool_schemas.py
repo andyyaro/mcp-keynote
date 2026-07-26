@@ -3,7 +3,9 @@
 import pytest
 
 from keynote_mcp.tools.content import ContentTools
+from keynote_mcp.tools.deck import DeckTools
 from keynote_mcp.tools.export import ExportTools
+from keynote_mcp.tools.objects import ObjectTools
 from keynote_mcp.tools.presentation import PresentationTools
 from keynote_mcp.tools.slide import SlideTools
 from keynote_mcp.tools.unsplash import UnsplashTools
@@ -12,7 +14,15 @@ from keynote_mcp.tools.unsplash import UnsplashTools
 def all_tools(monkeypatch):
     monkeypatch.setenv("UNSPLASH_KEY", "dummy-key-for-schema-tests")
     tools = []
-    for cls in (PresentationTools, SlideTools, ContentTools, ExportTools, UnsplashTools):
+    for cls in (
+        PresentationTools,
+        SlideTools,
+        ContentTools,
+        ObjectTools,
+        DeckTools,
+        ExportTools,
+        UnsplashTools,
+    ):
         tools.extend(cls().get_tools())
     return tools
 
@@ -23,7 +33,7 @@ def tools(monkeypatch):
 
 
 def test_expected_tool_count(tools):
-    assert len(tools) == 45
+    assert len(tools) == 59
 
 
 def test_tool_names_unique(tools):

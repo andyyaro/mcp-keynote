@@ -6,7 +6,7 @@ import time
 
 from mcp.types import TextContent, Tool
 
-from ..utils import AppleScriptRunner, validate_file_path
+from ..utils import AppleScriptRunner, validate_file_path, validate_number
 
 _DOC_ARG = {
     "type": "string",
@@ -217,6 +217,58 @@ class PresentationTools:
                 inputSchema={
                     "type": "object",
                     "properties": {"doc_name": _DOC_ARG},
+                },
+            ),
+            Tool(
+                name="set_slide_size",
+                description=(
+                    "Resize the document's slides (in points). Standard: 1024x768; "
+                    "wide: 1920x1080. Works on a live document (verified); Keynote "
+                    "rescales layout content itself, so re-check element geometry "
+                    "afterwards on populated decks."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "width": {"type": "integer", "description": "Slide width in points"},
+                        "height": {"type": "integer", "description": "Slide height in points"},
+                        "doc_name": _DOC_ARG,
+                    },
+                    "required": ["width", "height"],
+                },
+            ),
+            Tool(
+                name="set_document_settings",
+                description=(
+                    "Set document playback/display settings: slide numbers, auto "
+                    "loop, auto play on open, auto restart after idle, and the "
+                    "idle timeout in seconds. Only the passed settings change."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "slide_numbers_showing": {
+                            "type": "boolean",
+                            "description": "Show slide numbers (optional)",
+                        },
+                        "auto_loop": {
+                            "type": "boolean",
+                            "description": "Loop the slideshow (optional)",
+                        },
+                        "auto_play": {
+                            "type": "boolean",
+                            "description": "Play automatically when the file opens (optional)",
+                        },
+                        "auto_restart": {
+                            "type": "boolean",
+                            "description": "Restart when idle (optional)",
+                        },
+                        "maximum_idle_duration": {
+                            "type": "integer",
+                            "description": "Idle seconds before restart (optional)",
+                        },
+                        "doc_name": _DOC_ARG,
+                    },
                 },
             ),
         ]
@@ -596,3 +648,98 @@ class PresentationTools:
             return [TextContent(type="text", text=text)]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to get slide size: {e}")]
+
+    async def set_slide_size(
+        self, width: int, height: int, doc_name: str = ""
+    ) -> list[TextContent]:
+        """Resize the document's slides (probed live: rw on a live document)."""
+        try:
+            w = int(validate_number(width, "width", minimum=200, maximum=10000))
+            h = int(validate_number(height, "height", minimum=200, maximum=10000))
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set width of targetDoc to {w}
+                        set height of targetDoc to {h}
+                        return ((width of targetDoc) as text) & "x" & ¬
+                            ((height of targetDoc) as text)
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Slide size is now {result} pt. Keynote rescaled layout "
+                        "content; re-check element geometry with get_slide_content "
+                        "if the deck was already populated."
+                    ),
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to set slide size: {e}")]
+
+    async def set_document_settings(
+        self,
+        slide_numbers_showing: bool | None = None,
+        auto_loop: bool | None = None,
+        auto_play: bool | None = None,
+        auto_restart: bool | None = None,
+        maximum_idle_duration: int | None = None,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        """Set document playback/display settings (all probed rw)."""
+        try:
+            ops = []
+            changes = []
+            for prop, value in (
+                ("slide numbers showing", slide_numbers_showing),
+                ("auto loop", auto_loop),
+                ("auto play", auto_play),
+                ("auto restart", auto_restart),
+            ):
+                if value is not None:
+                    flag = "true" if value else "false"
+                    ops.append(f"set {prop} of targetDoc to {flag}")
+                    changes.append(f"{prop}={flag}")
+            if maximum_idle_duration is not None:
+                seconds = int(
+                    validate_number(
+                        maximum_idle_duration, "maximum_idle_duration", minimum=1, maximum=86400
+                    )
+                )
+                ops.append(f"set maximum idle duration of targetDoc to {seconds}")
+                changes.append(f"maximum idle duration={seconds}s")
+            if not ops:
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            "Failed to set document settings: nothing to set - pass "
+                            "at least one setting."
+                        ),
+                    )
+                ]
+            body = "\n".join(ops)
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        {body}
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [
+                TextContent(type="text", text=f"Document settings updated: {', '.join(changes)}")
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to set document settings: {e}")]
