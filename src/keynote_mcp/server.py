@@ -666,6 +666,10 @@ class KeynoteMCPServer:
                 include_skipped=arguments.get("include_skipped", False),
                 doc_name=doc_name,
             )
+        elif name == "export_assets":
+            return await self.export_tools.export_assets(
+                output_dir=arguments["output_dir"], doc_name=doc_name
+            )
         elif name == "export_presentation":
             return await self.export_tools.export_presentation(
                 format=arguments["format"],

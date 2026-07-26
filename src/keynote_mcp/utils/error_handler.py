@@ -214,3 +214,26 @@ def parse_color(color: str) -> tuple[int, int, int] | None:
         if not 0 <= channel <= 65535:
             raise ParameterError(f"Invalid color {color!r}. Components must be within 0-65535.")
     return r, g, b
+
+
+def rgb65535_to_hex(triple: str) -> str:
+    """Convert Keynote's "r,g,b" (each 0-65535) into "#RRGGBB".
+
+    Keynote reports colour as three 16-bit channels, so every consumer had to
+    divide by 257 and hex-encode by hand. Values Keynote produces are multiples
+    of 257, so this is exact for them; anything else is rounded to the nearest
+    8-bit channel. Returns "" if the input is not a usable triple, so a caller
+    can tell a failed conversion from a real colour.
+    """
+    parts = [p.strip() for p in (triple or "").split(",")]
+    if len(parts) != 3:
+        return ""
+    try:
+        raw = [int(p) for p in parts]
+    except ValueError:
+        return ""
+    # Validate the RAW 0-65535 range, not the divided one: -5 would otherwise
+    # round to 0 and be reported as a perfectly plausible #000000.
+    if any(c < 0 or c > 65535 for c in raw):
+        return ""
+    return "#{:02X}{:02X}{:02X}".format(*(round(c / 257) for c in raw))

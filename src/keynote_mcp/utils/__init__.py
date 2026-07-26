@@ -8,6 +8,7 @@ from .error_handler import (
     KeynoteError,
     ParameterError,
     parse_color,
+    rgb65535_to_hex,
     validate_coordinates,
     validate_dimensions,
     validate_element_type,
@@ -16,6 +17,7 @@ from .error_handler import (
     validate_number,
     validate_slide_number,
 )
+from .fonts import split_font_name
 from .session import (
     SESSION,
     DocumentSession,
@@ -35,6 +37,8 @@ __all__ = [
     "open_document_names",
     "parse_color",
     "resolve_document",
+    "rgb65535_to_hex",
+    "split_font_name",
     "validate_coordinates",
     "validate_dimensions",
     "validate_element_type",

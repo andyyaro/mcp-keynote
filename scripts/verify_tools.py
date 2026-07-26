@@ -223,6 +223,144 @@ def pdf_media_boxes(path):
     return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
 
 
+async def check_read_fidelity(pres, content, objects, export, deck):
+    """PHASE 9 Tasks 4 + 6 — what describe_deck can now SEE.
+
+    The field report had to recover five brand colours by screenshotting and
+    eyeballing pixels, because a text box reported ONE font and colour even
+    when its title mixed three, and because nothing distinguished "no fill"
+    from "fill not reported".
+
+    Reproduces the real deck's tri-colour title ("Building A" black / "Secure"
+    maroon / "Client Data Hub" salmon) and asserts the read path recovers it.
+    """
+    key = SCRATCH / "phase9-fidelity.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    doc = "phase9-fidelity.key"
+    check(
+        "phase9/read: create fidelity doc",
+        await pres.create_presentation("phase9-fidelity", save_path=str(key)),
+        "Created presentation",
+    )
+    check(
+        "phase9/read: add the tri-colour title",
+        await content.add_text_box(
+            1, "Building A Secure Client Data Hub", x=100, y=100, font_size=40, doc_name=doc
+        ),
+    )
+    for start, end, color, font in (
+        (1, 10, "#000000", ""),
+        (11, 16, "#8E1F55", "Helvetica-Bold"),
+        (18, 33, "#EFA3A0", ""),
+    ):
+        await objects.style_text_range(
+            1, 1, start, end, color=color, font_name=font, doc_name=doc
+        )
+    check(
+        "phase9/read: add a shape at 80% opacity",
+        await content.add_shape(1, x=100, y=400, width=200, height=150, opacity=80, doc_name=doc),
+    )
+    check("phase9/read: add a line", await objects.add_line(1, 100, 700, 500, 700, doc_name=doc))
+    check("phase9/read: save", await pres.save_presentation(doc_name=doc))
+
+    described = json.loads(text_of(await deck.describe_deck(doc_name=doc)))
+    slide = described["slides"][0]
+    by_class = {el["element_class"]: el for el in slide["elements"]}
+
+    # --- per-run text styling: the report's item 6 ---
+    text_el = by_class.get("text item", {})
+    runs = text_el.get("runs", [])
+    record(
+        "phase9/read: a mixed-colour text box reports RUNS, not one flat colour",
+        len(runs) >= 3,
+        f"{len(runs)} runs",
+    )
+    run_colors = {r.get("color") for r in runs}
+    record(
+        "phase9/read: every colour in the title is recovered exactly",
+        {"#000000", "#8E1F55", "#EFA3A0"} <= run_colors,
+        f"colours found: {sorted(c for c in run_colors if c)}",
+    )
+    record(
+        "phase9/read: a run's face name is recovered (weight lives in the face)",
+        any(r.get("font_name") == "Helvetica-Bold" for r in runs),
+        str([r.get("font_name") for r in runs]),
+    )
+
+    # --- Task 6 ergonomics ---
+    record(
+        "phase9/read: colours are hex, with the raw 16-bit triple kept alongside",
+        text_el.get("color", "").startswith("#") and "color_65535" in text_el,
+        f"color={text_el.get('color')} color_65535={text_el.get('color_65535')}",
+    )
+    record(
+        "phase9/read: fonts are split into family/weight/style beside the PostScript name",
+        all(k in text_el for k in ("font_name", "font_family", "font_weight", "font_style")),
+        f"{text_el.get('font_name')} -> {text_el.get('font_family')} / "
+        f"{text_el.get('font_weight')} / {text_el.get('font_style')}",
+    )
+
+    # --- opacity / rotation / fill_type across classes ---
+    shape_el = by_class.get("shape", {})
+    record(
+        "phase9/read: shape reports opacity, rotation and fill TYPE",
+        shape_el.get("opacity") == 80
+        and "rotation" in shape_el
+        and shape_el.get("fill_type") in
+        {"color fill", "no fill", "gradient fill", "advanced gradient fill",
+         "image fill", "advanced image fill"},
+        str({k: shape_el.get(k) for k in ("opacity", "rotation", "fill_type")}),
+    )
+    record(
+        "phase9/read: text reports opacity and fill type too (was shapes-only)",
+        "opacity" in text_el and "fill_type" in text_el,
+        str({k: text_el.get(k) for k in ("opacity", "fill_type")}),
+    )
+    record(
+        "phase9/read: line reports rotation",
+        "rotation" in by_class.get("line", {}),
+        str(by_class.get("line")),
+    )
+
+    # --- what CANNOT be read is stated, not omitted ---
+    unread = described.get("not_reported", {})
+    record(
+        "phase9/read: the description says what it could NOT read",
+        {"shape.fill_color", "shape.type", "line.stroke", "z_order"} <= set(unread),
+        f"{len(unread)} documented gaps",
+    )
+    record(
+        "phase9/read: z-order is documented as unrecoverable in the output itself",
+        "z_order" in unread and "not" in unread["z_order"].lower(),
+        unread.get("z_order", "")[:100],
+    )
+
+    # --- export_assets makes the bundle's images resolvable ---
+    assets_dir = SCRATCH / "phase9-assets"
+    shutil.rmtree(assets_dir, ignore_errors=True)
+    assets_text = check(
+        "phase9/read: export_assets extracts the bundle's Data/ folder",
+        await export.export_assets(str(assets_dir), doc_name=doc),
+    )
+    extracted = list(assets_dir.glob("*")) if assets_dir.exists() else []
+    record(
+        "phase9/read: assets really landed on disk (not just reported)",
+        len(extracted) > 0 and all(f.stat().st_size > 0 for f in extracted),
+        f"{len(extracted)} files, {sum(f.stat().st_size for f in extracted):,} bytes",
+    )
+    record(
+        "phase9/read: export_assets refuses politely when there is nothing to read",
+        "Extracted" in assets_text or "No assets" in assets_text,
+        assets_text[:100],
+    )
+
+    check(
+        "phase9/read: close fidelity doc",
+        await pres.close_presentation(doc_name=doc, should_save=False),
+    )
+
+
 async def check_describe_at_scale(pres, deck):
     """PHASE 9 Task 3 — describe_deck on a deck the size of the real one.
 
@@ -2099,6 +2237,7 @@ async def main():
     check("close rescued doc", await pres.close_presentation(should_save=False))
 
     await check_index_contract(pres, slides, content, export, objects, deck)
+    await check_read_fidelity(pres, content, objects, export, deck)
     await check_describe_at_scale(pres, deck)
     await check_document_resolution(pres, slides, content, export, objects)
     await check_fill_is_unwritable(pres, slides, content, export, objects)

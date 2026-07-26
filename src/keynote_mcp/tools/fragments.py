@@ -97,6 +97,66 @@ TEXT_ITEM_FILTER = """
                     end repeat"""
 
 
+# --- per-run text styling, read cheaply --------------------------------------
+#
+# A text box reports ONE font and colour, so a title mixing three colours
+# under-reports the deck's palette entirely. `style_text_range` could always
+# WRITE runs; there was no read path.
+#
+# The naive read is one AppleEvent per character, which would be ruinous on a
+# real deck. Probed (Phase 9 Task 4): `color of every character`,
+# `font of every character` and `size of every character` each return the WHOLE
+# list in ONE event. So three events per text item buys full run fidelity.
+#
+# Coalescing happens here, in AppleScript, over the already-fetched lists -
+# pure local list access, no further events - because emitting one record per
+# character would bloat the payload the rest of Task 3 just shrank.
+#
+# Emits: RUNSTART|end|font|size|r,g,b  per run, joined by RUNSEP.
+_RUN_SEP = "\x1d"
+TEXT_RUNS_FRAGMENT = """
+                            set runsOut to ""
+                            try
+                                set cols to color of every character of object text of ti
+                                set fnts to font of every character of object text of ti
+                                set szs to size of every character of object text of ti
+                                set charCount to count of cols
+                                if charCount > 0 then
+                                    set runStart to 1
+                                    set prevF to item 1 of fnts
+                                    set prevS to item 1 of szs
+                                    set prevC to item 1 of cols
+                                    repeat with ci from 2 to charCount + 1
+                                        set changed to false
+                                        if ci > charCount then
+                                            set changed to true
+                                        else
+                                            set curF to item ci of fnts
+                                            set curS to item ci of szs
+                                            set curC to item ci of cols
+                                            if (curF as text) is not (prevF as text) then set changed to true
+                                            if (curS as text) is not (prevS as text) then set changed to true
+                                            if (curC as text) is not (prevC as text) then set changed to true
+                                        end if
+                                        if changed then
+                                            if runsOut is not "" then set runsOut to runsOut & runsep
+                                            set runsOut to runsOut & (runStart as text) & "|" & ¬
+                                                ((ci - 1) as text) & "|" & (prevF as text) & "|" & ¬
+                                                (prevS as text) & "|" & (item 1 of prevC as text) & ¬
+                                                "," & (item 2 of prevC as text) & "," & ¬
+                                                (item 3 of prevC as text)
+                                            set runStart to ci
+                                            if ci <= charCount then
+                                                set prevF to item ci of fnts
+                                                set prevS to item ci of szs
+                                                set prevC to item ci of cols
+                                            end if
+                                        end if
+                                    end repeat
+                                end if
+                            end try"""
+
+
 def exists_guard(as_type: str, index: int, slide_number: int) -> str:
     """AppleScript that fails loudly if ``as_type index`` is not on the slide.
 

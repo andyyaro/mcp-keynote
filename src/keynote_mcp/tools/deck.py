@@ -37,14 +37,23 @@ from typing import Any
 
 from mcp.types import TextContent, Tool
 
-from ..utils import SESSION, AppleScriptRunner, ParameterError, parse_color
+from ..utils import (
+    SESSION,
+    AppleScriptRunner,
+    ParameterError,
+    parse_color,
+    rgb65535_to_hex,
+    split_font_name,
+)
 from ..utils.render import render_panel_png
 from ..utils.styles import DeckStyle, resolve_style
 from .base import DocumentTargetedTools
 from .fragments import (
+    _RUN_SEP,
     CHART_TYPES,
     RESOLVE_DOC,
     TEXT_ITEM_FILTER,
+    TEXT_RUNS_FRAGMENT,
     TRANSITION_EFFECTS,
     Argv,
     chart_fragment,
@@ -102,6 +111,103 @@ _DESCRIBE_SLIDES_PER_SESSION = 10
 _LARGE_DESCRIPTION_CHARS = 60_000
 
 _ALL_ELEMENT_CLASSES = frozenset({"text", "image", "shape", "table", "chart", "line"})
+
+
+# What Keynote's AppleScript dictionary genuinely cannot report. Emitted with
+# every full description, because a caller must be able to tell "this shape has
+# no fill" from "this server did not look at the fill" - the field report had to
+# recover five brand colours by screenshotting and eyeballing pixels, not
+# knowing which of the two it was facing.
+_UNREADABLE_NOTE: dict[str, str] = {
+    "shape.fill_color": (
+        "Not readable OR writable. `background fill type` gives the KIND of "
+        "fill (color/gradient/image/none) and is reported as fill_type; the "
+        "colour itself has no property. Probed across 5 themes and 12 routes."
+    ),
+    "shape.type": (
+        "Not readable. There is no `shape type` term - a rounded rect, arrow, "
+        "callout and circle are all just `shape`. AppleScript can only create "
+        "rectangles."
+    ),
+    "shape.corner_radius": "Not readable. No corner-radius property exists.",
+    "shape.stroke": "Not readable. No stroke/border term exists on any iWork class.",
+    "line.stroke": (
+        "Not readable. A line's complete property record is start/end point, "
+        "position, width, height, rotation, reflection, locked - no colour, "
+        "thickness, dash or arrowheads. Use styled_line to AUTHOR strokes; "
+        "they are rendered PNGs and round-trip via their sidecar."
+    ),
+    "text.alignment": "Not readable. Alignment exists only on table ranges.",
+    "text.underline": "Not readable. Rich text exposes only font, size and colour.",
+    "chart.data": "Not readable. The chart class exposes only geometry.",
+    "slide.background": "Not readable. No background term on `slide`; it lives in the layout.",
+    "group.membership": (
+        "Not readable. Groups are counted per slide but their members cannot "
+        "be enumerated, and groups cannot be created at all."
+    ),
+    "z_order": (
+        "NOT reported and NOT recoverable. Elements are enumerated class by "
+        "class (text, then image, then shape, table, chart, line), so array "
+        "position is neither an address nor paint order. Keynote's real "
+        "z-order is creation order and AppleScript cannot read or change it."
+    ),
+}
+
+
+def _set_color(node: dict[str, Any], triple: str) -> None:
+    """Report colour as hex, keeping Keynote's raw 16-bit triple alongside.
+
+    `color` is hex because that is what humans and CSS use, and because
+    build_deck's parse_color accepts it verbatim, so round-trips still work.
+    `color_65535` keeps the exact values Keynote gave, since the 16-bit->8-bit
+    conversion is only exact for multiples of 257.
+    """
+    node["color"] = rgb65535_to_hex(triple) or triple
+    node["color_65535"] = triple
+
+
+def _as_bool(value: str) -> bool:
+    return value == "true"
+
+
+def _set_optional(el: dict[str, Any], key: str, fields: list[str], idx: int, cast: Any) -> None:
+    """Copy fields[idx] onto the element if the read produced anything.
+
+    An absent value means Keynote refused the property, not that it is zero.
+    """
+    if len(fields) > idx and fields[idx] != "":
+        try:
+            el[key] = cast(fields[idx])
+        except (ValueError, TypeError):
+            el[key] = fields[idx]
+
+
+def _parse_runs(raw: str) -> list[dict[str, Any]]:
+    """Parse the coalesced per-character styling into runs.
+
+    A text box reports one font and colour; a title mixing three colours
+    under-reports the palette entirely. `style_text_range` could always write
+    runs - this is the missing read path.
+    """
+    runs: list[dict[str, Any]] = []
+    for chunk in raw.split(_RUN_SEP):
+        if not chunk:
+            continue
+        parts = chunk.split("|")
+        if len(parts) < 5:
+            continue
+        run: dict[str, Any] = {"start": int(parts[0]), "end": int(parts[1])}
+        if parts[2]:
+            run.update(split_font_name(parts[2]))
+        if parts[3]:
+            try:
+                run["font_size"] = float(parts[3])
+            except ValueError:
+                pass
+        if parts[4]:
+            _set_color(run, parts[4])
+        runs.append(run)
+    return runs
 
 
 def _chunks(items: list[int], size: int) -> list[list[int]]:
@@ -1348,6 +1454,7 @@ class DeckTools(DocumentTargetedTools):
         element_types: list[str] | None = None,
         detail: str = "full",
         round_coordinates: bool = True,
+        include_text_runs: bool = True,
     ) -> list[TextContent]:
         try:
             doc_name = self._doc(doc_name)
@@ -1397,11 +1504,12 @@ class DeckTools(DocumentTargetedTools):
             else:
                 slides: list[dict[str, Any]] = []
                 for chunk in _chunks(numbers, _DESCRIBE_SLIDES_PER_SESSION):
-                    slides.extend(self._describe_slides(doc_name, chunk, want))
+                    slides.extend(self._describe_slides(doc_name, chunk, want, include_text_runs))
                 if round_coordinates:
                     for sl in slides:
                         _round_slide_numbers(sl)
                 spec["slides"] = slides
+                spec["not_reported"] = dict(_UNREADABLE_NOTE)
             payload = json.dumps(spec, indent=1)
             if detail == "full" and len(payload) > _LARGE_DESCRIPTION_CHARS:
                 # Say so in the payload rather than letting the caller discover
@@ -1434,6 +1542,7 @@ class DeckTools(DocumentTargetedTools):
                 set docName to item 1 of argv
                 set fs to character id 31
                 set rs to character id 30
+                set runsep to character id 29
                 set out to ""
                 tell application "Keynote"
                     {RESOLVE_DOC}
@@ -1503,6 +1612,7 @@ class DeckTools(DocumentTargetedTools):
         doc_name: str,
         numbers: list[int],
         element_types: frozenset[str] | None = None,
+        include_text_runs: bool = True,
     ) -> list[dict[str, Any]]:
         """Describe several slides in ONE osascript session.
 
@@ -1514,6 +1624,13 @@ class DeckTools(DocumentTargetedTools):
         """
         want = element_types or _ALL_ELEMENT_CLASSES
         filter_block = TEXT_ITEM_FILTER
+        # Three extra AppleEvents per text item buys full per-run styling; the
+        # naive per-character read would be one event per CHARACTER.
+        runs_block = (
+            TEXT_RUNS_FRAGMENT
+            if include_text_runs
+            else '                            set runsOut to ""'
+        )
         slide_list = ", ".join(str(n) for n in numbers)  # validated ints only
         raw = self.runner.run(
             f"""
@@ -1521,6 +1638,7 @@ class DeckTools(DocumentTargetedTools):
                 set docName to item 1 of argv
                 set fs to character id 31
                 set rs to character id 30
+                set runsep to character id 29
                 set out to ""
                 tell application "Keynote"
                     {RESOLVE_DOC}
@@ -1575,10 +1693,24 @@ class DeckTools(DocumentTargetedTools):
                                 set c to (item 1 of rgb as text) & "," & ¬
                                     (item 2 of rgb as text) & "," & (item 3 of rgb as text)
                             end try
+                            set rot to ""
+                            set opa to ""
+                            set fillT to ""
+                            try
+                                set rot to rotation of ti as text
+                            end try
+                            try
+                                set opa to opacity of ti as text
+                            end try
+                            try
+                                set fillT to background fill type of ti as text
+                            end try
+{runs_block}
                             set out to out & "T" & fs & (object text of ti as text) & ¬
                                 fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
                                 fs & (width of ti as text) & fs & (height of ti as text) & ¬
-                                fs & f & fs & z & fs & c & fs & (i as text) & fs & role & rs
+                                fs & f & fs & z & fs & c & fs & (i as text) & fs & role & ¬
+                                fs & rot & fs & opa & fs & fillT & fs & runsOut & rs
                         end repeat
                         repeat with i from 1 to {"(count of images)" if "image" in want else "0"}
                             set im to image i
@@ -1595,9 +1727,22 @@ class DeckTools(DocumentTargetedTools):
                                     set fn to file name of im as text
                                 end try
                             end if
+                            set irot to ""
+                            set iopa to ""
+                            set idesc to ""
+                            try
+                                set irot to rotation of im as text
+                            end try
+                            try
+                                set iopa to opacity of im as text
+                            end try
+                            try
+                                set idesc to description of im as text
+                            end try
                             set out to out & "I" & fs & fn & fs & (item 1 of p as text) & ¬
                                 fs & (item 2 of p as text) & fs & (width of im as text) & ¬
-                                fs & (height of im as text) & fs & (i as text) & rs
+                                fs & (height of im as text) & fs & (i as text) & ¬
+                                fs & irot & fs & iopa & fs & idesc & rs
                         end repeat
                         repeat with i from 1 to {"(count of shapes)" if "shape" in want else "0"}
                             set sh to shape i
@@ -1610,10 +1755,27 @@ class DeckTools(DocumentTargetedTools):
                                 try
                                     set shTxt to object text of sh as text
                                 end try
+                                set srot to ""
+                                set sfill to ""
+                                set srefl to ""
+                                set slock to ""
+                                try
+                                    set srot to rotation of sh as text
+                                end try
+                                try
+                                    set sfill to background fill type of sh as text
+                                end try
+                                try
+                                    set srefl to reflection showing of sh as text
+                                end try
+                                try
+                                    set slock to locked of sh as text
+                                end try
                                 set out to out & "S" & fs & shTxt & fs & (item 1 of p as text) & ¬
                                     fs & (item 2 of p as text) & fs & (width of sh as text) & ¬
                                     fs & (height of sh as text) & fs & (opacity of sh as text) & ¬
-                                    fs & (i as text) & rs
+                                    fs & (i as text) & fs & srot & fs & sfill & fs & srefl & ¬
+                                    fs & slock & rs
                             end if
                         end repeat
                         repeat with i from 1 to {"(count of tables)" if "table" in want else "0"}
@@ -1656,10 +1818,19 @@ class DeckTools(DocumentTargetedTools):
                             set ln to line i
                             set sp to start point of ln
                             set ep to end point of ln
+                            set lrot to ""
+                            try
+                                set lrot to rotation of ln as text
+                            end try
                             set out to out & "G" & fs & (item 1 of sp as text) & ¬
                                 fs & (item 2 of sp as text) & fs & (item 1 of ep as text) & ¬
-                                fs & (item 2 of ep as text) & fs & (i as text) & rs
+                                fs & (item 2 of ep as text) & fs & (i as text) & fs & lrot & rs
                         end repeat
+                        -- Groups cannot be CREATED by AppleScript (make new
+                        -- group is a silent no-op), but a group the user made
+                        -- by hand IS countable, so report it rather than
+                        -- silently flattening.
+                        set out to out & "GRP" & fs & (count of groups as text) & rs
                     end tell
                   end repeat
                     return out
@@ -1713,17 +1884,27 @@ class DeckTools(DocumentTargetedTools):
                     "height": float(fields[5]),
                 }
                 if fields[6]:
-                    el["font_name"] = fields[6]
+                    el.update(split_font_name(fields[6]))
                 if fields[7]:
                     el["font_size"] = float(fields[7])
                 if fields[8]:
-                    el["color"] = fields[8]
+                    _set_color(el, fields[8])
                 if len(fields) > 10 and fields[10]:
                     # A theme placeholder, emitted as an ordinary indexed
                     # element so this listing and get_slide_content agree on
                     # what "text item i" addresses. slide.title / slide.body
                     # carry the same text for round-trip rebuild.
                     el["placeholder"] = fields[10]
+                _set_optional(el, "rotation", fields, 11, float)
+                _set_optional(el, "opacity", fields, 12, float)
+                _set_optional(el, "fill_type", fields, 13, str)
+                if len(fields) > 14 and fields[14]:
+                    runs = _parse_runs(fields[14])
+                    # Only worth reporting when the box is NOT uniform - a
+                    # single run says nothing the top-level font/size/color
+                    # does not already say.
+                    if len(runs) > 1:
+                        el["runs"] = runs
                 slide["elements"].append(el)
             elif kind == "I":
                 slide["elements"].append(
@@ -1738,6 +1919,9 @@ class DeckTools(DocumentTargetedTools):
                         "height": float(fields[5]),
                     }
                 )
+                _set_optional(slide["elements"][-1], "rotation", fields, 7, float)
+                _set_optional(slide["elements"][-1], "opacity", fields, 8, float)
+                _set_optional(slide["elements"][-1], "description", fields, 9, str)
             elif kind == "S":
                 el = {
                     "type": "shape",
@@ -1751,6 +1935,12 @@ class DeckTools(DocumentTargetedTools):
                 }
                 if fields[1]:
                     el["text"] = fields[1]
+                _set_optional(el, "rotation", fields, 8, float)
+                # Keynote reports the KIND of fill but never its colour, so a
+                # caller can tell "no fill" from "fill not reported".
+                _set_optional(el, "fill_type", fields, 9, str)
+                _set_optional(el, "reflection_showing", fields, 10, _as_bool)
+                _set_optional(el, "locked", fields, 11, _as_bool)
                 slide["elements"].append(el)
             elif kind == "B":
                 data = (
@@ -1798,4 +1988,17 @@ class DeckTools(DocumentTargetedTools):
                         "y2": float(fields[4]),
                     }
                 )
+                _set_optional(slide["elements"][-1], "rotation", fields, 6, float)
+            elif kind == "GRP":
+                count = int(fields[1])
+                if count:
+                    slide["groups"] = {
+                        "count": count,
+                        "note": (
+                            "This slide contains groups the user made by hand. "
+                            "AppleScript cannot report which elements belong to "
+                            "which group, and cannot create groups at all, so "
+                            "the elements above are listed flat."
+                        ),
+                    }
         return slides

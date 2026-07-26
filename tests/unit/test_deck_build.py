@@ -264,8 +264,14 @@ class TestDescribeDeck:
             "width": 300.0,
             "height": 50.0,
             "font_name": "Helvetica",
+            "font_family": "Helvetica",
+            "font_weight": "Regular",
+            "font_style": "Normal",
             "font_size": 24.0,
-            "color": "100,200,300",
+            # Colour is reported as hex (what humans and build_deck both take),
+            # with Keynote's raw 16-bit triple kept alongside.
+            "color": "#000101",
+            "color_65535": "100,200,300",
         }
         # Every element carries the per-class index a consuming tool takes.
         for el in slide["elements"]:

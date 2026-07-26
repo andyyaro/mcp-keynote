@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+import zipfile
 
 from mcp.types import TextContent, Tool
 
@@ -170,6 +171,30 @@ class ExportTools(DocumentTargetedTools):
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["output_path"],
+                },
+            ),
+            Tool(
+                name="export_assets",
+                description=(
+                    "Extract every embedded asset (images, audio, movies) from a "
+                    "SAVED presentation's bundle into a folder. Use this for asset "
+                    "inventory: describe_deck can only report an embedded image's "
+                    "BASENAME once its source file is gone - Keynote stores no path - "
+                    "so many different images can come back with the same name. The "
+                    ".key bundle still holds them all under Data/, and this reads them "
+                    "out of the file. Keynote does not record which slide element uses "
+                    "which asset, so match by size/dimensions."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "output_dir": {
+                            "type": "string",
+                            "description": "Folder to write the assets into (created if needed)",
+                        },
+                        "doc_name": _DOC_ARG,
+                    },
+                    "required": ["output_dir"],
                 },
             ),
             Tool(
@@ -430,6 +455,115 @@ class ExportTools(DocumentTargetedTools):
             return [TextContent(type="text", text=f"Exported PDF to: {output_path}{note}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to export PDF: {e}")]
+
+    async def export_assets(self, output_dir: str, doc_name: str = "") -> list[TextContent]:
+        """Extract the presentation bundle's Data/ folder - every embedded asset.
+
+        describe_deck can only report an embedded image's BASENAME once the
+        original file is gone (Keynote keeps no path), so 61 different images
+        can all come back as "pasted-movie.png". That makes asset inventory
+        impossible from the API alone. The .key bundle itself still holds every
+        asset under Data/, so this reads them out of the file rather than
+        asking Keynote for something it does not store.
+        """
+        try:
+            doc_name = self._doc(doc_name)
+            out_dir = os.path.abspath(os.path.expanduser(output_dir.strip()))
+
+            # The document must be SAVED - assets live in the file, not in the
+            # running application.
+            key_path = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set docFile to file of targetDoc
+                        if docFile is missing value then return ""
+                        return POSIX path of docFile
+                    end tell
+                end run
+                """,
+                doc_name,
+            ).strip()
+            if not key_path:
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Failed to export assets: '{doc_name}' has never been "
+                            "saved, so it has no bundle to read. Save it first "
+                            "with save_presentation(save_path=...)."
+                        ),
+                    )
+                ]
+            key_path = key_path.rstrip("/")
+            if not os.path.exists(key_path):
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to export assets: {key_path} does not exist on disk.",
+                    )
+                ]
+
+            os.makedirs(out_dir, exist_ok=True)
+            written: list[tuple[str, int]] = []
+
+            if os.path.isdir(key_path):
+                # Older/uncompressed bundles are real directories.
+                data_dir = os.path.join(key_path, "Data")
+                if os.path.isdir(data_dir):
+                    for name in sorted(os.listdir(data_dir)):
+                        src = os.path.join(data_dir, name)
+                        if os.path.isfile(src):
+                            dst = os.path.join(out_dir, name)
+                            shutil.copy2(src, dst)
+                            written.append((name, os.path.getsize(dst)))
+            else:
+                with zipfile.ZipFile(key_path) as bundle:
+                    for info in bundle.infolist():
+                        if info.is_dir() or not info.filename.startswith("Data/"):
+                            continue
+                        name = os.path.basename(info.filename)
+                        if not name:
+                            continue
+                        # Never let a crafted bundle write outside out_dir.
+                        dst = os.path.join(out_dir, name)
+                        if not os.path.abspath(dst).startswith(out_dir + os.sep):
+                            continue
+                        with bundle.open(info) as fh, open(dst, "wb") as out:
+                            shutil.copyfileobj(fh, out)
+                        written.append((name, info.file_size))
+
+            if not written:
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"No assets found in {os.path.basename(key_path)} "
+                            "(the deck embeds no images, audio or movies)."
+                        ),
+                    )
+                ]
+            total = sum(size for _, size in written)
+            listing = "\n".join(
+                f"  {name}  ({size:,} bytes)" for name, size in sorted(written)[:40]
+            )
+            more = "" if len(written) <= 40 else f"\n  ... and {len(written) - 40} more"
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Extracted {len(written)} asset(s) ({total:,} bytes) from "
+                        f"{os.path.basename(key_path)} to {out_dir}:\n{listing}{more}\n"
+                        "These are the files describe_deck can only name by basename. "
+                        "Match them by size/dimensions; Keynote does not record which "
+                        "slide element uses which asset."
+                    ),
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to export assets: {e}")]
 
     async def export_presentation(
         self,
