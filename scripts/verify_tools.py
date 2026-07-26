@@ -85,13 +85,25 @@ async def main():
         expect_substring="Created presentation",
     )
     check("list_presentations", await pres.list_presentations(), "phase3-test")
+    check(
+        "first slide defaults to Blank (8.4)",
+        await slides.get_slide_info(1),
+        "Layout: Blank",
+    )
     check("get_presentation_info", await pres.get_presentation_info(), "Slide count")
     check("get_slide_size", await pres.get_slide_size(), "Slide size info")
 
-    # set_slide_content on slide 1 (theme layout with placeholders)
+    # set_slide_content on slide 1: new presentations default to Blank, so
+    # this exercises the enable-placeholder-then-fill path
     check(
         "set_slide_content",
         await content.set_slide_content(1, title="Phase 3 Title", body=None),
+    )
+    slide1 = text_of(await content.get_slide_content(1))
+    record(
+        "set_slide_content filled title visible on Blank slide",
+        "Phase 3 Title" in slide1,
+        slide1[:120],
     )
 
     # --- slide tools ---

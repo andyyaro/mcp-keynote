@@ -57,6 +57,20 @@ class TestCreateDefaultSavePath:
         await presentation_tools.create_presentation("t", save_path=str(tmp_path / "deck"))
         assert last_cmd(mock_subprocess_run)[3] == str(tmp_path / "deck.key")
 
+    async def test_first_slide_defaults_to_blank_layout(
+        self, presentation_tools, mock_subprocess_run, monkeypatch, tmp_path
+    ):
+        # A theme's first slide starts on a title layout whose unfilled
+        # placeholders add_* tools would overlap; the server defaults it to
+        # Blank (matching add_slide) and reports the choice.
+        monkeypatch.setenv("KEYNOTE_MCP_SAVE_DIR", str(tmp_path))
+        mock_subprocess_run.return_value.stdout = "Deck.key|default theme|first slide: Blank layout"
+        result = await presentation_tools.create_presentation("Deck")
+        script = mock_subprocess_run.call_args.kwargs["input"]
+        assert 'slide layout "Blank"' in script
+        assert script.index('slide layout "Blank"') < script.index("save newDoc")
+        assert "first slide: Blank layout" in result[0].text
+
     async def test_save_is_unconditional_in_script(
         self, presentation_tools, mock_subprocess_run, monkeypatch, tmp_path
     ):

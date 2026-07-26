@@ -234,7 +234,9 @@ class ContentTools:
                 description=(
                     "Set the slide's theme title and/or body placeholders. Uses the "
                     "theme's own fonts and colors, so styling stays consistent - prefer "
-                    "this over manual text boxes on themed layouts."
+                    "this over manual text boxes on themed layouts. Works on Blank "
+                    "slides too (new presentations default to Blank): the placeholder "
+                    "is enabled (title/body showing) before its text is set."
                 ),
                 inputSchema={
                     "type": "object",

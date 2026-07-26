@@ -91,7 +91,10 @@ class PresentationTools:
                     "KEYNOTE_MCP_SAVE_DIR environment variable). The response includes "
                     "the resolved path. Documents are never left unsaved - the first "
                     "save of an unsaved document opens a modal sheet that blocks all "
-                    "automation."
+                    "automation. The first slide is set to the Blank layout (matching "
+                    "add_slide's default) so add_* tools start from an empty canvas; "
+                    "use set_slide_content or set_slide_layout to opt into theme "
+                    "placeholders."
                 ),
                 inputSchema={
                     "type": "object",
@@ -252,22 +255,33 @@ class PresentationTools:
                                 set themeNote to "theme '" & themeName & "' not found, used default"
                             end try
                         end if
+                        -- Default the first slide to Blank: themes start it on a
+                        -- title layout whose unfilled placeholders the add_* tools
+                        -- would overlap rather than fill. set_slide_content /
+                        -- set_slide_layout opt back into theme placeholders.
+                        set layoutNote to "first slide kept theme default layout"
+                        try
+                            if exists slide layout "Blank" of newDoc then
+                                set base layout of slide 1 of newDoc to ¬
+                                    slide layout "Blank" of newDoc
+                                set layoutNote to "first slide: Blank layout"
+                            end if
+                        end try
                         save newDoc in POSIX file savePath
-                        return (name of newDoc) & "|" & themeNote
+                        return (name of newDoc) & "|" & themeNote & "|" & layoutNote
                     end tell
                 end run
                 """,
                 theme,
                 resolved_path,
             )
-            doc_name, _, theme_note = result.partition("|")
+            doc_name, _, rest = result.partition("|")
+            theme_note, _, layout_note = rest.partition("|")
+            notes = f"{theme_note}; {layout_note}" if layout_note else theme_note
             return [
                 TextContent(
                     type="text",
-                    text=(
-                        f"Created presentation '{doc_name}' ({theme_note}), "
-                        f"saved to {resolved_path}"
-                    ),
+                    text=f"Created presentation '{doc_name}' ({notes}), saved to {resolved_path}",
                 )
             ]
         except Exception as e:
