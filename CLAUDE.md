@@ -3,9 +3,15 @@
 ## What this is
 
 An MCP (Model Context Protocol) server that controls Apple Keynote via
-AppleScript. It exposes 45 tools for creating presentations, managing slides,
-adding content (text, images, lists, code blocks, theme placeholders),
-build animations, exporting, and fetching images from Unsplash (opt-in).
+AppleScript. It exposes 59 tools: whole-deck declarative building
+(`build_deck`/`describe_deck`), presentations, slides, content (text,
+images, lists, code blocks, theme placeholders), NATIVE tables and charts,
+rendered color panels, per-range text styling, transitions, styles
+(`.keynote-mcp.toml`), build animations, exports (PDF/PPTX/movie/HTML/
+images), and Unsplash (opt-in). The capability boundary is documented and
+probe-verified: `docs/CAPABILITY_MATRIX.md` (what the dictionary offers vs.
+what we expose) and `docs/CEILING.md` (what is impossible and why — read it
+before attempting anything on its CANNOT list).
 
 ## How to run
 
@@ -31,24 +37,42 @@ src/keynote_mcp/
                            registration, one _dispatch for all tool calls
   tools/
     presentation.py      — create/open/save/close/list, themes, slide size
-    slide.py             — add/delete/duplicate/move/select slides, layouts
+                           (get + live set), document settings
+    slide.py             — add/delete/duplicate/move/select slides, layouts,
+                           transitions, skipped slides
     content.py           — text boxes/titles/lists/code/quotes (font, color,
                            auto-fit boxes, exact centering), theme
                            placeholders (set_slide_content), images, shapes,
                            edit/move/resize/delete elements, speaker notes,
                            clear_slide, build animations (UI scripting)
-    export.py            — screenshot_slide, export_pdf
+    fragments.py         — SINGLE SOURCE of element-creation AppleScript
+                           (argv-safe fragment builders + trusted literal
+                           maps) consumed by content/objects/deck alike
+    objects.py           — native add_table/add_chart, add_line, rendered
+                           add_colored_panel, style_text_range,
+                           replace_image, set_element_style
+    deck.py              — build_deck (JSON spec + markdown dialect,
+                           validate-all-then-build, batched sessions,
+                           per-element try isolation) and describe_deck
+    export.py            — screenshot_slide, export_pdf (+options),
+                           export_presentation (pptx/movie/html/images/key09)
     unsplash.py          — Unsplash REST tools (need UNSPLASH_KEY)
   utils/
     applescript_runner.py — runs '/usr/bin/osascript -' with user strings as
                             argv; bounded timeouts
-    error_handler.py      — exception hierarchy, validators, stderr→actionable
+    error_handler.py      — exception hierarchy, validators (parse_color
+                            takes #RRGGBB or r,g,b), stderr→actionable
                             error mapping (-1743/-1728/-1719/-600/-1712)
+    styles.py             — DeckStyle + built-ins (plain/boardroom/midnight/
+                            editorial), .keynote-mcp.toml loading
+    render.py             — pure-Python PNG rendering (rounded panels)
 tests/
   unit/                  — no GUI, no Keynote; runs in CI (95% coverage)
   integration/           — @pytest.mark.keynote; drives a real Keynote
 docs/                    — ENVIRONMENT.md (verified host facts),
                            TOOL_MATRIX.md (per-tool verification),
+                           CAPABILITY_MATRIX.md (sdef coverage analysis),
+                           CEILING.md (what is impossible and why),
                            MCP_V2_MIGRATION.md, MODERNIZATION_REPORT.md
 skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skills/)
 ```
@@ -74,6 +98,20 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
    `get_tools()` + method + routing case in `server._dispatch()` + a row in
    `docs/TOOL_MATRIX.md` (verify against `docs/keynote-14.5.sdef` and a real
    Keynote first).
+6. **A visual tool gets a RENDERED check, never a structural one.** Counts,
+   property read-backs and "the file exists" prove an object exists, never
+   that it looks like anything — that is exactly how a pie chart shipped
+   rendering as one 100% slice with `count of charts is 1` passing. The
+   harness owns helpers for this (`render_slide`, `at`, `ink_bbox`,
+   `ink_fraction`, `fill_areas`, `pdf_page_count` in
+   `scripts/verify_tools.py`); use them, and where no render can show the
+   effect (build animations, transitions) say so in the TOOL_MATRIX row
+   instead of leaving the check looking stronger than it is. Two notes from
+   building them: ink is detected as a high-pass against the image's own
+   blur, because themes paint gradient backgrounds that a "differs from the
+   background color" test flags entirely; and chart fills are found by area
+   against a background ring, not by saturation, because theme series colors
+   include neutral gray.
 
 ## Keynote facts learned by verification (don't re-litigate)
 
@@ -108,6 +146,53 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
 - Build animations, build order, "With Previous" timing, and connection-line
   routing have no AppleScript API; builds use System Events UI scripting
   (Accessibility permission), the rest is manual-only.
+
+### 3.0.0 capability-expansion facts (probe-verified; see CAPABILITY_MATRIX/CEILING)
+
+- **`st` is a reserved AppleScript token** (the ordinal suffix in `1st`) —
+  `set st to ""` is a syntax error. So are `before`, `nd`, `rd`, `th`. Never
+  use them as script variable names.
+- The Compatibility-Suite **`add chart` requires the target slide to be the
+  `current slide`** — otherwise it SILENTLY creates nothing. Chart data is
+  write-once (the `chart` class exposes only geometry); update = delete +
+  re-add. **Pie slices come from the grouped axis**: grouping by a
+  single-entry axis renders one 100% slice (chart_fragment auto-corrects).
+- **Native tables need ≥2 rows AND ≥2 columns** (-10000 below that). Cell
+  values set to a string starting `=` become live formulas. Table range
+  styling (font/size/color/bg/alignment/wrap) all works.
+- **`make new group` is a complete silent no-op** (0 items created);
+  element-level `duplicate` raises "can not be copied" (-1717); z-order =
+  creation order and cannot be changed (-10024). build_deck's spec order IS
+  paint order — panels before the text on them.
+- **Movie/audio insertion is impossible**: `{file:…}` fails coercion,
+  `{file name:…}` silently creates nothing.
+- Document `width`/`height` are rw on a LIVE document (probed 1024×768 →
+  1920×1080); Keynote rescales layout content itself.
+- `set file name of image N to POSIX file …` replaces an image in place,
+  geometry preserved; the bare-text form raises -1703.
+- `skipped:true` inside `make new slide with properties` is silently
+  ignored — set it as its own statement.
+- describe_deck round-trip limits: charts come back geometry-only
+  (`chart_type: null` — correctly rejected if rebuilt as-is) and embedded
+  images keep only a basename once the source file is gone.
+- **`make new line` fails with -10000 while the Animate inspector is open**
+  (deterministic; other make-new classes keep working). The build tools
+  restore the Format pane when they finish (`_restore_format_pane`). This
+  was first misdiagnosed as a transient — the isolated repro passed because
+  it never opened the inspector; only the full-harness ordering exposed it.
+  The general fact — scripting outcomes depend on Keynote's visible UI state,
+  which no tool controls — is a section of `docs/CEILING.md` ("UI state
+  affects scripting"). Its rule for new code: if a tool changes app or
+  document state the caller did not ask for, capture the old state in
+  **Python**, restore it in a `finally`, and make the restore best-effort.
+  Restoring inside the same script is not enough — a timeout or a modal
+  dialog kills the script before the restore line runs. `screenshot_slide`
+  had exactly that hole: it skips every slide to isolate one for export, and
+  a slow export left the user's whole deck skipped.
+- Element-creation AppleScript lives ONLY in `tools/fragments.py`; new
+  element kinds get a fragment there so build_deck and the single tool stay
+  identical. New tool = schema + method + `server._dispatch` case + fragment
+  (if element) + `scripts/verify_tools.py` check + TOOL_MATRIX row.
 
 ### Field-test facts (Phase 8 — the sandbox/save/placeholder traps)
 

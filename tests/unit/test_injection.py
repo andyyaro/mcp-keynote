@@ -7,6 +7,7 @@ and (b) the generated AppleScript source does not contain it.
 """
 
 import os
+import subprocess
 
 import pytest
 
@@ -132,3 +133,70 @@ async def test_valid_color_is_interpolated_as_numbers(content_tools, mock_subpro
     await content_tools.add_text_box(1, "text", color="65535, 0, 128")
     ((_, script),) = _calls(mock_subprocess_run)[-1:]
     assert "{65535, 0, 128}" in script
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_add_table_cells_via_argv(object_tools, mock_subprocess_run, payload):
+    mock_subprocess_run.return_value.stdout = "TB|1|0,0|600,300"
+    await object_tools.add_table(1, [[payload, "b"], ["c", 1]], font_name=payload)
+    _assert_string_safe(mock_subprocess_run, payload)
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_add_chart_names_via_argv(object_tools, mock_subprocess_run, payload):
+    mock_subprocess_run.return_value.stdout = "CH|1|0,0|600,400"
+    await object_tools.add_chart(1, "bar", [payload], [payload, "col"], [[1, 2]])
+    _assert_string_safe(mock_subprocess_run, payload)
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_style_text_range_font_via_argv(object_tools, mock_subprocess_run, payload):
+    await object_tools.style_text_range(1, 1, 1, 2, font_name=payload)
+    _assert_string_safe(mock_subprocess_run, payload)
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_replace_image_path_via_argv(object_tools, mock_subprocess_run, payload, tmp_path):
+    # replace_image refuses paths that do not exist, so give the payload a
+    # real file ("/" cannot appear in a filename; everything else survives).
+    target = tmp_path / (payload.replace("/", "_") + ".png")
+    target.write_bytes(b"png")
+    await object_tools.replace_image(1, 1, str(target))
+    expected = os.path.realpath(str(target))
+    calls = _calls(mock_subprocess_run)
+    assert any(expected in cmd[2:] for cmd, _ in calls), "path was not passed via argv"
+    assert all(payload not in script for _, script in calls), "payload spliced into source"
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_build_deck_strings_via_argv(deck_tools, mock_subprocess_run, payload, tmp_path):
+    # build_deck runs several osascript sessions; route each by script content
+    # the way the live sequence would answer.
+    def fake_run(cmd, **kwargs):
+        script = kwargs.get("input", "")
+        if "System Events" in script:
+            stdout = "true"
+        elif "make new document" in script:
+            stdout = "deck.key\x1ftheme: White\x1fBlank"
+        elif "save document docName" in script:
+            stdout = "1"
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+
+    mock_subprocess_run.side_effect = fake_run
+    spec = {
+        "save_path": str(tmp_path / "d.key"),
+        "slides": [
+            {
+                "title": payload,
+                "notes": payload,
+                "elements": [
+                    {"type": "text", "text": payload},
+                    {"type": "table", "data": [[payload, "b"], ["c", 1]]},
+                ],
+            }
+        ],
+    }
+    await deck_tools.build_deck(spec=spec)
+    _assert_string_safe(mock_subprocess_run, payload)

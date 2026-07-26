@@ -178,14 +178,27 @@ def validate_dimensions(width: float | None, height: float | None) -> tuple[floa
 
 
 def parse_color(color: str) -> tuple[int, int, int] | None:
-    """Parse an 'r,g,b' string (0-65535 per channel) into validated ints.
+    """Parse a color string into validated 0-65535 RGB ints.
 
-    Returns None for an empty string. Raises ParameterError for anything that
-    is not three in-range integers - this is what keeps color strings safe to
-    interpolate into AppleScript source.
+    Accepts '#RRGGBB' / '#RGB' hex or 'r,g,b' with values 0-65535. Returns
+    None for an empty string. Raises ParameterError for anything else - this
+    is what keeps color strings safe to interpolate into AppleScript source.
     """
     if not color:
         return None
+    color = color.strip()
+    if color.startswith("#"):
+        hex_part = color[1:]
+        if len(hex_part) == 3:
+            hex_part = "".join(c * 2 for c in hex_part)
+        if len(hex_part) != 6:
+            raise ParameterError(f"Invalid color {color!r}. Hex form must be #RGB or #RRGGBB.")
+        try:
+            r8, g8, b8 = (int(hex_part[i : i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            raise ParameterError(f"Invalid color {color!r}. Hex digits expected.") from None
+        # 0-255 -> 0-65535 (0xFF -> 0xFFFF)
+        return r8 * 257, g8 * 257, b8 * 257
     parts = [p.strip() for p in color.split(",")]
     if len(parts) != 3:
         raise ParameterError(

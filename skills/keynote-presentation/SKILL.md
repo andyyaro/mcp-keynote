@@ -4,7 +4,7 @@ description: Creates polished Keynote presentations via keynote-mcp MCP tools. U
 license: MIT
 metadata:
     author: ByAxe
-    version: 2.0.0
+    version: 3.0.0
     mcp-server: keynote-mcp
     category: productivity
     tags: [keynote, presentations, slides, mcp]
@@ -13,6 +13,31 @@ metadata:
 # Keynote Presentation Builder
 
 Build polished Keynote presentations using keynote-mcp MCP tools. This skill encodes domain expertise about Keynote's AppleScript quirks, layout math, and design patterns.
+
+## Multi-slide decks: use build_deck first (server 3.x)
+
+For any deck of more than ~2 slides, call **`build_deck`** with one JSON
+spec (or its markdown dialect) instead of issuing per-element calls: the
+whole spec is validated before anything is created, each element failure is
+reported individually, and the reply carries every element's settled
+geometry. A 20-slide deck measured 81 primitive calls against 1 build_deck
+call — the reason to prefer it is those 80 round trips and the failure points
+that come with them, not raw speed (wall clock only went 21.8 s → 11.9 s;
+Keynote serializes either way). Pass `style` (`plain`/`boardroom`/`midnight`/`editorial`, or a
+`.keynote-mcp.toml` path) so fonts/colors/margins come from one place.
+Two-column layouts: give elements `"column": "left"` / `"right"`.
+Element order in the spec is z-order (put `panel` elements before the text
+that sits on them). `describe_deck` reads any open deck back as the same
+JSON. Native `add_table` (live `=SUM(…)` formulas, min 2×2) and `add_chart`
+(17 native types; data is write-once — delete and re-add to change it) beat
+drawing tables/charts out of text boxes. Colored panels are RENDERED
+IMAGES (fill color is not scriptable) — not recolorable in Keynote after
+placement. What the server cannot do at all is listed in docs/CEILING.md —
+don't attempt hyperlinks, grouping, z-reordering, movie/audio insertion, or
+per-text alignment.
+
+The per-element workflow below remains correct for touch-ups of existing
+decks.
 
 ## Font Sizes (server 2.x absorbs the clipping bug)
 

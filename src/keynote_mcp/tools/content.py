@@ -1,5 +1,8 @@
 """Content management tools."""
 
+import logging
+import os
+
 from mcp.types import TextContent, Tool
 
 from ..utils import (
@@ -14,6 +17,15 @@ from ..utils import (
     validate_number,
     validate_slide_number,
 )
+from .fragments import (
+    Argv,
+    image_fragment,
+    run_single_fragment,
+    shape_fragment,
+    text_item_fragment,
+)
+
+logger = logging.getLogger(__name__)
 
 _DOC_ARG = {
     "type": "string",
@@ -32,6 +44,15 @@ _RESOLVE_DOC = """
 _UI_SCRIPT_TIMEOUT = 60.0
 
 
+# One consistent routing signal on every element-creating primitive: with 59
+# tools on the surface, a model asked for a 15-slide deck will otherwise chain
+# ~5 of these per slide. They stay for editing; build_deck authors.
+_EDIT_TAG = (
+    " Edits an existing deck one element at a time; to author a deck (or add "
+    "several slides at once) use build_deck, which builds all of them in one call."
+)
+
+
 class ContentTools:
     """Content management tools class"""
 
@@ -43,7 +64,11 @@ class ContentTools:
         return [
             Tool(
                 name="add_text_box",
-                description="Add a text box to a slide. Returns the item's index and its final position/size after Keynote's auto-fit settles; x/y land exactly as given.",
+                description=(
+                    "Add a text box to a slide. Returns the item's index and its final "
+                    "position/size after Keynote's auto-fit settles; x/y land exactly as "
+                    "given." + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -88,7 +113,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_title",
-                description="Add a title text box to a slide (default 36pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a title text box to a slide (default 36pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -120,7 +148,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_subtitle",
-                description="Add a subtitle text box to a slide (default 24pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a subtitle text box to a slide (default 24pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -152,7 +183,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_bullet_list",
-                description="Add a bullet list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a bullet list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -176,7 +210,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_numbered_list",
-                description="Add a numbered list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a numbered list to a slide (default 18pt). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -200,7 +237,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_code_block",
-                description="Add a monospaced code block to a slide (default 14pt Monaco). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a monospaced code block to a slide (default 14pt Monaco). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -227,7 +267,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_quote",
-                description="Add a quote text box to a slide (default 20pt, wrapped in quotes). Returns the item's index and final position/size; x/y land exactly as given.",
+                description=(
+                    "Add a quote text box to a slide (default 20pt, wrapped in quotes). Returns the item's index and final position/size; x/y land exactly as given."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -252,7 +295,7 @@ class ContentTools:
                     "theme's own fonts and colors, so styling stays consistent - prefer "
                     "this over manual text boxes on themed layouts. Works on Blank "
                     "slides too (new presentations default to Blank): the placeholder "
-                    "is enabled (title/body showing) before its text is set."
+                    "is enabled (title/body showing) before its text is set." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -273,7 +316,10 @@ class ContentTools:
             ),
             Tool(
                 name="add_image",
-                description="Add an image from a local file to a slide. Returns the image's index and final position/size.",
+                description=(
+                    "Add an image from a local file to a slide. Returns the image's index and final position/size."
+                    + _EDIT_TAG
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -284,6 +330,18 @@ class ContentTools:
                         },
                         "x": {"type": "number", "description": "X coordinate in points (optional)"},
                         "y": {"type": "number", "description": "Y coordinate in points (optional)"},
+                        "width": {
+                            "type": "number",
+                            "description": "Displayed width in points (optional; keeps native size if omitted)",
+                        },
+                        "height": {
+                            "type": "number",
+                            "description": "Displayed height in points (optional)",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Accessibility alt text read by VoiceOver (optional)",
+                        },
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["slide_number", "image_path"],
@@ -557,7 +615,7 @@ class ContentTools:
                 description=(
                     "Create a rectangle shape with optional position, size, and opacity. "
                     "Note: fill color cannot be set via AppleScript; use opacity over "
-                    "themed backgrounds instead."
+                    "themed backgrounds instead." + _EDIT_TAG
                 ),
                 inputSchema={
                     "type": "object",
@@ -636,100 +694,27 @@ class ContentTools:
         validate_slide_number(slide_number)
         x_pos, y_pos = validate_coordinates(x, y)
         rgb = parse_color(color)
-        if font_size is not None:
-            font_size = validate_number(font_size, "font_size", minimum=1, maximum=500)
         box_w: float | None = None
         box_h: float | None = None
         if width is not None or height is not None:
             box_w, box_h = validate_dimensions(width, height)
 
-        set_position = (
-            f"set position of newItem to {{{x_pos}, {y_pos}}}"
-            if (x is not None or y is not None)
-            else "-- default position"
-        )
-        set_width = f"set width of newItem to {box_w}" if width is not None else "-- default width"
-        set_height = (
-            f"set height of newItem to {box_h}" if height is not None else "-- default height"
-        )
-        set_size = (
-            f"set size of object text of newItem to {font_size}"
-            if font_size is not None
-            else "-- default font size"
-        )
-        set_font = (
-            "set font of object text of newItem to fontName" if font_name else "-- default font"
-        )
-        set_color = (
-            f"set color of object text of newItem to {{{rgb[0]}, {rgb[1]}, {rgb[2]}}}"
-            if rgb
-            else "-- default color"
-        )
-        # Re-setting the text after the font-size change is insurance: should
-        # auto-fit ever truncate the object text again (the legacy >48pt
-        # clipping), this restores it.
-        restore_text = (
-            "set object text of newItem to theText"
-            if font_size is not None
-            else "-- no restore needed"
-        )
-        # Server-side horizontal centering: runs AFTER sizing/text restore so
-        # the box width is final; keeps whatever y is in effect. Centering
-        # the box centers the rendered text only because the box is the
-        # natural auto-fit one (see docstring). Spares callers the
-        # read-width-then-move_element dance.
-        center_h = (
-            """set curPos to position of newItem
-                        set position of newItem to ¬
-                            {((width of targetDoc) - (width of newItem)) div 2, item 2 of curPos}"""
-            if centered
-            else "-- no centering"
-        )
-
-        raw = self.runner.run(
-            f"""
-            on run argv
-                set docName to item 1 of argv
-                set theText to item 2 of argv
-                set fontName to item 3 of argv
-                tell application "Keynote"
-                    {_RESOLVE_DOC}
-                    tell slide {slide_number} of targetDoc
-                        set newItem to make new text item with properties ¬
-                            {{object text:theText}}
-                        {set_width}
-                        {set_height}
-                        {set_font}
-                        {set_size}
-                        {restore_text}
-                        {set_color}
-                        {set_position}
-                        {center_h}
-                        set newIndex to 0
-                        repeat with i from 1 to (count of text items)
-                            if text item i is newItem then
-                                set newIndex to i
-                                exit repeat
-                            end if
-                        end repeat
-                        if newIndex is 0 then
-                            error "Created text item could not be located on the slide" ¬
-                                number -1728
-                        end if
-                        set finalPos to position of newItem
-                        return (newIndex as text) & "|" & (item 1 of finalPos) & "," & ¬
-                            (item 2 of finalPos) & "|" & (width of newItem) & "," & ¬
-                            (height of newItem)
-                    end tell
-                end tell
-            end run
-            """,
-            doc_name,
+        argv = Argv()
+        argv.ref(doc_name)
+        lines = text_item_fragment(
+            argv,
+            "T",
             text,
-            font_name,
+            x=x_pos if (x is not None or y is not None) else None,
+            y=y_pos if (x is not None or y is not None) else None,
+            font_size=font_size,
+            font_name=font_name,
+            color_rgb=rgb,
+            width=box_w if width is not None else None,
+            height=box_h if height is not None else None,
+            centered=centered,
         )
-        index, pos, size = raw.split("|")
-        return index, pos, size
+        return run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
 
     @staticmethod
     def _geometry_note(pos: str, size: str) -> str:
@@ -1026,48 +1011,40 @@ class ContentTools:
         image_path: str,
         x: float | None = None,
         y: float | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        description: str = "",
         doc_name: str = "",
     ) -> list[TextContent]:
         """Add image."""
         try:
             validate_slide_number(slide_number)
-            image_path = validate_file_path(image_path)
+            image_path = os.path.realpath(os.path.expanduser(validate_file_path(image_path)))
+            if not os.path.isfile(image_path):
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to add image: file does not exist: {image_path}",
+                    )
+                ]
             x_pos, y_pos = validate_coordinates(x, y)
-            set_position = (
-                f"set position of newImage to {{{x_pos}, {y_pos}}}"
-                if (x is not None or y is not None)
-                else "-- default position"
-            )
-            raw = self.runner.run(
-                f"""
-                on run argv
-                    set docName to item 1 of argv
-                    set imagePath to item 2 of argv
-                    set imageFile to POSIX file imagePath as alias
-                    tell application "Keynote"
-                        {_RESOLVE_DOC}
-                        tell slide {slide_number} of targetDoc
-                            set newImage to make new image with properties {{file:imageFile}}
-                            {set_position}
-                            set newIndex to 0
-                            repeat with i from 1 to (count of images)
-                                if image i is newImage then
-                                    set newIndex to i
-                                    exit repeat
-                                end if
-                            end repeat
-                            set finalPos to position of newImage
-                            return (newIndex as text) & "|" & (item 1 of finalPos) & "," & ¬
-                                (item 2 of finalPos) & "|" & (width of newImage) & "," & ¬
-                                (height of newImage)
-                        end tell
-                    end tell
-                end run
-                """,
-                doc_name,
+            box_w: float | None = None
+            box_h: float | None = None
+            if width is not None or height is not None:
+                box_w, box_h = validate_dimensions(width, height)
+            argv = Argv()
+            argv.ref(doc_name)
+            lines = image_fragment(
+                argv,
+                "I",
                 image_path,
+                x=x_pos if (x is not None or y is not None) else None,
+                y=y_pos if (x is not None or y is not None) else None,
+                width=box_w if width is not None else None,
+                height=box_h if height is not None else None,
+                description=description,
             )
-            index, pos, size = raw.split("|")
+            index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
                     type="text",
@@ -1486,34 +1463,10 @@ class ContentTools:
             op = validate_number(
                 opacity if opacity is not None else 100, "opacity", minimum=0, maximum=100
             )
-            raw = self.runner.run(
-                f"""
-                on run argv
-                    set docName to item 1 of argv
-                    tell application "Keynote"
-                        {_RESOLVE_DOC}
-                        tell slide {slide_number} of targetDoc
-                            set newShape to make new shape with properties ¬
-                                {{position:{{{x_pos}, {y_pos}}}, width:{w}, height:{h}}}
-                            set opacity of newShape to {int(op)}
-                            set newIndex to 0
-                            repeat with i from 1 to (count of shapes)
-                                if shape i is newShape then
-                                    set newIndex to i
-                                    exit repeat
-                                end if
-                            end repeat
-                            set finalPos to position of newShape
-                            return (newIndex as text) & "|" & (item 1 of finalPos) & "," & ¬
-                                (item 2 of finalPos) & "|" & (width of newShape) & "," & ¬
-                                (height of newShape)
-                        end tell
-                    end tell
-                end run
-                """,
-                doc_name,
-            )
-            index, pos, size = raw.split("|")
+            argv = Argv()
+            argv.ref(doc_name)
+            lines = shape_fragment(argv, "S", x=x_pos, y=y_pos, width=w, height=h, opacity=op)
+            index, pos, size = run_single_fragment(self.runner, doc_name, slide_number, argv, lines)
             return [
                 TextContent(
                     type="text",
@@ -1543,6 +1496,29 @@ class ContentTools:
             end tell
             """
         )
+
+    def _restore_format_pane(self) -> None:
+        """Switch the inspector back to Format after a build tool ran.
+
+        The build tools leave the Animate inspector open, and with it open
+        ``make new line`` fails DETERMINISTICALLY with -10000 "AppleEvent
+        handler failed" (verified live; other make-new classes still work).
+        Best-effort: UI state must never fail the build call itself.
+        """
+        try:
+            self.runner.run(
+                """
+                tell application "System Events"
+                    tell application process "Keynote"
+                        click menu item "Format" of menu 1 of menu item "Inspector" of ¬
+                            menu 1 of menu bar item "View" of menu bar 1
+                    end tell
+                end tell
+                """,
+                timeout=10.0,
+            )
+        except Exception:
+            logger.debug("Could not restore the Format inspector pane", exc_info=True)
 
     async def add_build_in(
         self,
@@ -1671,6 +1647,7 @@ class ContentTools:
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 
+            self._restore_format_pane()
             return [
                 TextContent(
                     type="text",
@@ -1681,6 +1658,7 @@ class ContentTools:
                 )
             ]
         except Exception as e:
+            self._restore_format_pane()
             return [TextContent(type="text", text=f"Failed to add build in: {e}")]
 
     async def remove_build_in(
@@ -1761,6 +1739,7 @@ class ContentTools:
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 
+            self._restore_format_pane()
             return [
                 TextContent(
                     type="text",
@@ -1771,6 +1750,7 @@ class ContentTools:
                 )
             ]
         except Exception as e:
+            self._restore_format_pane()
             return [TextContent(type="text", text=f"Failed to remove build in: {e}")]
 
     async def add_builds_to_slide(

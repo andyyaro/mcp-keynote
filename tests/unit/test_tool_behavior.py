@@ -137,14 +137,14 @@ class TestContentTools:
         # An explicit height has no lasting effect anyway (snaps back to
         # auto-fit). The text re-set stays, AFTER the font size, as insurance
         # against auto-fit truncation regressions.
-        mock_subprocess_run.return_value.stdout = "1|100,200|672,119"
+        mock_subprocess_run.return_value.stdout = "T|1|100,200|672,119"
         await content_tools.add_title(1, "Big Title Here", font_size=96)
         script = last_script(mock_subprocess_run)
         assert "set width of newItem" not in script
         assert "set height of newItem" not in script
-        assert "set object text of newItem to theText" in script
+        assert "set object text of newItem to (item 2 of argv)" in script
         assert script.index("set size of object text") < script.index(
-            "set object text of newItem to theText"
+            "set object text of newItem to (item 2 of argv)"
         )
 
     async def test_small_font_keeps_default_box(self, content_tools, mock_subprocess_run):
@@ -159,7 +159,7 @@ class TestContentTools:
         # because the box is the natural auto-fit one. Any injected width
         # would reintroduce the ~60-110pt leftward visual drift measured on
         # the old 0.58*pt/char heuristic.
-        mock_subprocess_run.return_value.stdout = "1|624,400|672,119"
+        mock_subprocess_run.return_value.stdout = "T|1|624,400|672,119"
         await content_tools.add_title(1, "Hello Big World", font_size=96, centered=True)
         script = last_script(mock_subprocess_run)
         assert "set width of newItem" not in script
@@ -167,13 +167,15 @@ class TestContentTools:
         assert "((width of targetDoc) - (width of newItem)) div 2" in script
         # centering must see the settled box: after font size AND text restore
         assert script.index("div 2") > script.index("set size of object text")
-        assert script.index("div 2") > script.index("set object text of newItem to theText")
+        assert script.index("div 2") > script.index(
+            "set object text of newItem to (item 2 of argv)"
+        )
 
     async def test_explicit_width_wins_over_autosize(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "1"
         await content_tools.add_text_box(1, "text", font_size=96, width=500, height=100)
         script = last_script(mock_subprocess_run)
-        assert "set width of newItem to 500.0" in script
+        assert "set width of newItem to 500" in script
 
     async def test_bullets_join_with_real_newlines(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "1"
@@ -219,7 +221,7 @@ class TestContentTools:
     async def test_shape_default_size_and_opacity(self, content_tools, mock_subprocess_run):
         await content_tools.add_shape(1)
         script = last_script(mock_subprocess_run)
-        assert "width:200.0" in script
+        assert "width:200" in script
         assert "set opacity of newShape to 100" in script
 
     async def test_clear_slide_preserves_placeholders(self, content_tools, mock_subprocess_run):
@@ -236,7 +238,7 @@ class TestContentTools:
         assert "delete image" not in script
 
     async def test_centered_title_computes_x_server_side(self, content_tools, mock_subprocess_run):
-        mock_subprocess_run.return_value.stdout = "1|484,400|951,119"
+        mock_subprocess_run.return_value.stdout = "T|1|484,400|951,119"
         result = await content_tools.add_title(1, "Big", font_size=96, centered=True)
         script = last_script(mock_subprocess_run)
         assert "((width of targetDoc) - (width of newItem)) div 2" in script
@@ -245,7 +247,7 @@ class TestContentTools:
         assert "centered" in result[0].text
 
     async def test_uncentered_title_has_no_centering_math(self, content_tools, mock_subprocess_run):
-        mock_subprocess_run.return_value.stdout = "1|100,200|300,40"
+        mock_subprocess_run.return_value.stdout = "T|1|100,200|300,40"
         await content_tools.add_subtitle(1, "s")
         assert "div 2" not in last_script(mock_subprocess_run)
 
@@ -255,10 +257,10 @@ class TestContentTools:
         # `count of text items` over-reports (hidden placeholders count) and
         # the new item is not last, so the returned index must come from an
         # identity search - the same space get_slide_content/move_element use.
-        mock_subprocess_run.return_value.stdout = "2|100,200|300,40"
+        mock_subprocess_run.return_value.stdout = "T|2|100,200|300,40"
         result = await content_tools.add_title(1, "T")
         script = last_script(mock_subprocess_run)
-        assert "if text item i is newItem then" in script
+        assert "if text item i of targetSlide is newItem then" in script
         assert "return count of text items" not in script
         assert "text item index 2" in result[0].text
 
@@ -267,19 +269,19 @@ class TestContentTools:
         # around their vertical CENTER when the size changes, so a position
         # set before `set size of object text` drifts by (h_before-h_after)/2.
         # Position must be applied after all font/size/text mutations.
-        mock_subprocess_run.return_value.stdout = "1|100,300|300,40"
+        mock_subprocess_run.return_value.stdout = "T|1|100,300|300,40"
         await content_tools.add_text_box(1, "T", x=100, y=300, font_size=24)
         script = last_script(mock_subprocess_run)
         assert script.index("set position of newItem") > script.index("set size of object text")
         assert script.index("set position of newItem") > script.index(
-            "set object text of newItem to theText"
+            "set object text of newItem to (item 2 of argv)"
         )
 
     async def test_add_reports_final_geometry(self, content_tools, mock_subprocess_run):
         # Every add_* answer carries the element's settled position/size read
         # back in the SAME osascript call - callers must never need a
         # follow-up get_slide_content to learn where the element landed.
-        mock_subprocess_run.return_value.stdout = "3|120,290|430,250"
+        mock_subprocess_run.return_value.stdout = "T|3|120,290|430,250"
         result = await content_tools.add_bullet_list(1, ["a", "b"], x=120, y=290)
         script = last_script(mock_subprocess_run)
         assert "position of newItem" in script
@@ -291,11 +293,11 @@ class TestContentTools:
     ):
         img = tmp_path / "i.png"
         img.write_bytes(b"png")
-        mock_subprocess_run.return_value.stdout = "2|800,100|64,64"
+        mock_subprocess_run.return_value.stdout = "I|2|800,100|64,64"
         result = await content_tools.add_image(1, str(img), x=800, y=100)
         assert "image index 2" in result[0].text
         assert "at (800, 100), size 64x64" in result[0].text
-        mock_subprocess_run.return_value.stdout = "1|50,60|400,300"
+        mock_subprocess_run.return_value.stdout = "S|1|50,60|400,300"
         result = await content_tools.add_shape(1, x=50, y=60, width=400, height=300)
         assert "shape index 1" in result[0].text
         assert "at (50, 60), size 400x300" in result[0].text
@@ -327,7 +329,10 @@ class TestContentTools:
     async def test_build_in_ui_timeout_is_extended(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "Window"
         await content_tools.add_build_in(2, "text", 3)
-        assert mock_subprocess_run.call_args.kwargs["timeout"] == 60.0
+        # the last call is the best-effort Format-pane restore (10s); the UI
+        # scripting call itself gets the extended 60s timeout
+        timeouts = [c.kwargs.get("timeout") for c in mock_subprocess_run.call_args_list]
+        assert 60.0 in timeouts
 
     async def test_builds_batch_rejects_garbage_indices(self, content_tools, mock_subprocess_run):
         result = await content_tools.add_builds_to_slide(1, "1,-2")
@@ -345,8 +350,35 @@ class TestExportTools:
     ):
         await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
         script = last_script(mock_subprocess_run)
-        assert "set savedStates to skipped of every slide" in script
-        assert "item i of savedStates" in script
+        # The restore is its own call, and it is the LAST one.
+        assert "set skipped of slide i of targetDoc" in script
+
+    async def test_screenshot_restores_skip_state_even_when_the_export_fails(
+        self, export_tools, mock_subprocess_run, tmp_path
+    ):
+        """A timeout mid-export must not leave every slide skipped.
+
+        Skipping all slides and restoring them in ONE script means a killed
+        script never reaches the restore, and the user's deck is left playing
+        and exporting as empty with no explanation.
+        """
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            script = kwargs.get("input", "")
+            calls.append(script)
+            if "skipped of every slide to true" in script:
+                raise subprocess.TimeoutExpired(cmd, 120)
+            if "repeat with s in slides" in script:
+                return subprocess.CompletedProcess(cmd, 0, "0,1,0", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        mock_subprocess_run.side_effect = fake_run
+        result = await export_tools.screenshot_slide(1, str(tmp_path / "out.png"))
+        assert "Failed" in result[0].text  # the export failure still surfaces
+        restores = [c for c in calls if "set skipped of slide i of targetDoc" in c]
+        assert restores, "the skipped states were never put back"
+        assert "0,1,0" in mock_subprocess_run.call_args.args[0]
 
     async def test_screenshot_moves_generated_file(
         self, export_tools, mock_subprocess_run, tmp_path
@@ -355,11 +387,11 @@ class TestExportTools:
 
         def fake_run(cmd, **kwargs):
             # Simulate Keynote writing into the temp export folder (argv item 2)
-            folder = cmd[3]
             (tmp_path / "check").mkdir(exist_ok=True)
             import pathlib
 
-            pathlib.Path(folder, "slide.001.png").write_bytes(b"x" * 10)
+            if len(cmd) > 3:  # the export call carries the temp folder as argv 2
+                pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
@@ -380,7 +412,8 @@ class TestExportTools:
             script = kwargs.get("input", "")
             if "emptyCount" in script:
                 return subprocess.CompletedProcess(cmd, 0, "2", "")
-            pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
+            if len(cmd) > 3:
+                pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
@@ -399,7 +432,8 @@ class TestExportTools:
             script = kwargs.get("input", "")
             if "emptyCount" in script:
                 return subprocess.CompletedProcess(cmd, 0, "0", "")
-            pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
+            if len(cmd) > 3:
+                pathlib.Path(cmd[3], "slide.001.png").write_bytes(b"x" * 10)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         mock_subprocess_run.side_effect = fake_run
