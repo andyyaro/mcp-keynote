@@ -1,5 +1,9 @@
 """Presentation management tools."""
 
+import os
+import re
+import time
+
 from mcp.types import TextContent, Tool
 
 from ..utils import AppleScriptRunner, validate_file_path
@@ -8,6 +12,55 @@ _DOC_ARG = {
     "type": "string",
     "description": "Document name (optional, defaults to front document)",
 }
+
+# open_presentation polls for the opened document to appear; the first poll
+# usually succeeds within half a second.
+_OPEN_POLL_DEADLINE = 15.0
+_OPEN_POLL_INTERVAL = 0.5
+
+# Finds the open document whose file matches argv item 1 (a POSIX path).
+_FIND_DOC_BY_PATH = """
+on run argv
+    set targetPath to item 1 of argv
+    tell application "Keynote"
+        repeat with d in documents
+            try
+                set f to file of d
+                if f is not missing value then
+                    if POSIX path of f is targetPath then return name of d
+                end if
+            end try
+        end repeat
+        return ""
+    end tell
+end run
+"""
+
+
+def _default_save_path(title: str) -> str:
+    """Resolve the default .key path for a new presentation.
+
+    Directory: $KEYNOTE_MCP_SAVE_DIR if set, else ~/Documents. The filename is
+    the title with path-hostile characters replaced, uniquified with -2, -3, …
+    so an existing file is never overwritten.
+    """
+    base_dir = os.environ.get("KEYNOTE_MCP_SAVE_DIR", "") or os.path.expanduser("~/Documents")
+    safe = re.sub(r"[/:\x00]", "-", title).strip() or "Untitled"
+    candidate = os.path.join(base_dir, f"{safe}.key")
+    counter = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(base_dir, f"{safe}-{counter}.key")
+        counter += 1
+    return candidate
+
+
+def _normalize_key_path(path: str) -> str:
+    """Expand, absolutize, and ensure a .key extension on a save path."""
+    path = os.path.abspath(os.path.expanduser(path.strip()))
+    if not path.endswith(".key"):
+        path += ".key"
+    return path
+
 
 # AppleScript fragment: resolve argv item 1 into targetDoc. Used inside a
 # `tell application "Keynote"` block; docName arrives via argv, never
@@ -32,8 +85,13 @@ class PresentationTools:
             Tool(
                 name="create_presentation",
                 description=(
-                    "Create a new Keynote presentation. If save_path is given the document "
-                    "is saved there; otherwise it stays unsaved (name 'Untitled')."
+                    "Create a new Keynote presentation and save it immediately. The "
+                    "document is always saved: to save_path if given, otherwise to "
+                    "<title>.key in ~/Documents (override the directory with the "
+                    "KEYNOTE_MCP_SAVE_DIR environment variable). The response includes "
+                    "the resolved path. Documents are never left unsaved - the first "
+                    "save of an unsaved document opens a modal sheet that blocks all "
+                    "automation."
                 ),
                 inputSchema={
                     "type": "object",
@@ -52,8 +110,10 @@ class PresentationTools:
                         "save_path": {
                             "type": "string",
                             "description": (
-                                "Absolute path to save the new .key file (optional; if "
-                                "omitted the document is left unsaved)"
+                                "Path to save the new .key file (optional; defaults to "
+                                "<title>.key in ~/Documents or $KEYNOTE_MCP_SAVE_DIR, "
+                                "uniquified if the file exists; '.key' is appended if "
+                                "missing)"
                             ),
                         },
                     },
@@ -62,7 +122,11 @@ class PresentationTools:
             ),
             Tool(
                 name="open_presentation",
-                description="Open an existing Keynote presentation",
+                description=(
+                    "Open an existing Keynote presentation. Uses LaunchServices (like a "
+                    "double-click), so files outside Keynote's sandbox container - "
+                    "~/Downloads, ~/Desktop, anywhere - open safely."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -76,10 +140,25 @@ class PresentationTools:
             ),
             Tool(
                 name="save_presentation",
-                description="Save a presentation",
+                description=(
+                    "Save a presentation in place. For a document that has never been "
+                    "saved, pass save_path - without it the call is refused, because "
+                    "plain save on an unsaved document opens a modal sheet that blocks "
+                    "automation and then lands in iCloud as Untitled.key."
+                ),
                 inputSchema={
                     "type": "object",
-                    "properties": {"doc_name": _DOC_ARG},
+                    "properties": {
+                        "doc_name": _DOC_ARG,
+                        "save_path": {
+                            "type": "string",
+                            "description": (
+                                "Where to save a never-saved document (optional; '.key' "
+                                "appended if missing). Not valid for re-pathing an "
+                                "already-saved document."
+                            ),
+                        },
+                    },
                 },
             ),
             Tool(
@@ -142,8 +221,14 @@ class PresentationTools:
     async def create_presentation(
         self, title: str, theme: str = "", save_path: str = ""
     ) -> list[TextContent]:
-        """Create a new presentation."""
+        """Create a new presentation, always saved to a concrete path."""
         try:
+            if save_path and save_path.strip():
+                resolved_path = _normalize_key_path(save_path)
+            else:
+                resolved_path = _normalize_key_path(_default_save_path(title))
+            os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
+
             if not self.runner.check_keynote_running():
                 self.runner.launch_keynote()
 
@@ -167,66 +252,137 @@ class PresentationTools:
                                 set themeNote to "theme '" & themeName & "' not found, used default"
                             end try
                         end if
-                        if savePath is not "" then
-                            save newDoc in POSIX file savePath
-                        end if
+                        save newDoc in POSIX file savePath
                         return (name of newDoc) & "|" & themeNote
                     end tell
                 end run
                 """,
                 theme,
-                save_path,
+                resolved_path,
             )
             doc_name, _, theme_note = result.partition("|")
-            saved_note = f", saved to {save_path}" if save_path else ", unsaved"
             return [
                 TextContent(
                     type="text",
-                    text=f"Created presentation '{doc_name}' ({theme_note}{saved_note})",
+                    text=(
+                        f"Created presentation '{doc_name}' ({theme_note}), "
+                        f"saved to {resolved_path}"
+                    ),
                 )
             ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to create presentation: {e}")]
 
     async def open_presentation(self, file_path: str) -> list[TextContent]:
-        """Open a presentation."""
+        """Open a presentation via LaunchServices, then wait for the document.
+
+        A direct AppleScript ``open`` of a file outside Keynote's sandbox
+        container wedges the AppleEvent queue; ``open -a Keynote`` gets a
+        per-file sandbox extension the way a double-click does.
+        """
         try:
             file_path = validate_file_path(file_path)
-            if not self.runner.check_keynote_running():
-                self.runner.launch_keynote()
+            file_path = os.path.realpath(os.path.expanduser(file_path))
+            if not os.path.isfile(file_path):
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Failed to open presentation: file does not exist: {file_path}",
+                    )
+                ]
 
-            result = self.runner.run(
-                """
-                on run argv
-                    tell application "Keynote"
-                        open (POSIX file (item 1 of argv))
-                        return name of front document
-                    end tell
-                end run
-                """,
-                file_path,
-            )
-            return [TextContent(type="text", text=f"Opened presentation: {result}")]
+            self.runner.open_in_keynote(file_path)
+
+            deadline = time.monotonic() + _OPEN_POLL_DEADLINE
+            while True:
+                try:
+                    name = self.runner.run(_FIND_DOC_BY_PATH, file_path, timeout=10.0)
+                except Exception:
+                    name = ""
+                if name:
+                    return [TextContent(type="text", text=f"Opened presentation: {name}")]
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_OPEN_POLL_INTERVAL)
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Failed to open presentation: Keynote did not report a document "
+                        f"for {file_path} within {_OPEN_POLL_DEADLINE:.0f}s. The file may "
+                        "not be a Keynote document, or Keynote may be showing a dialog "
+                        "(e.g. a version-conversion or missing-font alert)."
+                    ),
+                )
+            ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to open presentation: {e}")]
 
-    async def save_presentation(self, doc_name: str = "") -> list[TextContent]:
-        """Save a presentation."""
+    async def save_presentation(self, doc_name: str = "", save_path: str = "") -> list[TextContent]:
+        """Save a presentation, guarding the unsaved-document modal-sheet trap."""
         try:
+            if save_path and save_path.strip():
+                save_path = _normalize_key_path(save_path)
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            else:
+                save_path = ""
             result = self.runner.run(
                 f"""
                 on run argv
                     set docName to item 1 of argv
+                    set savePath to item 2 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
-                        save targetDoc
-                        return name of targetDoc
+                        set docFile to file of targetDoc
+                        if docFile is missing value and savePath is "" then
+                            return "UNSAVED_NO_PATH|" & (name of targetDoc)
+                        end if
+                        if docFile is not missing value and savePath is not "" then
+                            return "ALREADY_SAVED|" & (POSIX path of docFile)
+                        end if
+                        if docFile is missing value then
+                            save targetDoc in POSIX file savePath
+                        else
+                            save targetDoc
+                        end if
+                        return "SAVED|" & (name of targetDoc) & "|" & ¬
+                            (POSIX path of (file of targetDoc))
                     end tell
                 end run
                 """,
                 doc_name,
+                save_path,
             )
-            return [TextContent(type="text", text=f"Saved presentation: {result}")]
+            if result.startswith("UNSAVED_NO_PATH|"):
+                name = result.partition("|")[2]
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Failed to save presentation: document '{name}' has never "
+                            "been saved. Plain save would open a modal save sheet that "
+                            "blocks all automation (and Keynote would then save it to "
+                            "iCloud as Untitled.key). Call save_presentation again with "
+                            "save_path to give it a location."
+                        ),
+                    )
+                ]
+            if result.startswith("ALREADY_SAVED|"):
+                current = result.partition("|")[2]
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Failed to save presentation: document is already saved at "
+                            f"{current}. Saving to a different path via AppleScript is "
+                            "not supported (Keynote's save-as hangs on paths outside its "
+                            "sandbox container) - call save_presentation without "
+                            "save_path to save in place."
+                        ),
+                    )
+                ]
+            _, name, path = result.split("|", 2)
+            return [TextContent(type="text", text=f"Saved presentation: {name} ({path})")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to save presentation: {e}")]
 

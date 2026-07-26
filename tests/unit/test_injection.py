@@ -6,6 +6,8 @@ assert (a) the string is passed as an argv element of the osascript command,
 and (b) the generated AppleScript source does not contain it.
 """
 
+import os
+
 import pytest
 
 ADVERSARIAL = [
@@ -73,9 +75,22 @@ async def test_create_presentation_theme_via_argv(presentation_tools, mock_subpr
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
-async def test_open_presentation_path_via_argv(presentation_tools, mock_subprocess_run, payload):
-    await presentation_tools.open_presentation(payload)
-    _assert_string_safe(mock_subprocess_run, payload)
+async def test_open_presentation_path_via_argv(
+    presentation_tools, mock_subprocess_run, payload, tmp_path
+):
+    # open_presentation refuses paths that do not exist, so give the payload a
+    # real file ("/" cannot appear in a filename; everything else survives).
+    target = tmp_path / (payload.replace("/", "_") + ".key")
+    target.write_bytes(b"stub")
+    mock_subprocess_run.return_value.stdout = "deck.key"
+    await presentation_tools.open_presentation(str(target))
+    expected = os.path.realpath(str(target))
+    calls = _calls(mock_subprocess_run)
+    polls = [(cmd, s) for cmd, s in calls if cmd[0] == "/usr/bin/osascript" and len(cmd) > 2]
+    assert any(expected in cmd[2:] for cmd, _ in polls), "path was not passed via argv"
+    assert all(payload not in script for _, script in calls), "payload spliced into source"
+    for _, script in polls:
+        assert "on run argv" in script
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)

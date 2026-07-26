@@ -12,6 +12,14 @@ from keynote_mcp.tools.slide import SlideTools
 from keynote_mcp.utils.applescript_runner import AppleScriptRunner
 
 
+@pytest.fixture(autouse=True)
+def _reset_wedge_flag():
+    """The wedge flag is class-level state; never leak it between tests."""
+    AppleScriptRunner._queue_wedged = False
+    yield
+    AppleScriptRunner._queue_wedged = False
+
+
 @pytest.fixture
 def mock_subprocess_run():
     """Patch subprocess.run to prevent real osascript calls."""

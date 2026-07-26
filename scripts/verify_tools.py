@@ -12,12 +12,18 @@ Usage:  uv run python scripts/verify_tools.py
 
 import asyncio
 import base64
+import os
+import shutil
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SCRATCH = REPO / ".scratch"
 sys.path.insert(0, str(REPO / "src"))
+
+# Default-save location for create_presentation without save_path: point it at
+# .scratch so the harness never writes into the real ~/Documents.
+os.environ["KEYNOTE_MCP_SAVE_DIR"] = str(SCRATCH)
 
 from keynote_mcp.tools.content import ContentTools  # noqa: E402
 from keynote_mcp.tools.export import ExportTools  # noqa: E402
@@ -63,6 +69,8 @@ async def main():
     test_key = SCRATCH / "phase3-test.key"
     if test_key.exists():
         test_key.unlink()
+    for leftover in ("phase8-default.key", "phase8-rescued.key"):
+        (SCRATCH / leftover).unlink(missing_ok=True)
     png_path = SCRATCH / "test-image.png"
     png_path.write_bytes(PNG_BYTES)
 
@@ -196,16 +204,61 @@ async def main():
         )
     check("save_presentation", await pres.save_presentation(), "Saved")
     check("close_presentation(no save)", await pres.close_presentation(should_save=False))
-    check("open_presentation", await pres.open_presentation(str(test_key)), "Opened")
+    # .scratch lives under ~/Downloads, which is OUTSIDE Keynote's sandbox
+    # container - this is the path that wedged the AppleEvent queue before the
+    # LaunchServices fix.
+    check(
+        "open_presentation(outside sandbox, ~/Downloads)",
+        await pres.open_presentation(str(test_key)),
+        "Opened",
+    )
+    check("queue alive after open", await slides.get_slide_count(), "Slide count")
     check("close again", await pres.close_presentation(should_save=False))
 
-    # unsaved create/close cycle
-    check(
-        "create_presentation(unsaved)",
-        await pres.create_presentation("throwaway"),
-        "Created",
+    # open from ~/Desktop, the other outside-sandbox location the field test hit
+    desktop_key = Path.home() / "Desktop" / "keynote-mcp-verify-tmp.key"
+    try:
+        shutil.copyfile(test_key, desktop_key)
+        check(
+            "open_presentation(outside sandbox, ~/Desktop)",
+            await pres.open_presentation(str(desktop_key)),
+            "Opened",
+        )
+        check("close desktop copy", await pres.close_presentation(should_save=False))
+    finally:
+        desktop_key.unlink(missing_ok=True)
+
+    # --- untitled-document save path (the Phase 3 harness never took it) ---
+    default_saved = check(
+        "create_presentation(no save_path -> default location)",
+        await pres.create_presentation("phase8-default"),
+        "saved to",
     )
-    check("close unsaved", await pres.close_presentation(should_save=False))
+    default_path = SCRATCH / "phase8-default.key"
+    record(
+        "default save path is under KEYNOTE_MCP_SAVE_DIR and exists",
+        str(SCRATCH) in default_saved and default_path.exists(),
+        default_saved[:160],
+    )
+    check("close default-saved doc", await pres.close_presentation(should_save=False))
+
+    # a genuinely unsaved document (made behind the server's back): plain save
+    # must be REFUSED fast, not open the modal sheet / land in iCloud
+    pres.runner.run('tell application "Keynote" to make new document')
+    unsaved_msg = text_of(await pres.save_presentation())
+    record(
+        "save_presentation(unsaved, no path) refused with guidance",
+        unsaved_msg.startswith("Failed") and "save_path" in unsaved_msg,
+        unsaved_msg[:160],
+    )
+    rescue_path = SCRATCH / "phase8-rescued.key"
+    check(
+        "save_presentation(unsaved, save_path)",
+        await pres.save_presentation(save_path=str(rescue_path)),
+        "Saved presentation",
+    )
+    record("rescued file exists", rescue_path.exists(), str(rescue_path))
+    check("close rescued doc", await pres.close_presentation(should_save=False))
 
     # error paths against reality
     bad = text_of(await slides.delete_slide(99))

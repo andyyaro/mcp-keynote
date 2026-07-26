@@ -115,7 +115,9 @@ class KeynoteMCPServer:
         elif name == "open_presentation":
             return await self.presentation_tools.open_presentation(file_path=arguments["file_path"])
         elif name == "save_presentation":
-            return await self.presentation_tools.save_presentation(doc_name=doc_name)
+            return await self.presentation_tools.save_presentation(
+                doc_name=doc_name, save_path=arguments.get("save_path", "")
+            )
         elif name == "close_presentation":
             return await self.presentation_tools.close_presentation(
                 doc_name=doc_name,

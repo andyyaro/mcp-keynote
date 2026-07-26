@@ -33,12 +33,13 @@ class TestPresentationTools:
         assert "document theme:theme themeName" in script
         assert "theme: Slate" in result[0].text
 
-    async def test_create_without_save_reports_unsaved(
-        self, presentation_tools, mock_subprocess_run
+    async def test_create_without_save_path_saves_to_default(
+        self, presentation_tools, mock_subprocess_run, monkeypatch, tmp_path
     ):
-        mock_subprocess_run.return_value.stdout = "Untitled|default theme"
+        monkeypatch.setenv("KEYNOTE_MCP_SAVE_DIR", str(tmp_path))
+        mock_subprocess_run.return_value.stdout = "t.key|default theme"
         result = await presentation_tools.create_presentation("t")
-        assert "unsaved" in result[0].text
+        assert f"saved to {tmp_path}/t.key" in result[0].text
 
     async def test_get_slide_size_parses_and_derives_layout(
         self, presentation_tools, mock_subprocess_run

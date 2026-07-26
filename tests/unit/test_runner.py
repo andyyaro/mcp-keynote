@@ -32,7 +32,14 @@ def test_env_timeout_garbage_falls_back(mock_subprocess_run, monkeypatch):
 
 
 def test_timeout_maps_to_actionable_error(runner, mock_subprocess_run):
-    mock_subprocess_run.side_effect = subprocess.TimeoutExpired(["osascript"], 30)
+    # pgrep says Keynote is not running, so the wedge probe passes and the
+    # timeout maps to the modal-dialog hint (wedge paths: test_sandbox_trap).
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "/usr/bin/pgrep":
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+        raise subprocess.TimeoutExpired(cmd, 30)
+
+    mock_subprocess_run.side_effect = fake_run
     with pytest.raises(AppleScriptError) as exc:
         runner.run("return 1")
     assert "modal dialog" in str(exc.value)
