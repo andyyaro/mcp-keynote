@@ -99,6 +99,14 @@ For multi-slide decks the model should reach for `build_deck` (one call for
 the whole deck) rather than element-by-element tools; `describe_deck` reads
 any open deck back as JSON for diffing or round-tripping.
 
+Measured on a 20-slide deck: **81 primitive calls (21.8 s) versus 1 call
+(11.9 s)**. The point is the call count, not the clock — both paths drive the
+same Keynote GUI one AppleScript event at a time, so the wall-clock gain is
+modest. What one call buys you is 81 fewer round trips, 81 fewer places for a
+returned index or a coordinate to go wrong, whole-spec validation before
+anything is created, and a deck described as content rather than as
+coordinates.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

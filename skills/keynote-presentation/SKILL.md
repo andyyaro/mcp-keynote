@@ -20,7 +20,10 @@ For any deck of more than ~2 slides, call **`build_deck`** with one JSON
 spec (or its markdown dialect) instead of issuing per-element calls: the
 whole spec is validated before anything is created, each element failure is
 reported individually, and the reply carries every element's settled
-geometry. Pass `style` (`plain`/`boardroom`/`midnight`/`editorial`, or a
+geometry. A 20-slide deck measured 81 primitive calls against 1 build_deck
+call — the reason to prefer it is those 80 round trips and the failure points
+that come with them, not raw speed (wall clock only went 21.8 s → 11.9 s;
+Keynote serializes either way). Pass `style` (`plain`/`boardroom`/`midnight`/`editorial`, or a
 `.keynote-mcp.toml` path) so fonts/colors/margins come from one place.
 Two-column layouts: give elements `"column": "left"` / `"right"`.
 Element order in the spec is z-order (put `panel` elements before the text

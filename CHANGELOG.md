@@ -24,7 +24,12 @@ tools; 155 live verification checks, 0 failed.
   reply; auto-flow layout inside style margins with `column: left/right`
   two-column support; `on_exists: replace|error|unique` re-run semantics.
   Benchmark (20-slide deck, live): 81 primitive tool calls / 21.8 s → 1 call
-  / 11.9 s / 6 osascript sessions.
+  / 11.9 s / 6 osascript sessions. Read that as **81 fewer round trips and 81
+  fewer places to fail**, not as a speed multiple: both paths serialize
+  through the same Keynote GUI, so the wall-clock difference is modest
+  (21.8 s → 11.9 s) and would shrink further on a slower machine. The reasons
+  to prefer it are the call count, the whole-spec validation before anything
+  is created, and authoring at the level of content instead of coordinates.
 - **`describe_deck`**: reads an open presentation back into the same spec
   format (layouts, transitions, skipped, notes, placeholders, elements with
   settled geometry, table cell values with numbers and formulas preserved) —
