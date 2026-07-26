@@ -4,12 +4,13 @@ Unsplash image tools
 
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
-import aiohttp
+from typing import List, Optional
+
 import aiofiles
-from pathlib import Path
-from mcp.types import Tool, TextContent
-from ..utils import AppleScriptRunner, validate_slide_number, ParameterError
+import aiohttp
+from mcp.types import TextContent, Tool
+
+from ..utils import AppleScriptRunner, ParameterError, validate_slide_number
 
 
 class UnsplashTools:
@@ -17,37 +18,20 @@ class UnsplashTools:
     
     def __init__(self):
         self.runner = AppleScriptRunner()
-        
-        # Try to load .env file
-        self._load_env_if_needed()
-        
+
         self.api_key = os.getenv('UNSPLASH_KEY')
         if not self.api_key:
-            raise ParameterError("UNSPLASH_KEY environment variable not set. Check .env file or system environment variables")
-        
+            raise ParameterError(
+                "UNSPLASH_KEY environment variable not set. Configure it in your "
+                "MCP client's server config to enable Unsplash tools."
+            )
+
         self.base_url = "https://api.unsplash.com"
         self.headers = {
             "Authorization": f"Client-ID {self.api_key}",
             "Accept-Version": "v1"
         }
-    
-    def _load_env_if_needed(self):
-        """Load .env file if needed"""
-        try:
-            from dotenv import load_dotenv
-            
-            # Find .env file in project root
-            current_dir = Path(__file__).parent
-            while current_dir != current_dir.parent:
-                env_path = current_dir / '.env'
-                if env_path.exists():
-                    load_dotenv(env_path)
-                    break
-                current_dir = current_dir.parent
-        except ImportError:
-            # python-dotenv not installed, ignore
-            pass
-    
+
     def get_tools(self) -> List[Tool]:
         """Get all Unsplash image tools"""
         return [
@@ -420,62 +404,37 @@ class UnsplashTools:
                 text=f"❌ Failed to get random image: {str(e)}"
             )]
     
-    async def _add_image_to_slide(self, slide_number: int, image_path: str, x: Optional[int] = None, y: Optional[int] = None, width: Optional[int] = None, height: Optional[int] = None) -> None:
+    async def _add_image_to_slide(self, slide_number: int, image_path: str, x: Optional[float] = None, y: Optional[float] = None, width: Optional[float] = None, height: Optional[float] = None) -> None:
         """Add image to specified slide"""
-        try:
-            # Convert to absolute path
-            abs_path = os.path.abspath(image_path)
-            
-            # Build position parameters
-            position_params = ""
-            if x is not None and y is not None:
-                position_params = f", position:{{{x}, {y}}}"
-            
-            # Use corrected AppleScript syntax (based on working standalone script)
-            script = f'''
-            tell application "Keynote"
-                activate
-                set targetDoc to front document
-                
-                tell targetDoc
-                    tell slide {slide_number}
-                        -- Use corrected syntax
-                        set imageFile to POSIX file "{abs_path}" as alias
-                        
-                        -- Method 1: Try standard image object
-                        try
-                            set newImage to make new image with properties {{file:imageFile{position_params}}}
-                            return "image_success"
-                        on error
-                            -- Method 2: Try movie object
-                            try
-                                set newMovie to make new movie with properties {{file:imageFile{position_params}}}
-                                return "movie_success"
-                            on error
-                                -- Method 3: Use clipboard method
-                                try
-                                    tell application "Finder"
-                                        select imageFile
-                                        copy selection
-                                    end tell
-                                    
-                                    delay 0.5
-                                    paste
-                                    
-                                    return "clipboard_success"
-                                on error
-                                    error "All image insertion methods failed"
-                                end try
-                            end try
-                        end try
+        abs_path = os.path.abspath(image_path)
+
+        set_position = (
+            f"set position of newImage to {{{float(x)}, {float(y)}}}"
+            if (x is not None and y is not None)
+            else "-- default position"
+        )
+        set_width = (
+            f"set width of newImage to {float(width)}" if width is not None else "-- default width"
+        )
+        set_height = (
+            f"set height of newImage to {float(height)}"
+            if height is not None
+            else "-- default height"
+        )
+
+        self.runner.run(
+            f"""
+            on run argv
+                set imageFile to POSIX file (item 1 of argv) as alias
+                tell application "Keynote"
+                    tell slide {slide_number} of front document
+                        set newImage to make new image with properties {{file:imageFile}}
+                        {set_position}
+                        {set_width}
+                        {set_height}
                     end tell
                 end tell
-            end tell
-            '''
-            
-            # Execute AppleScript
-            result = self.runner.run_inline_script(script)
-            
-        except Exception as e:
-            error_msg = f"Failed to add image to slide: {e}"
-            raise Exception(error_msg) 
+            end run
+            """,
+            abs_path,
+        ) 
