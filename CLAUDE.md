@@ -2,106 +2,118 @@
 
 ## What this is
 
-An MCP (Model Context Protocol) server that controls Apple Keynote via AppleScript. It exposes tools for creating presentations, managing slides, adding content (text, images, lists, code blocks), exporting, and fetching images from Unsplash.
+An MCP (Model Context Protocol) server that controls Apple Keynote via
+AppleScript. It exposes 45 tools for creating presentations, managing slides,
+adding content (text, images, lists, code blocks, theme placeholders),
+build animations, exporting, and fetching images from Unsplash (opt-in).
 
 ## How to run
 
 ```bash
-cd /Users/alekseilitvinau/src/keynote-mcp
-.venv/bin/python -m keynote_mcp
+uv --directory /path/to/mcp-keynote run keynote-mcp
 ```
 
 Registered in Claude Code as:
-```
-keynote-mcp: bash -c cd /Users/alekseilitvinau/src/keynote-mcp && .venv/bin/python -m keynote_mcp
+```bash
+claude mcp add keynote-mcp -- uv --directory ~/Downloads/mcp-keynote run keynote-mcp
 ```
 
-**After any code changes, the MCP server must be restarted** (exit/re-enter the Claude Code session or use `/mcp` to restart).
+**After any code change, restart the MCP server** (exit/re-enter the Claude
+Code session or use `/mcp`) — the running server keeps the old code.
 
 ## Project structure
 
 ```
-src/
-  keynote_mcp/             — Installable Python package
-    __init__.py            — Package version
-    __main__.py            — python -m keynote_mcp entry point
-    server.py              — Main MCP server: registers handlers, routes tool calls
-    tools/
-      presentation.py      — create/open/save/close/list presentations, themes, resolution
-      slide.py             — add/delete/duplicate/move slides, layouts
-      content.py           — add text boxes (font/color)/titles/subtitles/lists/code (color)/
-                             quotes/images/shapes (opacity), edit/delete/move/resize elements,
-                             set_element_opacity, clear_slide, speaker notes, get_slide_content,
-                             build-in animations (add_build_in/remove_build_in via UI scripting)
-      export.py            — screenshot slides, export PDF
-      unsplash.py          — search/add Unsplash images (requires UNSPLASH_KEY env var)
-    utils/
-      applescript_runner.py — Executes AppleScript via osascript subprocess (30s timeout)
-      error_handler.py     — Exception hierarchy + validation functions
-    applescript/
-      keynote_base.applescript   — Base helpers (get doc reference)
-      presentation.applescript   — Presentation operations
-      slide.applescript          — Slide operations
-      content.applescript        — Content manipulation (text, images, lists)
-      export.applescript         — Export/screenshot operations
-tests/                     — Test scaffolding (unit/ and integration/)
+src/keynote_mcp/
+  __init__.py            — Package version
+  __main__.py            — python -m keynote_mcp entry point
+  server.py              — MCP stdio server: logging config, handler
+                           registration, one _dispatch for all tool calls
+  tools/
+    presentation.py      — create/open/save/close/list, themes, slide size
+    slide.py             — add/delete/duplicate/move/select slides, layouts
+    content.py           — text boxes/titles/lists/code/quotes (font, color,
+                           auto-sized boxes for large fonts), theme
+                           placeholders (set_slide_content), images, shapes,
+                           edit/move/resize/delete elements, speaker notes,
+                           clear_slide, build animations (UI scripting)
+    export.py            — screenshot_slide, export_pdf
+    unsplash.py          — Unsplash REST tools (need UNSPLASH_KEY)
+  utils/
+    applescript_runner.py — runs '/usr/bin/osascript -' with user strings as
+                            argv; bounded timeouts
+    error_handler.py      — exception hierarchy, validators, stderr→actionable
+                            error mapping (-1743/-1728/-1719/-600/-1712)
+tests/
+  unit/                  — no GUI, no Keynote; runs in CI (95% coverage)
+  integration/           — @pytest.mark.keynote; drives a real Keynote
+docs/                    — ENVIRONMENT.md (verified host facts),
+                           TOOL_MATRIX.md (per-tool verification),
+                           MCP_V2_MIGRATION.md, MODERNIZATION_REPORT.md
+skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skills/)
 ```
 
-## Architecture
+## Architecture and key invariants
 
-1. **server.py** — Single `KeynoteMCPServer` class. Uses `mcp` library's `Server` with stdio transport. All tool calls go through one big if/elif dispatch in `call_tool()`.
-2. **Tool classes** — Each `*Tools` class has `get_tools()` (returns `List[Tool]` with schemas) and async methods per tool. They use `AppleScriptRunner` to execute scripts.
-3. **AppleScriptRunner** — Runs AppleScript via `osascript -e` subprocess. Can run inline scripts or load `.scpt` files. Scripts are in `src/keynote_mcp/applescript/`.
-4. **Error hierarchy** — `KeynoteError` base → `AppleScriptError`, `FileOperationError`, `ParameterError`. Validation helpers: `validate_slide_number`, `validate_coordinates`, `validate_file_path`, `validate_element_type`, `validate_dimensions`.
+1. **Injection safety is the core invariant.** User strings are passed to
+   `osascript` as argv consumed by `on run argv` — NEVER f-string user text
+   into AppleScript source. Numbers may be interpolated only after strict
+   validation (`validate_slide_number`, `validate_index`, `validate_number`,
+   `parse_color`). `tests/unit/test_injection.py` enforces this; keep it
+   passing for any new tool.
+2. **stdout carries framed JSON-RPC only.** No `print()` anywhere in `src/`
+   (a unit test greps for it). Logging goes to stderr; level via
+   `KEYNOTE_MCP_LOG_LEVEL`.
+3. **Every osascript call has a bounded timeout** (default 30 s,
+   `KEYNOTE_MCP_TIMEOUT` override; UI scripting 60 s; exports 120 s) so a
+   modal Keynote dialog can't hang the server.
+4. **Tool handlers never raise.** Each method returns `[TextContent]`, with
+   failures as "Failed to …" text; `server.call_tool` is the last-resort
+   guard. A garbage tool call must leave the server serving (tested).
+5. **Tool schemas** live inline in each `get_tools()`. New tool = schema in
+   `get_tools()` + method + routing case in `server._dispatch()` + a row in
+   `docs/TOOL_MATRIX.md` (verify against `.scratch/keynote.sdef` and a real
+   Keynote first).
 
-## Key patterns
+## Keynote facts learned by verification (don't re-litigate)
 
-- **All tool methods are async** but the actual AppleScript execution is synchronous (subprocess). The async is for MCP protocol compatibility.
-- **Tool schemas** are defined inline in each `get_tools()` method as `inputSchema` dicts. If you add a new tool, add the schema there AND the routing in `server.py:call_tool()`.
-- **AppleScript files** use `.applescript` extension for source but `.scpt` for compiled. The runner looks for `.scpt` files. After editing `.applescript` sources, they need to be compiled (`osacompile`).
-- **doc_name parameter** — Most tools accept an optional `doc_name` to target a specific open presentation. Empty string defaults to the frontmost document.
-- **Coordinate system** — Origin (0,0) is top-left of the slide. Default Keynote slide is 1920x1080 (check with `get_slide_size`).
-- **Content indexing** — `get_slide_content` returns pipe-delimited text with element types, indices, text, position, and size. Use these indices for `edit_text_item`, `delete_element`, `move_element`, `resize_element`.
+- The sdef is the spec: `sdef /Applications/Keynote.app` (or copy
+  `Contents/Resources/Keynote.sdef`). `base slide`/`master slide` are
+  official synonyms of `base layout`/`slide layout`.
+- Shape/text fill color is NOT writable via AppleScript (`background fill
+  type` is read-only). The opacity workaround is the only option.
+- Keynote **silently no-ops** deleting a nonexistent slide/element — the
+  delete tools check `exists …` first and raise -1719.
+- Invalid indices surface as error **-1719** ("Invalid index"), not -1728.
+- Window titles don't reliably match document names — UI scripting targets
+  `window 1` of the Keynote process.
+- Fonts > 48pt land in a tiny auto-sized box that truncates text; the server
+  absorbs this (auto-size box before setting size, re-set text after).
+- `move slide X to slide Y` REPLACES slide Y — always `before/after slide Y`.
+- Build animations, build order, "With Previous" timing, and connection-line
+  routing have no AppleScript API; builds use System Events UI scripting
+  (Accessibility permission), the rest is manual-only.
 
 ## Development
 
 ```bash
-# Activate venv
-source .venv/bin/activate
-
-# Install deps
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest tests/ -v
-
-# Lint
-flake8 src/ tests/
-mypy src/
-
-# Format
-black src/ tests/
-isort src/ tests/
+uv sync --dev          # set up venv from uv.lock
+make test              # unit tests (safe anywhere)
+make test-integration  # REAL Keynote: steals window focus, needs TCC grants
+make check             # CI parity: ruff + ruff format + mypy --strict + coverage gate
+make format            # auto-fix + format
 ```
 
-## Environment variables
-
-- `UNSPLASH_KEY` — Required only for Unsplash image tools. Get from https://unsplash.com/developers
+Integration tests are deselected by default (`addopts = -m 'not keynote'`).
+They create scratch documents under `.scratch/` only, close without saving,
+and quit Keynote only if they started it. Warn the user before running them:
+UI-scripting tests take over window focus and keystrokes.
 
 ## Common pitfalls
 
-- Editing `.applescript` files won't take effect until they're compiled to `.scpt` and the MCP server is restarted.
-- Keynote must be running and have accessibility permissions for AppleScript to work.
-- The `osascript` subprocess has a 30-second timeout — complex operations on large presentations may fail.
-- **Build animations (`add_build_in`)** require calling `select_slide` first when changing slides, otherwise the Animate inspector popover won't appear (error -2700).
-- **Not accessible via AppleScript/MCP:** connection line routing between shapes, build order reordering, "With Previous" build timing. These require manual fixes in Keynote's UI.
-- **Always check original property values before modifying** (e.g., `get_slide_content` before changing opacity). Don't assume default values — existing presentations may use different settings than what the skill recommends for new slides.
-
-## Adding a new tool
-
-1. Add the tool schema in the appropriate `*Tools.get_tools()` method
-2. Add the async handler method in the same class
-3. Add the routing case in `server.py:call_tool()`
-4. If it needs AppleScript, add the function in the corresponding `.applescript` file and compile it
-5. Restart the MCP server
+- Code changes don't apply until the MCP server restarts.
+- TCC permissions attach to the app that launched the server (terminal/IDE),
+  not to Python. `./preflight-permissions.sh` walks all grants.
+- `add_build_in` needs Keynote frontmost and an unlocked screen.
+- Check original property values (`get_slide_content`) before modifying
+  existing presentations; don't assume defaults.

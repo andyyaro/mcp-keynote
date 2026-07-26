@@ -1,110 +1,85 @@
 # Keynote MCP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyPI](https://img.shields.io/pypi/v/keynote-mcp.svg)](https://pypi.org/project/keynote-mcp/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Coverage 95%](https://img.shields.io/badge/coverage-95%25-brightgreen.svg)](#development)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
 
-An MCP server that gives AI full control over Apple Keynote through AppleScript automation. Create, edit, and export presentations — all via natural language.
+An MCP server that gives AI full control over Apple Keynote through AppleScript
+automation. Create, edit, and export presentations — all via natural language.
 
-Ships with a **Claude Skill** that encodes layout rules, font workarounds, and design patterns so presentations come out right on the first try.
+This is a modernized fork of
+[ByAxe/keynote-mcp](https://github.com/ByAxe/keynote-mcp) (itself a fork of
+[easychen/keynote-mcp](https://github.com/easychen/keynote-mcp)). Every tool
+in this fork was validated against the Keynote 14.5 scripting dictionary and
+executed against a real Keynote — see [docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md).
+User input reaches AppleScript via `osascript` argv, never string
+interpolation, so titles containing quotes, backslashes, emoji, or CJK can't
+break (or hijack) the script.
 
 ## Quick Start
 
 ### Prerequisites
 
-- macOS 10.14+
-- Keynote application installed
-- Python 3.10+
+- macOS with Keynote installed
+- [uv](https://docs.astral.sh/uv/) (`brew install uv`)
 
-### Option A: Install from PyPI
-
-```bash
-pip install keynote-mcp
-```
-
-Or run directly with `uvx` (no install needed):
-```bash
-uvx keynote-mcp
-```
-
-### Option B: Install from source
+### Register with Claude Code
 
 ```bash
-git clone https://github.com/ByAxe/keynote-mcp.git
-cd keynote-mcp
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+git clone https://github.com/andyyaro/mcp-keynote.git ~/Downloads/mcp-keynote
+claude mcp add keynote-mcp -- uv --directory ~/Downloads/mcp-keynote run keynote-mcp
 ```
 
-### Register the MCP server
-
-**Claude Code (PyPI install / uvx):**
-```bash
-claude mcp add keynote-mcp keynote-mcp
-```
-
-**Claude Code (from source):**
-```bash
-claude mcp add keynote-mcp "bash -c cd $(pwd) && .venv/bin/python -m keynote_mcp"
-```
+That exact command is verified end-to-end: it starts the server, lists the
+tools, and executes them. Check health with `claude mcp list`.
 
 **Claude Desktop** — add to `claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
     "keynote-mcp": {
-      "command": "keynote-mcp",
-      "env": {
-        "UNSPLASH_KEY": "your_key_here"
-      }
+      "command": "uv",
+      "args": ["--directory", "/Users/you/Downloads/mcp-keynote", "run", "keynote-mcp"],
+      "env": { "UNSPLASH_KEY": "optional_key_here" }
     }
   }
 }
 ```
 
-Or if using `uvx`:
-```json
-{
-  "mcpServers": {
-    "keynote-mcp": {
-      "command": "uvx",
-      "args": ["keynote-mcp"],
-      "env": {
-        "UNSPLASH_KEY": "your_key_here"
-      }
-    }
-  }
-}
-```
+**Other MCP clients:** command `uv --directory <repo> run keynote-mcp`,
+transport stdio.
 
-**Other MCP clients:**
-- Command: `keynote-mcp` (if installed via pip) or `uvx keynote-mcp`
-- Transport: stdio
+### macOS permissions (TCC)
 
-### 3. Install the Skill (recommended)
+macOS attributes permissions to the app that *launches* the server — your
+terminal or IDE, not Python. Grant, in **System Settings → Privacy &
+Security**:
 
-The `keynote-presentation` skill teaches Claude how to use the MCP tools correctly — handling font clipping bugs, theme pitfalls, coordinate math, and design patterns.
+1. **Automation** → your terminal/IDE → enable **Keynote** (all tools) and
+   **System Events** (build animations). The prompt appears on first use.
+2. **Accessibility** → add and enable your terminal/IDE. Only needed for the
+   build-animation tools (`add_build_in`, `remove_build_in`,
+   `add_builds_to_slide`).
 
-**Claude Code** — copy the skill folder to your skills directory:
+`./preflight-permissions.sh` walks every grant interactively and verifies
+each one. Restart the terminal after granting — grants apply to processes
+started afterwards.
+
+### Install the Skill (recommended)
+
+The `keynote-presentation` skill teaches Claude layout math, theme
+compatibility, and design patterns:
+
 ```bash
 cp -r skills/keynote-presentation ~/.claude/skills/keynote-presentation
 ```
 
-**Claude.ai:**
-1. Zip the `skills/keynote-presentation` folder
-2. Go to Settings > Capabilities > Skills
-3. Click "Upload skill" and select the zip
+For Claude.ai: zip `skills/keynote-presentation`, then Settings →
+Capabilities → Skills → Upload skill.
 
-### 4. macOS permissions
-
-- System Settings > Privacy & Security > Accessibility — add Terminal/your IDE
-- System Settings > Privacy & Security > Automation — allow Python to control Keynote
-
-> **Security note:** Accessibility permissions are granted per-binary, not per-project. When you grant Accessibility access to `python`, all Python processes share that permission. Most keynote-mcp tools use plain AppleScript (no Accessibility needed) — only build animations require it. For stricter isolation, you can build a standalone binary (see [Standalone Binary](#standalone-binary) below) so keynote-mcp gets its own permission entry.
-
-### 5. Use it
+### Use it
 
 ```
 "Create a presentation about our Q1 results with 6 slides"
@@ -112,99 +87,75 @@ cp -r skills/keynote-presentation ~/.claude/skills/keynote-presentation
 "Export the presentation as PDF"
 ```
 
-## Available Tools (30+)
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Error mentions **-1743** / "Not authorized to send Apple events" | Automation permission missing | System Settings → Privacy & Security → **Automation** → your terminal/IDE → enable Keynote. If the prompt never appears, `tccutil reset AppleEvents <terminal-bundle-id>` and retry |
+| Error mentions **-1728** or **-1719** / "Invalid index" | The referenced slide/element/document doesn't exist | Check with `get_slide_count`, `get_slide_content`, or `list_presentations` — indices are 1-based |
+| "not allowed assistive access" | Accessibility permission missing (build tools only) | System Settings → Privacy & Security → **Accessibility** → enable your terminal/IDE, then restart it |
+| "osascript timed out after 30s" | A modal Keynote dialog (save sheet, "What's New", missing font) is blocking automation | Switch to Keynote and dismiss the dialog; raise `KEYNOTE_MCP_TIMEOUT` for huge decks |
+| Unsplash tools missing from tools/list | `UNSPLASH_KEY` not set | Set it in the MCP client config (opt-in feature) |
+| Build animations fail intermittently | Keynote must be frontmost; UI scripting is timing-sensitive | Retry once; keep Keynote visible and the screen unlocked while builds run |
+
+## Available Tools (45)
 
 | Category | Tools |
 |----------|-------|
-| **Presentation** | create, open, save, close, list, themes, resolution, slide size |
-| **Slides** | add, delete, duplicate, move, select, layouts, slide info |
-| **Content** | text boxes (with font/color control), titles, subtitles, bullet lists, numbered lists, code blocks (with color), quotes, images, shapes (with opacity), edit, delete, move, resize elements, set element opacity, clear slide, speaker notes, build-in animations (add/remove via UI scripting) |
-| **Export** | screenshot slides, export PDF |
-| **Unsplash** | search images, add to slides, random images (requires `UNSPLASH_KEY`) |
+| **Presentation** (9) | create, open, save, close, list, set/get theme, info, slide size |
+| **Slides** (9) | add, delete, duplicate, move, select, count, layouts, slide info |
+| **Content** (22) | text boxes / titles / subtitles (font, color, size — large fonts auto-sized, no clipping), bullet & numbered lists, code blocks, quotes, theme placeholders (`set_slide_content`), images, shapes with opacity, edit/move/resize/delete elements, speaker notes, clear slide, build-in animations |
+| **Export** (2) | screenshot slide, export PDF |
+| **Unsplash** (3, opt-in) | search, add to slide, random image (requires `UNSPLASH_KEY`) |
 
-## Unsplash Integration (optional)
+Full per-tool verification status: [docs/TOOL_MATRIX.md](docs/TOOL_MATRIX.md).
+
+Known Keynote limits (not fixable via AppleScript): shape fill color is
+read-only (use the opacity workaround), connection-line routing, build-order
+reordering, and "With Previous" timing require the Keynote UI.
+
+## Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `KEYNOTE_MCP_LOG_LEVEL` | Log level on stderr (`DEBUG`, `INFO`, …; default `INFO`) |
+| `KEYNOTE_MCP_TIMEOUT` | Per-call osascript timeout in seconds (default 30) |
+| `UNSPLASH_KEY` | Enables the Unsplash tools ([get a key](https://unsplash.com/developers)) |
+
+## Development
 
 ```bash
-cp env.example .env
-# Add your key from https://unsplash.com/developers
-# UNSPLASH_KEY=your_access_key
+uv sync --dev        # install
+make test            # unit tests - no Keynote needed (95% coverage)
+make test-integration # runs against a REAL Keynote; steals window focus
+make check           # everything CI runs: ruff, mypy --strict, tests + coverage gate
 ```
 
-## About the Skill
-
-The `keynote-presentation` skill (`skills/keynote-presentation/`) solves real problems discovered through production use:
-
-- **Font clipping bug**: Large font sizes (>48pt) create tiny text boxes that clip text to 1-2 characters. The skill teaches Claude the resize-then-edit workaround.
-- **Theme pitfalls**: Many themes (Gradient, Minimalist Dark) don't show backgrounds on Blank slides. The skill includes a tested compatibility table.
-- **Coordinate math**: No text-align property exists. The skill provides per-character width estimates for manual centering.
-- **Shape fill limitation**: Shape fill color is NOT writable via AppleScript. The skill documents the opacity workaround for dark-theme containers.
-- **Dark theme color reference**: Tested RGB values for white text, gray subtitles, green code comments, and blue section headers.
-- **Two-column layouts**: Proven coordinates for code-left/bullets-right slides using `add_shape` containers.
-- **Design patterns**: Landing-page-style slide templates (hero, statement, bullets, code demo, closing) with tested positions.
-
-### Skill structure
+Tests come in two tiers: `tests/unit/` runs anywhere (CI runs it on
+macos-latest for Python 3.11–3.13); `tests/integration/` is marked
+`keynote`, deselected by default, and drives a real Keynote locally.
 
 ```
-skills/keynote-presentation/
-    SKILL.md                              # Main skill file with YAML frontmatter
-    references/
-        theme-reference.md                # Theme compatibility table
-        coordinate-reference.md           # Layout math and centering formulas
-```
-
-## Project Structure
-
-```
-src/
-  keynote_mcp/
-    __init__.py            # Package version
-    __main__.py            # python -m keynote_mcp entry point
-    server.py              # MCP server — routes tool calls via stdio
-    tools/
-      presentation.py      # Presentation lifecycle tools
-      slide.py             # Slide management tools
-      content.py           # Content creation and editing tools
-      export.py            # Screenshot and PDF export tools
-      unsplash.py          # Unsplash image integration
-    utils/
-      applescript_runner.py # Executes AppleScript via osascript
-      error_handler.py     # Exception hierarchy and validation
-    applescript/           # AppleScript source files
-skills/                    # Claude Skills for this MCP
-tests/                     # Test scaffolding
+src/keynote_mcp/
+  server.py       # MCP stdio server, tool routing
+  tools/          # presentation, slide, content, export, unsplash
+  utils/          # osascript runner (argv-based), error mapping, validation
+skills/           # keynote-presentation Claude Skill
+docs/             # ENVIRONMENT, TOOL_MATRIX, MCP_V2_MIGRATION, MODERNIZATION_REPORT
 ```
 
 ## Standalone Binary
 
-For security-conscious users who don't want to grant Accessibility permissions to the shared `python` binary, you can build keynote-mcp as a standalone executable with its own permission entry:
+Accessibility permission is granted per-binary, so granting it to `python`
+shares it with every Python process. For stricter isolation, build a
+standalone binary that gets its own permission entry:
 
 ```bash
-# Install pyinstaller
-pip install pyinstaller
-
-# Build standalone binary (~31MB)
-pyinstaller --onefile --name keynote-mcp src/keynote_mcp/__main__.py
-
-# Code-sign so macOS tracks it as its own app
+uv run --with pyinstaller pyinstaller --onefile --name keynote-mcp src/keynote_mcp/__main__.py
 codesign -s - -f dist/keynote-mcp
 ```
 
-Then use the binary in your MCP config:
-```json
-{
-  "mcpServers": {
-    "keynote-mcp": {
-      "command": "/absolute/path/to/dist/keynote-mcp"
-    }
-  }
-}
-```
-
-When you grant Accessibility permission, it will appear as "keynote-mcp" instead of "Python".
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Then point your MCP config at `/absolute/path/to/dist/keynote-mcp`.
 
 ## License
 
@@ -212,7 +163,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [Model Context Protocol](https://modelcontextprotocol.io/) — standardized tool protocol for AI
-- [Unsplash](https://unsplash.com/) — free high-quality images
-- [AppleScript](https://developer.apple.com/documentation/applescript) — macOS automation
 - Original project by [easychen](https://github.com/easychen/keynote-mcp)
+- Upstream fork, PyPI packaging, and the keynote-presentation skill by
+  [ByAxe](https://github.com/ByAxe/keynote-mcp)
+- [Model Context Protocol](https://modelcontextprotocol.io/)
+- [Unsplash](https://unsplash.com/)
