@@ -203,7 +203,11 @@ class ExportTools:
                         },
                         "include_skipped": {
                             "type": "boolean",
-                            "description": "Include skipped slides (default false; images only)",
+                            "description": (
+                                "Include skipped slides (default false). Keynote IGNORES "
+                                "this for the images format - skipped slides are always "
+                                "omitted there; it works on export_pdf."
+                            ),
                         },
                         "doc_name": _DOC_ARG,
                     },
@@ -417,6 +421,15 @@ class ExportTools:
                 "images": f" ({image_format} per slide)",
             }.get(format, "")
             status = "" if exists else " WARNING: output not found on disk afterwards."
+            if include_skipped and format == "images":
+                # Probed live: `skipped slides:true` changes nothing for the
+                # slide-images export (identical file counts either way),
+                # while it works for PDF. Say so rather than imply otherwise.
+                status += (
+                    " NOTE: Keynote ignores include_skipped for image exports - "
+                    "skipped slides are omitted regardless. Use export_pdf "
+                    "(include_skipped=true) if you need them, or unskip first."
+                )
             return [
                 TextContent(
                     type="text",

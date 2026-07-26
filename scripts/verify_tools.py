@@ -8,6 +8,17 @@ placeholder filtering, screenshot placeholder honesty, server-side centering,
 and geometry honesty (placed coordinates land exactly despite Keynote's
 center-anchored auto-fit; add_* replies match get_slide_content).
 
+The pre-merge hardening pass added RENDERED checks. A pie chart once shipped
+rendering as a single 100% slice while its live check (`count of charts is
+1`) passed: on a tool that draws something, counts and property read-backs
+prove an object exists, never that it looks like anything. Every visual tool
+that CAN be checked in pixels now is - chart slice counts, panel and table
+header colors, image bitmaps, text ink and clipping, opacity, slide numbers,
+theme repaints - and the export artifacts are opened and inspected (PDF page
+counts, pptx slide parts, image dimensions) instead of being weighed. The
+two classes that no export can show (build animations, transitions) are
+called out in docs/TOOL_MATRIX.md rather than dressed up.
+
 Creates documents only under .scratch/ (plus one temporary copy on ~/Desktop
 for the outside-sandbox open check, removed afterwards), closes them without
 saving user data, and prints one PASS/FAIL line per check.
@@ -20,13 +31,15 @@ Usage:  uv run python scripts/verify_tools.py
 """
 
 import asyncio
-import base64
 import json
 import os
 import re
 import shutil
 import sys
+import zipfile
 from pathlib import Path
+
+from PIL import Image, ImageChops, ImageFilter  # dev dependency; rendered checks are not optional
 
 REPO = Path(__file__).resolve().parents[1]
 SCRATCH = REPO / ".scratch"
@@ -43,11 +56,14 @@ from keynote_mcp.tools.objects import ObjectTools  # noqa: E402
 from keynote_mcp.tools.presentation import PresentationTools  # noqa: E402
 from keynote_mcp.tools.slide import SlideTools  # noqa: E402
 
-# 1x1 red PNG
-PNG_BYTES = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE"
-    "hQGAhKmMIQAAAABJRU5ErkJggg=="
-)
+# Test bitmaps are generated, opaque and visibly sized. The base64 blobs
+# they replace were a 1x1 half-transparent red and a 1x1 BROKEN PNG ("broken
+# data stream" - Pillow will not decode it). replace_image happily pointed
+# Keynote at the broken one and the image vanished from the slide, while the
+# shipped check ("file name reads back verify-blue") passed.
+TEST_IMAGE_PX = (160, 120)
+RED = (220, 40, 40)
+BLUE = (40, 70, 220)
 
 RESULTS = []
 
@@ -72,6 +88,133 @@ def check(name, result, expect_substring=None, forbid_failure=True):
     return text
 
 
+# --- rendered assertions -------------------------------------------------
+# Everything below inspects what Keynote actually DREW (or what an exported
+# file actually CONTAINS), not what it reports about itself. A pie chart once
+# rendered as a single 100% slice while `count of charts is 1` passed: on a
+# tool that produces something visual, a structural check proves only that an
+# object exists, never that it looks like anything. Renders cost ~1-2 s each,
+# so they are batched: one export, many assertions.
+
+RENDER_DIR = SCRATCH / "render"
+
+
+async def render_slide(export, slide_number, tag, slide_w, doc_name=""):
+    """Export one slide and return (RGB image, pixels-per-point).
+
+    Returns (None, 0.0) and records a FAIL if the export did not happen, so a
+    missing render can never make a rendered check silently pass.
+    """
+    RENDER_DIR.mkdir(parents=True, exist_ok=True)
+    path = RENDER_DIR / f"{tag}.png"
+    path.unlink(missing_ok=True)
+    reply = text_of(await export.screenshot_slide(slide_number, str(path), doc_name=doc_name))
+    if "Captured screenshot" not in reply or not path.exists():
+        record(f"render slide {slide_number} for '{tag}'", False, reply[:140])
+        return None, 0.0
+    image = Image.open(path).convert("RGB")
+    return image, image.width / float(slide_w)
+
+
+def at(image, scale, x, y):
+    """Color of the rendered pixel at slide point (x, y)."""
+    px = min(max(int(x * scale), 0), image.width - 1)
+    py = min(max(int(y * scale), 0), image.height - 1)
+    return image.getpixel((px, py))
+
+
+def near(a, b, tol=8):
+    return all(abs(int(p) - int(q)) <= tol for p, q in zip(a, b, strict=False))
+
+
+def dominant(image):
+    """The most common pixel color in an image (or crop)."""
+    colors = image.getcolors(image.width * image.height)
+    return max(colors, key=lambda c: c[0])[1]
+
+
+def _crop(image, scale, box):
+    x, y, w, h = box
+    return image.crop(
+        (int(x * scale), int(y * scale), int((x + w) * scale), int((y + h) * scale))
+    )
+
+
+def _ink_mask(image, tol=24, radius=6):
+    """Pixels that differ from a blurred copy of themselves.
+
+    Themes paint gradients (Slate's background spans ~60 shades), so
+    "differs from the background color" flags the entire slide - it reported
+    the 96pt title as 1024pt wide. A high-pass against the image's own blur
+    sees only what has edges: glyphs, rules, chart segments, object borders.
+    Flat interiors are invisible to it, so solid fills (panels, images,
+    shapes) are checked by sampling their color instead.
+    """
+    diff = ImageChops.difference(image, image.filter(ImageFilter.GaussianBlur(radius)))
+    r, g, b = diff.split()
+    channel_max = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    return channel_max.point(lambda v: 255 if v > tol else 0)
+
+
+def ink_bbox(image, scale, box=None, tol=24):
+    """Bounding box in SLIDE POINTS of the drawn detail in a region.
+
+    ``box`` is (x, y, w, h) in points; the result is in slide coordinates.
+    Returns None when nothing was drawn.
+    """
+    ox, oy = (box[0], box[1]) if box else (0.0, 0.0)
+    region = _crop(image, scale, box) if box else image
+    bb = _ink_mask(region, tol).getbbox()
+    if not bb:
+        return None
+    return (ox + bb[0] / scale, oy + bb[1] / scale, ox + bb[2] / scale, oy + bb[3] / scale)
+
+
+def ink_fraction(image, scale, box=None, tol=24):
+    """Share of the region covered by drawn detail."""
+    region = _crop(image, scale, box) if box else image
+    total = region.width * region.height
+    return (sum(_ink_mask(region, tol).getdata()) / 255.0 / total) if total else 0.0
+
+
+def fill_areas(image, scale, box, min_fraction=0.02, ring=8):
+    """Distinct flat fills inside a region that are NOT background, largest first.
+
+    This is the pie discriminator: the one-100%-slice defect yields ONE entry
+    and a correct chart yields one per slice. Saturation is deliberately NOT
+    the filter - Slate's second chart series is neutral gray (172,172,172),
+    which a saturation filter drops, reporting a healthy 3-slice pie as 2.
+    Instead, colors that also appear in a thin ring just outside the region
+    are treated as background (this is what makes it work on a gradient).
+    """
+    x, y, w, h = box
+    region = _crop(image, scale, box)
+    outer = _crop(image, scale, (x - ring, y - ring, w + 2 * ring, h + 2 * ring))
+    total = region.width * region.height
+    inside = {color: n for n, color in (region.getcolors(total) or [])}
+    around = {color: n for n, color in (outer.getcolors(outer.width * outer.height) or [])}
+    out = [
+        (color, n)
+        for color, n in inside.items()
+        if n >= min_fraction * total and around.get(color, 0) - n < max(40, 0.1 * n)
+    ]
+    out.sort(key=lambda t: -t[1])
+    return out
+
+
+def pdf_page_count(path):
+    """Page count of a PDF, read from the file (not from the export reply)."""
+    data = Path(path).read_bytes()
+    counts = [int(m) for m in re.findall(rb"/Count\s+(\d+)", data)]
+    if counts:
+        return max(counts)
+    return len(re.findall(rb"/Type\s*/Page[^s]", data))
+
+
+def pdf_media_boxes(path):
+    return {m.decode().strip() for m in re.findall(rb"/MediaBox\s*\[([^\]]*)\]", Path(path).read_bytes())}
+
+
 async def main():
     pres = PresentationTools()
     slides = SlideTools()
@@ -86,8 +229,10 @@ async def main():
         test_key.unlink()
     for leftover in ("phase8-default.key", "phase8-rescued.key"):
         (SCRATCH / leftover).unlink(missing_ok=True)
-    png_path = SCRATCH / "test-image.png"
-    png_path.write_bytes(PNG_BYTES)
+    red_png = SCRATCH / "test-image.png"
+    blue_png = SCRATCH / "verify-blue.png"
+    Image.new("RGB", TEST_IMAGE_PX, RED).save(red_png)
+    Image.new("RGB", TEST_IMAGE_PX, BLUE).save(blue_png)
 
     # --- presentation tools ---
     themes_text = check("get_available_themes", await pres.get_available_themes())
@@ -105,7 +250,8 @@ async def main():
         "Layout: Blank",
     )
     check("get_presentation_info", await pres.get_presentation_info(), "Slide count")
-    check("get_slide_size", await pres.get_slide_size(), "Slide size info")
+    size_text = check("get_slide_size", await pres.get_slide_size(), "Slide size info")
+    slide_w, slide_h = (float(v) for v in re.search(r"Size: (\d+) x (\d+)", size_text).groups())
 
     # set_slide_content on slide 1: new presentations default to Blank, so
     # this exercises the enable-placeholder-then-fill path
@@ -194,7 +340,7 @@ async def main():
     notes = check("get_speaker_notes", await content.get_speaker_notes(2))
     record("speaker notes round-trip", "ünïcode 中文" in notes, notes[:80])
 
-    check("add_image", await content.add_image(2, str(png_path), x=800, y=100))
+    check("add_image", await content.add_image(2, str(red_png), x=800, y=100))
     img_content = text_of(await content.get_slide_content(2))
     record("image present on slide", "images:1" in img_content, "")
     check("delete_element(image 1)", await content.delete_element(2, "image", 1))
@@ -274,9 +420,11 @@ async def main():
     check("delete round-trip slide", await slides.delete_slide(4), "Deleted slide 4")
 
     # --- server-side centering (field test 8.6) ---
+    # The BOX check below is arithmetic on properties - exactly the arithmetic
+    # that passed while the old pre-widening heuristic left the visible text
+    # ~110pt left of center. The rendered check that follows measures the ink.
     check("add_slide(blank, for centering)", await slides.add_slide(), "Added slide #4")
-    size_text = text_of(await pres.get_slide_size())
-    slide_w = float(re.search(r"Size: (\d+)", size_text).group(1))
+    centered_bands = []
     for tool_name, call in [
         ("add_title", lambda: content.add_title(4, "Centered Headline", y=100, font_size=60, centered=True)),
         ("add_subtitle", lambda: content.add_subtitle(4, "Centered sub", y=300, centered=True)),
@@ -292,8 +440,10 @@ async def main():
         try:
             pos_part, size_part = entry.split(":::")[2], entry.split(":::")[3]
             x = float(pos_part.split(",")[0])
-            w = float(size_part.split(",")[0])
+            y = float(pos_part.split(",")[1])
+            w, h = (float(v) for v in size_part.split(","))
             centered_ok = abs(x - (slide_w - w) / 2) <= 1.0
+            centered_bands.append((tool_name, y, h))
         except (IndexError, ValueError):
             centered_ok = False
         record(
@@ -301,6 +451,17 @@ async def main():
             centered_ok,
             entry[:120] or report[:120],
         )
+    centering_img, centering_scale = await render_slide(export, 4, "centered", slide_w)
+    if centering_img:
+        for tool_name, y, h in centered_bands:
+            bb = ink_bbox(centering_img, centering_scale, box=(0, y - 4, slide_w, h + 8))
+            visual_center = (bb[0] + bb[2]) / 2 if bb else None
+            record(
+                f"{tool_name}(centered) RENDERED text is centered, not just the box",
+                bb is not None and abs(visual_center - slide_w / 2) <= 4,
+                f"ink spans {bb[0]:.0f}-{bb[2]:.0f}pt, center {visual_center:.1f} vs "
+                f"{slide_w / 2:.0f}" if bb else "no ink rendered in the band",
+            )
     check("delete centering slide", await slides.delete_slide(4), "Deleted slide 4")
 
     # --- geometry honesty (drift regression) ---
@@ -315,15 +476,22 @@ async def main():
     geo_re = re.compile(
         r"text item index (\d+)(?:, centered)?\) at \(([^,]+), ([^)]+)\), size ([^x]+)x(\S+)"
     )
+    # Coordinates are kept inside the canvas on purpose: the previous layout
+    # placed the code block, shape and image beyond x=1024 and the 96pt title
+    # below y=768 on this 1024x768 document, and every check still passed -
+    # property equality cannot see the slide edge. The rendered checks after
+    # this loop can, so the elements have to be somewhere they can be seen.
+    right_col = round(slide_w * 0.60)
     geometry_cases = [
-        ("add_text_box(12pt)", 150, 120, lambda: content.add_text_box(4, "geometry probe", x=150, y=120, font_size=12)),
-        ("add_subtitle(24pt)", 150, 200, lambda: content.add_subtitle(4, "geometry subtitle", x=150, y=200)),
-        ("add_title(36pt)", 150, 280, lambda: content.add_title(4, "Geometry Title", x=150, y=280, font_size=36)),
-        ("add_title(48pt=default)", 150, 380, lambda: content.add_title(4, "Geometry Title", x=150, y=380, font_size=48)),
-        ("add_bullet_list(24pt, 4 lines)", 150, 480, lambda: content.add_bullet_list(4, ["g1", "g2", "g3", "g4"], x=150, y=480, font_size=24)),
-        ("add_title(96pt clip path)", 150, 760, lambda: content.add_title(4, "Big Geometry", x=150, y=760, font_size=96)),
-        ("add_code_block(14pt)", 900, 120, lambda: content.add_code_block(4, "geo = 1", x=900, y=120)),
+        ("add_text_box(12pt)", 100, 60, lambda: content.add_text_box(4, "geometry probe", x=100, y=60, font_size=12)),
+        ("add_subtitle(24pt)", 100, 120, lambda: content.add_subtitle(4, "geometry subtitle", x=100, y=120)),
+        ("add_title(36pt)", 100, 190, lambda: content.add_title(4, "Geometry Title", x=100, y=190, font_size=36)),
+        ("add_title(48pt=default)", 100, 280, lambda: content.add_title(4, "Geometry Title", x=100, y=280, font_size=48)),
+        ("add_bullet_list(24pt, 4 lines)", 100, 390, lambda: content.add_bullet_list(4, ["g1", "g2", "g3", "g4"], x=100, y=390, font_size=24)),
+        ("add_title(96pt clip path)", 100, 560, lambda: content.add_title(4, "Geometry Title", x=100, y=560, font_size=96)),
+        ("add_code_block(14pt, green)", right_col, 60, lambda: content.add_code_block(4, "geo = 1", x=right_col, y=60, color="10000,55000,10000")),
     ]
+    geometry_boxes = {}
     for name, gx, gy, call in geometry_cases:
         reply = text_of(await call())
         m = geo_re.search(reply)
@@ -337,6 +505,7 @@ async def main():
             placed_ok,
             f"reported ({rx}, {ry})" if not placed_ok else "",
         )
+        geometry_boxes[name] = (float(rx), float(ry), float(rw), float(rh))
         report = text_of(await content.get_slide_content(4))
         entry = next((e for e in report.split("|||") if e.startswith(f"TEXT:{idx}:::")), "")
         parts = entry.split(":::")
@@ -346,7 +515,7 @@ async def main():
             match_ok,
             f"reply ({rx},{ry}) {rw},{rh} vs slide {entry[-40:]}" if not match_ok else "",
         )
-    shape_reply = text_of(await content.add_shape(4, x=1400, y=120, width=300, height=180))
+    shape_reply = text_of(await content.add_shape(4, x=right_col, y=200, width=240, height=140))
     m = re.search(r"shape index (\d+)\) at \(([^,]+), ([^)]+)\), size ([^x]+)x([\d.]+)", shape_reply)
     if m:
         idx, rx, ry, rw, rh = m.groups()
@@ -355,9 +524,12 @@ async def main():
         parts = entry.split(":::")
         ok = len(parts) > 2 and parts[1] == f"{rx},{ry}" and parts[2] == f"{rw},{rh}"
         record("add_shape reported geometry matches get_slide_content", ok, entry[:100])
+        geometry_boxes["add_shape"] = (float(rx), float(ry), float(rw), float(rh))
     else:
         record("add_shape reports index and geometry", False, shape_reply[:140])
-    img_reply = text_of(await content.add_image(4, str(png_path), x=1400, y=400))
+    img_reply = text_of(
+        await content.add_image(4, str(red_png), x=right_col, y=380, width=160, height=120)
+    )
     m = re.search(r"image index (\d+)\) at \(([^,]+), ([^)]+)\), size ([^x]+)x(\S+)", img_reply)
     if m:
         idx, rx, ry, rw, rh = m.groups()
@@ -366,17 +538,112 @@ async def main():
         parts = entry.split(":::")
         ok = len(parts) > 2 and parts[1] == f"{rx},{ry}" and parts[2] == f"{rw},{rh}"
         record("add_image reported geometry matches get_slide_content", ok, entry[:100])
+        geometry_boxes["add_image"] = (float(rx), float(ry), float(rw), float(rh))
     else:
         record("add_image reports index and geometry", False, img_reply[:140])
+
+    # RENDERED: one export, then ask the pixels what every add_* actually drew.
+    # Property equality above proves Keynote stored the numbers; only this
+    # proves something is visible, on the canvas, in the requested color, and
+    # not truncated.
+    geo_img, geo_scale = await render_slide(export, 4, "geometry", slide_w)
+    if geo_img:
+        offslide = {
+            name: box
+            for name, box in geometry_boxes.items()
+            if box[0] < 0 or box[1] < 0 or box[0] + box[2] > slide_w or box[1] + box[3] > slide_h
+        }
+        record(
+            "every placed element lands inside the slide canvas",
+            not offslide,
+            f"off-slide: {offslide}"[:160],
+        )
+        for name, box in geometry_boxes.items():
+            if name in ("add_shape", "add_image"):
+                # Flat fills have no internal detail: sample the middle and a
+                # point just outside instead of looking for edges.
+                x, y, w, h = box
+                inside = at(geo_img, geo_scale, x + w / 2, y + h / 2)
+                beside = at(geo_img, geo_scale, min(x + w + 20, slide_w - 2), y + h / 2)
+                record(
+                    f"{name} is actually drawn (its fill differs from the slide beside it)",
+                    not near(inside, beside, 12),
+                    f"inside {inside} vs beside {beside}",
+                )
+                continue
+            fraction = ink_fraction(geo_img, geo_scale, box=box)
+            record(
+                f"{name} is actually drawn (ink inside its box)",
+                fraction > 0.01,
+                f"{fraction * 100:.1f}% of the box carries drawn detail",
+            )
+        # Clipping is a RENDER symptom: the legacy ">48pt truncates to one or
+        # two characters" bug leaves the model text intact. Same string at 48
+        # and 96pt must render ~twice as wide. The 48pt band is clipped to the
+        # left column so the right column's objects cannot leak into it.
+        wide = {}
+        for name, band_w in (
+            ("add_title(48pt=default)", right_col - 20),
+            ("add_title(96pt clip path)", slide_w),
+        ):
+            _, by, _, bh = geometry_boxes[name]
+            bb = ink_bbox(geo_img, geo_scale, box=(0, by - 4, band_w, bh + 8))
+            wide[name] = (bb[2] - bb[0]) if bb else 0.0
+        ratio = wide["add_title(96pt clip path)"] / (wide["add_title(48pt=default)"] or 1)
+        record(
+            "96pt title renders ~2x the 48pt width (not clipped)",
+            1.7 <= ratio <= 2.3,
+            f"48pt ink {wide['add_title(48pt=default)']:.0f}pt, "
+            f"96pt ink {wide['add_title(96pt clip path)']:.0f}pt, ratio {ratio:.2f}",
+        )
+        # add_code_block(color=green): the color argument must reach the glyphs.
+        cb_box = geometry_boxes["add_code_block(14pt, green)"]
+        cx, cy, cw, ch = cb_box
+        crop = geo_img.crop(
+            (
+                int(cx * geo_scale),
+                int(cy * geo_scale),
+                int((cx + cw) * geo_scale),
+                int((cy + ch) * geo_scale),
+            )
+        )
+        bg = dominant(geo_img)
+        greens = [
+            p
+            for p in crop.getdata()
+            if max(abs(a - b) for a, b in zip(p, bg, strict=False)) > 40 and p[1] > p[0] + 25 and p[1] > p[2] + 25
+        ]
+        record(
+            "add_code_block(color) renders green glyphs, not theme-colored ones",
+            len(greens) > 20,
+            f"{len(greens)} green ink pixels in the box",
+        )
     check("delete geometry slide", await slides.delete_slide(4), "Deleted slide 4")
 
     # --- export tools ---
+    # File existence and a >1KB size prove only that Keynote wrote something;
+    # a blank slide, the wrong slide, or a zero-page PDF all clear that bar.
     shot = SCRATCH / "slide2.png"
     check("screenshot_slide(2)", await export.screenshot_slide(2, str(shot)), "Captured")
     record("screenshot file exists", shot.exists() and shot.stat().st_size > 1000, str(shot))
+    shot_img = Image.open(shot).convert("RGB")
+    shot_scale = shot_img.width / slide_w
+    record(
+        "screenshot is a real render of the slide (right size, not blank)",
+        (shot_img.width, shot_img.height) == (int(slide_w), int(slide_h))
+        and ink_fraction(shot_img, shot_scale) > 0.01,
+        f"{shot_img.size} px for a {slide_w:.0f}x{slide_h:.0f}pt slide, "
+        f"{ink_fraction(shot_img, shot_scale) * 100:.1f}% non-background",
+    )
     pdf = SCRATCH / "deck.pdf"
+    slide_total = int(text_of(await slides.get_slide_count()).split(":")[1])
     check("export_pdf", await export.export_pdf(str(pdf)), "Exported PDF")
     record("pdf file exists", pdf.exists() and pdf.stat().st_size > 1000, str(pdf))
+    record(
+        "exported PDF contains one page per slide",
+        pdf_page_count(pdf) == slide_total,
+        f"{pdf_page_count(pdf)} pages for {slide_total} slides",
+    )
 
     # --- screenshot honesty (field test 8.5): unfilled placeholders are
     # omitted from the export; the tool must say so ---
@@ -392,6 +659,17 @@ async def main():
         "screenshot reports the omitted placeholder",
         "1 unfilled placeholder" in honesty and "NOT rendered" in honesty,
         honesty[:160],
+    )
+    # ... and the render must actually be missing it, otherwise the warning is
+    # the only thing being tested (it is composed by the tool itself).
+    ph_img = Image.open(shot_ph).convert("RGB")
+    ph_ink = ink_fraction(ph_img, ph_img.width / slide_w)
+    ph_report = text_of(await content.get_slide_content(4))
+    record(
+        "the omitted placeholder really is absent from the render",
+        ph_ink < 0.005,
+        f"render is {ph_ink * 100:.2f}% non-background while the slide reports "
+        f"{ph_report.split('|||')[0][:40]}",
     )
     record(
         "screenshot of filled slide reports faithful view",
@@ -413,7 +691,17 @@ async def main():
     )
 
     # --- native objects (3.0.0): tables, charts, lines, panels, styling ---
+    # Laid out to fit a 1024x768 canvas so the render below can see every
+    # object; the earlier layout ran the chart and the panel off the right
+    # edge, which no property check can notice.
     check("add_slide(for native objects)", await slides.add_slide(), "Added slide #4")
+    TABLE_BOX = (40, 40, 440, 200)
+    BAR_BOX = (520, 40, 460, 240)
+    PIE_BOX = (520, 300, 460, 250)
+    PANEL_BOX = (40, 300, 280, 120)
+    SHAPE_BOX = (60, 320, 200, 80)
+    IMAGE_BOX = (40, 560, 160, 120)
+    PANEL_RGB = (47, 75, 124)  # #2F4B7C, also the default style's table header
     check(
         "add_table(4x3 with formula)",
         await objects.add_table(
@@ -424,10 +712,10 @@ async def main():
                 ["Sales", 11, 14],
                 ["Total", "=SUM(B2:B3)", "=SUM(C2:C3)"],
             ],
-            x=80,
-            y=80,
-            width=500,
-            height=260,
+            x=TABLE_BOX[0],
+            y=TABLE_BOX[1],
+            width=TABLE_BOX[2],
+            height=TABLE_BOX[3],
         ),
         "table index",
     )
@@ -458,10 +746,30 @@ async def main():
             ["2024", "2025"],
             ["North", "South"],
             [[12, 17], [15, 21]],
-            x=700,
-            y=80,
-            width=600,
-            height=350,
+            x=BAR_BOX[0],
+            y=BAR_BOX[1],
+            width=BAR_BOX[2],
+            height=BAR_BOX[3],
+        ),
+        "chart index",
+    )
+    # A pie whose caller asked for the WRONG grouping axis: `group_by="column"`
+    # with a single column is exactly the input that rendered one 100% slice
+    # while `count of charts is 1` passed. chart_fragment auto-corrects to the
+    # multi-entry axis; only the rendered slice count below proves it did.
+    check(
+        "add_chart(pie, single-entry group axis -> auto-corrected)",
+        await objects.add_chart(
+            4,
+            "pie",
+            ["North", "South", "West"],
+            ["Share"],
+            [[30], [45], [25]],
+            group_by="column",
+            x=PIE_BOX[0],
+            y=PIE_BOX[1],
+            width=PIE_BOX[2],
+            height=PIE_BOX[3],
         ),
         "chart index",
     )
@@ -470,19 +778,30 @@ async def main():
         "slide 4 of document (item 1 of argv)\nend run",
         "phase3-test.key",
     )
-    record("native chart exists on slide", chart_count.strip() == "1", chart_count)
-    check("add_line", await objects.add_line(4, 80, 400, 580, 400), "line index")
+    record("native charts exist on slide", chart_count.strip() == "2", chart_count)
+    check("add_line", await objects.add_line(4, 40, 270, 480, 270), "line index")
     panel_reply = check(
         "add_colored_panel(#2F4B7C, r=20)",
-        await objects.add_colored_panel(4, 80, 430, 300, 120, color="#2F4B7C", radius=20),
+        await objects.add_colored_panel(
+            4, *PANEL_BOX, color="#2F4B7C", radius=20
+        ),
         "image index",
     )
     record(
         "panel reply reports requested geometry",
-        "at (80, 430), size 300x120" in panel_reply,
+        f"at ({PANEL_BOX[0]}, {PANEL_BOX[1]}), size {PANEL_BOX[2]}x{PANEL_BOX[3]}" in panel_reply,
         panel_reply[:140],
     )
-    styled = text_of(await content.add_text_box(4, "range styling target", x=80, y=580))
+    # A shape ON TOP of the panel (z-order is creation order): the only way to
+    # see an opacity change is to put something with a known color behind it.
+    check(
+        "add_shape(over the panel, opaque)",
+        await content.add_shape(
+            4, x=SHAPE_BOX[0], y=SHAPE_BOX[1], width=SHAPE_BOX[2], height=SHAPE_BOX[3]
+        ),
+        "shape index",
+    )
+    styled = text_of(await content.add_text_box(4, "range styling target", x=40, y=450))
     styled_idx = int(re.search(r"text item index (\d+)\)", styled).group(1))
     check(
         "style_text_range(chars 1-5 red bold)",
@@ -514,14 +833,94 @@ async def main():
         and abs(int(float(r9)) - 52428) > 5000,  # unstyled char keeps the THEME color
         range_read,
     )
-    check("add_image(for replace)", await content.add_image(4, str(png_path), x=1500, y=430))
-    blue_png = SCRATCH / "verify-blue.png"
-    blue_png.write_bytes(
-        base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/HwAC"
-            "hAGAWVzUTwAAAABJRU5ErkJggg=="
-        )
+    check(
+        "add_image(for replace)",
+        await content.add_image(
+            4,
+            str(red_png),
+            x=IMAGE_BOX[0],
+            y=IMAGE_BOX[1],
+            width=IMAGE_BOX[2],
+            height=IMAGE_BOX[3],
+        ),
     )
+
+    # RENDERED pass 1 over the whole native-object slide. Everything above is
+    # a count or a property; everything here is a pixel.
+    obj_img, obj_scale = await render_slide(export, 4, "objects-before", slide_w)
+    if obj_img:
+        tx, ty, tw, _th = TABLE_BOX
+        header_strip = obj_img.crop(
+            (
+                int((tx + 8) * obj_scale),
+                int((ty + 8) * obj_scale),
+                int((tx + tw - 8) * obj_scale),
+                int((ty + 26) * obj_scale),
+            )
+        )
+        body_strip = obj_img.crop(
+            (
+                int((tx + 8) * obj_scale),
+                int((ty + 60) * obj_scale),
+                int((tx + tw - 8) * obj_scale),
+                int((ty + 78) * obj_scale),
+            )
+        )
+        header_bg, body_bg = dominant(header_strip), dominant(body_strip)
+        record(
+            "add_table header row is RENDERED in the style's header color",
+            near(header_bg, PANEL_RGB, 30) and not near(header_bg, body_bg, 20),
+            f"header {header_bg} vs body {body_bg}, style header #2F4B7C",
+        )
+        bar_fills = fill_areas(obj_img, obj_scale, BAR_BOX, min_fraction=0.004)
+        record(
+            "add_chart(bar) renders one distinct fill per series",
+            len(bar_fills) >= 2,
+            f"{len(bar_fills)} distinct fills: {[c for c, _ in bar_fills[:4]]}",
+        )
+        # THE regression check: the shipped defect produced exactly one fill.
+        pie_fills = fill_areas(obj_img, obj_scale, PIE_BOX, min_fraction=0.004)
+        areas = [n for _, n in pie_fills]
+        record(
+            "add_chart(pie) renders 3 slices, not one 100% slice",
+            len(pie_fills) >= 3,
+            f"{len(pie_fills)} distinct fills, areas {areas[:4]} "
+            f"(1 fill == the grouped-axis defect)",
+        )
+        record(
+            "pie slice areas follow the data (45 > 30 > 25)",
+            len(areas) >= 3 and areas[0] > areas[1] > areas[2],
+            f"areas {areas[:3]}",
+        )
+        line_mid = ink_bbox(obj_img, obj_scale, box=(40, 262, 440, 16))
+        record(
+            "add_line is RENDERED (ink along its path, not just an object)",
+            line_mid is not None and (line_mid[2] - line_mid[0]) > 380,
+            f"ink spans {line_mid}" if line_mid else "no ink on the line's path",
+        )
+        panel_center = at(
+            obj_img, obj_scale, PANEL_BOX[0] + PANEL_BOX[2] - 20, PANEL_BOX[1] + PANEL_BOX[3] - 12
+        )
+        outside = at(obj_img, obj_scale, PANEL_BOX[0] + PANEL_BOX[2] + 24, PANEL_BOX[1] + 20)
+        record(
+            "add_colored_panel is RENDERED in the requested color at the requested place",
+            near(panel_center, PANEL_RGB, 24) and not near(outside, PANEL_RGB, 24),
+            f"inside {panel_center} vs requested {PANEL_RGB}; just outside {outside}",
+        )
+        shape_opaque = at(
+            obj_img, obj_scale, SHAPE_BOX[0] + SHAPE_BOX[2] / 2, SHAPE_BOX[1] + SHAPE_BOX[3] / 2
+        )
+        image_before = at(
+            obj_img, obj_scale, IMAGE_BOX[0] + IMAGE_BOX[2] / 2, IMAGE_BOX[1] + IMAGE_BOX[3] / 2
+        )
+        record(
+            "add_image RENDERS the bitmap it was given (red before the swap)",
+            image_before[0] > 120 and image_before[0] > image_before[2] + 50,
+            f"sampled {image_before}",
+        )
+    else:
+        shape_opaque = image_before = None
+
     check("replace_image(image 2 -> blue)", await objects.replace_image(4, 2, str(blue_png)))
     replaced_name = content.runner.run(
         'on run argv\ntell application "Keynote" to return file name of image 2 of '
@@ -529,6 +928,34 @@ async def main():
         "phase3-test.key",
     )
     record("replace_image swapped the file in place", "verify-blue" in replaced_name, replaced_name)
+    check(
+        "set_element_opacity(shape over panel -> 20)",
+        await content.set_element_opacity(4, "shape", 1, 20),
+    )
+
+    # RENDERED pass 2: only the two things that changed since pass 1.
+    obj_img2, obj_scale2 = await render_slide(export, 4, "objects-after", slide_w)
+    if obj_img2:
+        image_after = at(
+            obj_img2, obj_scale2, IMAGE_BOX[0] + IMAGE_BOX[2] / 2, IMAGE_BOX[1] + IMAGE_BOX[3] / 2
+        )
+        record(
+            "replace_image swapped the RENDERED bitmap, not just the file name",
+            image_after[2] > 120 and image_after[2] > image_after[0] + 50,
+            f"sampled {image_after} (was {image_before})",
+        )
+        shape_faded = at(
+            obj_img2, obj_scale2, SHAPE_BOX[0] + SHAPE_BOX[2] / 2, SHAPE_BOX[1] + SHAPE_BOX[3] / 2
+        )
+        if shape_opaque is not None:
+            dist_before = sum(abs(a - b) for a, b in zip(shape_opaque, PANEL_RGB, strict=False))
+            dist_after = sum(abs(a - b) for a, b in zip(shape_faded, PANEL_RGB, strict=False))
+            record(
+                "set_element_opacity changes what is DRAWN (panel shows through)",
+                dist_after < dist_before - 30,
+                f"shape over the panel: {shape_opaque} at 100% -> {shape_faded} at 20% "
+                f"(distance to panel {dist_before} -> {dist_after})",
+            )
     check(
         "set_element_style(rotation+reflection+lock round-trip)",
         await objects.set_element_style(
@@ -567,9 +994,38 @@ async def main():
         "phase3-test.key",
     )
     record("skipped read back true", skipped_read.strip() == "true", skipped_read)
+    # The flag's only consequence is what exports contain: prove it there.
+    slide_total = int(text_of(await slides.get_slide_count()).split(":")[1])
+    skip_pdf = SCRATCH / "verify-skipped.pdf"
+    skip_pdf_all = SCRATCH / "verify-skipped-all.pdf"
+    await export.export_pdf(str(skip_pdf))
+    await export.export_pdf(str(skip_pdf_all), include_skipped=True)
+    record(
+        "a skipped slide is left OUT of the PDF, and include_skipped puts it back",
+        pdf_page_count(skip_pdf) == slide_total - 1
+        and pdf_page_count(skip_pdf_all) == slide_total,
+        f"{pdf_page_count(skip_pdf)} pages skipping vs {pdf_page_count(skip_pdf_all)} "
+        f"including, for {slide_total} slides",
+    )
+    # Keynote IGNORES `skipped slides` for the images export - probed at the
+    # raw-AppleScript level, identical counts either way. Pin the real
+    # behavior so the tool's warning stays true, rather than asserting the
+    # behavior the option name implies.
+    skip_dir = SCRATCH / "verify-skipped-images"
+    shutil.rmtree(skip_dir, ignore_errors=True)
+    images_reply = text_of(
+        await export.export_presentation("images", str(skip_dir), include_skipped=True)
+    )
+    images_including = len(list(skip_dir.glob("*.png")))
+    record(
+        "images export omits skipped slides even with include_skipped, and says so",
+        images_including == slide_total - 1 and "Keynote ignores include_skipped" in images_reply,
+        f"{images_including} images for {slide_total} slides with include_skipped=True",
+    )
     check(
         "set_slide_skipped(4, false)", await slides.set_slide_skipped(4, False), "not skipped"
     )
+    numbers_off_img, _numbers_scale = await render_slide(export, 3, "numbers-off", slide_w)
     check(
         "set_document_settings(slide numbers on)",
         await pres.set_document_settings(slide_numbers_showing=True),
@@ -581,6 +1037,18 @@ async def main():
         "phase3-test.key",
     )
     record("slide numbers showing read back", numbers_read.strip() == "true", numbers_read)
+    numbers_on_img, _ = await render_slide(export, 3, "numbers-on", slide_w)
+    if numbers_off_img and numbers_on_img:
+        # A slide number is a few hundred pixels of ink on an otherwise
+        # unchanged slide: the render must change, but only slightly.
+        changed = ImageChops.difference(numbers_off_img, numbers_on_img).convert("L")
+        moved = sum(1 for v in changed.getdata() if v > 40)
+        total = numbers_on_img.width * numbers_on_img.height
+        record(
+            "slide numbers are actually DRAWN when the setting is on",
+            0 < moved < total * 0.02,
+            f"{moved} px changed ({moved / total * 100:.3f}% of the slide)",
+        )
     check(
         "set_document_settings(restore)",
         await pres.set_document_settings(slide_numbers_showing=False),
@@ -594,6 +1062,17 @@ async def main():
         "Exported PDF",
     )
     record("notes pdf exists", notes_pdf.exists() and notes_pdf.stat().st_size > 1000, "")
+    # Page count is real inspection; layout is not distinguishable this
+    # cheaply. Keynote's notes pages are a fixed 1024x768, which happens to
+    # equal this deck's slide size, so the MediaBox is identical to the plain
+    # export's (measured) - telling the layouts apart needs the PDF
+    # rasterized, which this harness does not do (TOOL_MATRIX records it).
+    record(
+        "slides_with_notes PDF has one page per slide (layout itself unverified)",
+        pdf_page_count(notes_pdf) == slide_total,
+        f"notes: {pdf_page_count(notes_pdf)} pages {sorted(pdf_media_boxes(notes_pdf))} for "
+        f"{slide_total} slides",
+    )
     pptx_path = SCRATCH / "verify.pptx"
     check(
         "export_presentation(pptx)",
@@ -601,6 +1080,19 @@ async def main():
         "Exported pptx",
     )
     record("pptx exists", pptx_path.exists() and pptx_path.stat().st_size > 1000, "")
+    with zipfile.ZipFile(pptx_path) as bundle:
+        pptx_slides = [
+            n for n in bundle.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)
+        ]
+        pptx_text = "".join(
+            bundle.read(n).decode("utf-8", "ignore") for n in sorted(pptx_slides)
+        )
+    record(
+        "pptx really contains one slide part per slide, with the deck's text",
+        len(pptx_slides) == slide_total and "Phase 3 Title" in pptx_text,
+        f"{len(pptx_slides)} slide parts for {slide_total} slides; "
+        f"title text present: {'Phase 3 Title' in pptx_text}",
+    )
     images_dir = SCRATCH / "verify-images"
     shutil.rmtree(images_dir, ignore_errors=True)
     check(
@@ -608,10 +1100,25 @@ async def main():
         await export.export_presentation("images", str(images_dir)),
         "Exported images",
     )
+    exported_pngs = sorted(images_dir.glob("*.png")) if images_dir.is_dir() else []
     record(
         "per-slide images exist",
-        images_dir.is_dir() and len(list(images_dir.glob("*.png"))) >= 3,
-        str(sorted(p.name for p in images_dir.glob("*"))[:4]),
+        len(exported_pngs) >= 3,
+        str([p.name for p in exported_pngs][:4]),
+    )
+    exported_sizes = {Image.open(p).size for p in exported_pngs}
+    # Slide 3 is deliberately empty (clear_slide), so "every image has ink" is
+    # wrong; "the ones with content rendered it" is the honest assertion.
+    non_blank = sum(
+        1 for p in exported_pngs if ink_fraction(Image.open(p).convert("RGB"), 1.0) > 0.005
+    )
+    record(
+        "exported images are one render per slide, at slide size, with content",
+        len(exported_pngs) == slide_total
+        and exported_sizes == {(int(slide_w), int(slide_h))}
+        and non_blank >= slide_total - 1,
+        f"{len(exported_pngs)} images for {slide_total} slides, sizes {exported_sizes}, "
+        f"{non_blank} non-blank",
     )
     html_dir = SCRATCH / "verify-html"
     shutil.rmtree(html_dir, ignore_errors=True)
@@ -621,6 +1128,12 @@ async def main():
         "Exported html",
     )
     record("html bundle exists", html_dir.is_dir(), str(html_dir))
+    html_files = sorted(p.name for p in html_dir.rglob("*")) if html_dir.is_dir() else []
+    record(
+        "html bundle is a playable export (index + assets), not an empty dir",
+        "index.html" in html_files and len(html_files) > 3,
+        f"{len(html_files)} entries: {html_files[:5]}",
+    )
     # movie/key09 exports were verified live in the Phase A probes (real .m4v
     # and .key artifacts); movie rendering is too slow for every harness run.
 
@@ -689,6 +1202,72 @@ async def main():
         '"position"' in built and '"size"' in built,
         "",
     )
+
+    # RENDERED: "0 element errors" is compatible with a deck that looks
+    # completely wrong - wrong colors, elements painted under panels, columns
+    # collapsed, a pie with one slice. Look at two of the three slides.
+    deck_size = text_of(await pres.get_slide_size(doc_name="verify-deck.key"))
+    deck_w, _deck_h = (float(v) for v in re.search(r"Size: (\d+) x (\d+)", deck_size).groups())
+    try:
+        build_report = json.loads(built.split("\n", 1)[1])
+    except (IndexError, json.JSONDecodeError):
+        build_report = None
+        record("build_deck reply carries a parseable element report", False, built[:160])
+    if build_report:
+
+        def built_boxes(slide_index, kind):
+            out = []
+            for element in build_report["slides"][slide_index].get("elements", []):
+                if element.get("type") != kind:
+                    continue
+                x, y = (float(v) for v in element["position"].split(","))
+                w, h = (float(v) for v in element["size"].split(","))
+                out.append((x, y, w, h))
+            return out
+
+        chart_boxes = built_boxes(1, "chart")
+        deck2, deck2_scale = await render_slide(
+            export, 2, "deck-slide2", deck_w, doc_name="verify-deck.key"
+        )
+        if deck2 and chart_boxes:
+            deck_pie = fill_areas(deck2, deck2_scale, chart_boxes[0], min_fraction=0.004)
+            record(
+                "build_deck: the spec's 30/70 pie renders 2 slices, not one",
+                len(deck_pie) >= 2,
+                f"{len(deck_pie)} distinct fills in the chart box {chart_boxes[0]}",
+            )
+        elif deck2:
+            record("build_deck: the spec's pie renders 2 slices", False, "no chart in the report")
+
+        panel_boxes = built_boxes(2, "panel")
+        bullet_boxes = built_boxes(2, "bullets")
+        deck3, deck3_scale = await render_slide(
+            export, 3, "deck-slide3", deck_w, doc_name="verify-deck.key"
+        )
+        if deck3 and panel_boxes:
+            px, py, pw, ph = panel_boxes[0]
+            panel_px = at(deck3, deck3_scale, px + pw - 16, py + ph - 16)
+            record(
+                "build_deck: the panel renders in the style's color (boardroom #E8EDF6)",
+                near(panel_px, (232, 237, 246), 10)
+                and not near(panel_px, dominant(deck3), 10),
+                f"sampled {panel_px}, slide background {dominant(deck3)}",
+            )
+        if deck3 and len(bullet_boxes) == 2:
+            # Measured from the INK, not the boxes: `{"column": "left", "y":
+            # 550}` used to place both lists at x=0, one on top of the other,
+            # with a clean 0-error build and a clean describe_deck round-trip.
+            band_y = min(b[1] for b in bullet_boxes)
+            band_h = max(b[3] for b in bullet_boxes)
+            left_ink = ink_bbox(deck3, deck3_scale, box=(0, band_y - 4, deck_w / 2, band_h + 8))
+            right_ink = ink_bbox(
+                deck3, deck3_scale, box=(deck_w / 2, band_y - 4, deck_w / 2, band_h + 8)
+            )
+            record(
+                "build_deck: column:left/right really render in opposite halves",
+                left_ink is not None and right_ink is not None,
+                f"ink in the left half: {left_ink}, in the right half: {right_ink}",
+            )
     described_raw = text_of(await deck.describe_deck(doc_name="verify-deck.key"))
     try:
         described = json.loads(described_raw)
@@ -787,11 +1366,24 @@ async def main():
 
     # --- theme switch, save, close, reopen ---
     if "Basic Black" in themes_text:
+        theme_before, _ = await render_slide(export, 2, "theme-before", slide_w)
         check(
             "set_presentation_theme",
             await pres.set_presentation_theme("Basic Black"),
             "Theme set",
         )
+        theme_after, _ = await render_slide(export, 2, "theme-after", slide_w)
+        if theme_before and theme_after:
+            # A theme is nothing BUT what it draws; the reply text proves none
+            # of it. Basic Black over Slate must repaint most of the slide.
+            delta = ImageChops.difference(theme_before, theme_after).convert("L")
+            moved = sum(1 for v in delta.getdata() if v > 40)
+            total = theme_after.width * theme_after.height
+            record(
+                "set_presentation_theme repaints the slide",
+                moved > total * 0.2,
+                f"{moved / total * 100:.1f}% of pixels changed",
+            )
     check("save_presentation", await pres.save_presentation(), "Saved")
     check("close_presentation(no save)", await pres.close_presentation(should_save=False))
     # .scratch lives under ~/Downloads, which is OUTSIDE Keynote's sandbox
@@ -850,6 +1442,14 @@ async def main():
     )
     size_after = text_of(await pres.get_slide_size())
     record("slide size read back 1920x1080", "1920 x 1080" in size_after, size_after[:80])
+    resized_shot = RENDER_DIR / "resized.png"
+    RENDER_DIR.mkdir(parents=True, exist_ok=True)
+    await export.screenshot_slide(1, str(resized_shot))
+    record(
+        "the resized document really EXPORTS at 1920x1080",
+        resized_shot.exists() and Image.open(resized_shot).size == (1920, 1080),
+        str(Image.open(resized_shot).size) if resized_shot.exists() else "no export",
+    )
     check("close default-saved doc", await pres.close_presentation(should_save=False))
 
     # a genuinely unsaved document (made behind the server's back): plain save

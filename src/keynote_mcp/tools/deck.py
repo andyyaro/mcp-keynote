@@ -518,7 +518,13 @@ def _flow_slide(
         etype = el["type"]
         column = el.pop("column", None)
         explicit = el.get("x") is not None or el.get("y") is not None
-        if etype in ("panel", "line", "shape") or explicit:
+        # An element that names a column always gets that column's x, even
+        # when it also pins one coordinate: `{"column": "left", "y": 550}`
+        # used to fall through to fully-manual placement, which set no x at
+        # all, so both columns rendered on top of each other at x=0 (found by
+        # a rendered check; every structural check passed). Explicit values
+        # still win per axis - the setdefault calls below never overwrite one.
+        if etype in ("panel", "line", "shape") or (column is None and explicit):
             placed.append(el)
             continue
 
@@ -533,7 +539,9 @@ def _flow_slide(
             avail_w = content_w
             cursor_key = "full"
             cursors["full"] = max(cursors.values())
-        y = cursors[cursor_key]
+        # A pinned y is where the element really goes, so the column cursor
+        # has to advance from there, not from where the flow would have put it.
+        y = el["y"] if el.get("y") is not None else cursors[cursor_key]
 
         if etype == "title":
             size = el.get("font_size") or style.title_size

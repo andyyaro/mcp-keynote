@@ -76,6 +76,7 @@ errors probed).
 | Bold/italic as attributes | (D) no style attribute | switch `font` to the bold/italic face name (this IS shipped, per range) |
 | Reading placeholder geometry from a layout | (D) layouts opaque | observe after a slide uses the layout |
 | Reading chart data (for describe_deck) | (P/D) nothing readable | described charts are geometry-only |
+| Skipped slides in an **image** export | (P) `skipped slides:true` is ignored by the slide-images export — identical file counts either way (probed at the raw-AppleScript level); the same property works for PDF | `export_pdf(include_skipped=true)`, or unskip first; `export_presentation` says so in its reply |
 | Original file path of embedded images | (P) after the source file is gone, only the basename survives | describe_deck falls back to the basename and says so |
 
 ## Scriptable but deliberately unexposed

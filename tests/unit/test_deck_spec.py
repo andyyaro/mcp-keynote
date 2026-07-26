@@ -341,6 +341,26 @@ class TestFlowSlide:
         assert l1["width"] == r1["width"]
         assert l1["width"] < PLAIN.content_width(1920) / 2
 
+    def test_column_still_places_x_when_y_is_pinned(self):
+        """A pinned y must not silently cancel the column.
+
+        Regression: `{"column": "left"/"right", "y": ...}` fell through to
+        fully-manual placement, which set no x at all - both columns landed
+        at x=0, drawn on top of each other, with a clean zero-error build.
+        Only a rendered check caught it.
+        """
+        slide = {
+            "elements": [
+                {"type": "bullets", "items": ["L1"], "column": "left", "y": 550},
+                {"type": "bullets", "items": ["R1"], "column": "right", "y": 550},
+            ]
+        }
+        left, right = _flow_slide(slide, PLAIN, 1920, 1080)[0]
+        assert left["x"] == PLAIN.margin_x(1920)
+        assert right["x"] > left["x"] + left["width"]
+        assert left["y"] == right["y"] == 550  # the pinned y is honored
+        assert left["width"] == right["width"] < PLAIN.content_width(1920) / 2
+
     def test_explicit_position_passes_through_unflowed(self):
         slide = {"elements": [{"type": "text", "text": "t", "x": 10, "y": 20}]}
         placed, _ = _flow_slide(slide, PLAIN, 1920, 1080)

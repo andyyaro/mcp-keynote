@@ -98,6 +98,20 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
    `get_tools()` + method + routing case in `server._dispatch()` + a row in
    `docs/TOOL_MATRIX.md` (verify against `docs/keynote-14.5.sdef` and a real
    Keynote first).
+6. **A visual tool gets a RENDERED check, never a structural one.** Counts,
+   property read-backs and "the file exists" prove an object exists, never
+   that it looks like anything — that is exactly how a pie chart shipped
+   rendering as one 100% slice with `count of charts is 1` passing. The
+   harness owns helpers for this (`render_slide`, `at`, `ink_bbox`,
+   `ink_fraction`, `fill_areas`, `pdf_page_count` in
+   `scripts/verify_tools.py`); use them, and where no render can show the
+   effect (build animations, transitions) say so in the TOOL_MATRIX row
+   instead of leaving the check looking stronger than it is. Two notes from
+   building them: ink is detected as a high-pass against the image's own
+   blur, because themes paint gradient backgrounds that a "differs from the
+   background color" test flags entirely; and chart fills are found by area
+   against a background ring, not by saturation, because theme series colors
+   include neutral gray.
 
 ## Keynote facts learned by verification (don't re-litigate)
 
