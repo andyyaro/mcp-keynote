@@ -1,11 +1,19 @@
-"""Phase 3 live verification: run every tool against a real Keynote.
+"""Live verification: run every tool against a real Keynote.
 
-Creates documents only under .scratch/, closes them without saving user data,
-and prints one PASS/FAIL line per check.
+Phase 3 built the original happy-path coverage; Phase 8 added the regression
+checks for what a field test showed that coverage missed: the untitled-
+document save path, opening files from outside Keynote's sandbox container
+(~/Downloads and ~/Desktop), index round-trips for every add_* tool, phantom
+placeholder filtering, screenshot placeholder honesty, and server-side
+centering.
+
+Creates documents only under .scratch/ (plus one temporary copy on ~/Desktop
+for the outside-sandbox open check, removed afterwards), closes them without
+saving user data, and prints one PASS/FAIL line per check.
 
 WARNING: this drives Keynote's UI - it takes window focus, and during the
 build-animation checks anything you type lands in the test presentation.
-Don't touch the keyboard while it runs (~1 minute).
+Don't touch the keyboard while it runs (~2 minutes).
 
 Usage:  uv run python scripts/verify_tools.py
 """
@@ -349,12 +357,22 @@ async def main():
         "Opened",
     )
     check("queue alive after open", await slides.get_slide_count(), "Slide count")
+
+    # error paths against reality - run while OUR document is frontmost so the
+    # probe can never address a user document
+    bad = text_of(await slides.delete_slide(99))
+    record("delete_slide(99) actionable", "-1728" in bad or "does not exist" in bad, bad[:140])
+
     check("close again", await pres.close_presentation(should_save=False))
 
-    # open from ~/Desktop, the other outside-sandbox location the field test hit
+    # open from ~/Desktop, the other outside-sandbox location the field test
+    # hit (.key documents may be saved as single files or packages)
     desktop_key = Path.home() / "Desktop" / "keynote-mcp-verify-tmp.key"
     try:
-        shutil.copyfile(test_key, desktop_key)
+        if test_key.is_dir():
+            shutil.copytree(test_key, desktop_key)
+        else:
+            shutil.copyfile(test_key, desktop_key)
         check(
             "open_presentation(outside sandbox, ~/Desktop)",
             await pres.open_presentation(str(desktop_key)),
@@ -362,7 +380,10 @@ async def main():
         )
         check("close desktop copy", await pres.close_presentation(should_save=False))
     finally:
-        desktop_key.unlink(missing_ok=True)
+        if desktop_key.is_dir():
+            shutil.rmtree(desktop_key, ignore_errors=True)
+        else:
+            desktop_key.unlink(missing_ok=True)
 
     # --- untitled-document save path (the Phase 3 harness never took it) ---
     default_saved = check(
@@ -395,10 +416,6 @@ async def main():
     )
     record("rescued file exists", rescue_path.exists(), str(rescue_path))
     check("close rescued doc", await pres.close_presentation(should_save=False))
-
-    # error paths against reality
-    bad = text_of(await slides.delete_slide(99))
-    record("delete_slide(99) actionable", "-1728" in bad or "does not exist" in bad, bad[:140])
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")

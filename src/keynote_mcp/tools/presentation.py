@@ -359,8 +359,14 @@ class PresentationTools:
                         else
                             save targetDoc
                         end if
-                        return "SAVED|" & (name of targetDoc) & "|" & ¬
-                            (POSIX path of (file of targetDoc))
+                        -- Two-step read: 'POSIX path of (file of targetDoc)'
+                        -- inline fails to coerce (-1700); capture first.
+                        set savedFile to file of targetDoc
+                        set savedPath to ""
+                        if savedFile is not missing value then
+                            set savedPath to POSIX path of savedFile
+                        end if
+                        return "SAVED|" & (name of targetDoc) & "|" & savedPath
                     end tell
                 end run
                 """,
@@ -396,7 +402,9 @@ class PresentationTools:
                     )
                 ]
             _, name, path = result.split("|", 2)
-            return [TextContent(type="text", text=f"Saved presentation: {name} ({path})")]
+            path = path or save_path
+            suffix = f" ({path})" if path else ""
+            return [TextContent(type="text", text=f"Saved presentation: {name}{suffix}")]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to save presentation: {e}")]
 
