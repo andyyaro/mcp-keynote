@@ -28,76 +28,41 @@ Thank you for your interest in Keynote-MCP! We welcome and appreciate all forms 
 
 ### 1. Clone the project
 ```bash
-git clone https://github.com/ByAxe/keynote-mcp.git
-cd keynote-mcp
+git clone https://github.com/andyyaro/mcp-keynote.git
+cd mcp-keynote
 ```
 
-### 2. Create a virtual environment
+### 2. Install dependencies ([uv](https://docs.astral.sh/uv/) required)
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+uv sync --dev
+pre-commit install   # optional but recommended
 ```
 
-### 3. Install dependencies
+### 3. Run the checks
 ```bash
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-```
-
-### 4. Configure environment variables
-```bash
-cp env.example .env
-# Edit .env and set required environment variables
-```
-
-### 5. Run tests
-```bash
-pytest tests/
+make test              # unit tests (no Keynote needed)
+make check             # everything CI runs: ruff, mypy --strict, coverage gate
+make test-integration  # against a REAL Keynote - local only, steals window focus
 ```
 
 ## Coding Standards
 
-### Python Code Style
-- Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/)
-- Use 4 spaces for indentation
-- Line length should not exceed 88 characters
-- Use meaningful variable and function names
-
-### Code Formatting
-We use the following tools for code formatting:
-```bash
-# Format code
-black .
-
-# Sort imports
-isort .
-
-# Lint
-flake8 .
-
-# Type checking
-mypy src/
-```
+- `ruff` handles linting and formatting (`make format`); `mypy --strict`
+  must pass on `src/`.
+- **Never interpolate user strings into AppleScript source.** Pass them as
+  osascript argv (see `utils/applescript_runner.py`); numbers only after
+  validation. `tests/unit/test_injection.py` enforces this.
+- No `print()` in `src/` — stdout is the JSON-RPC channel; log to stderr.
 
 ## Testing
 
-### Running Tests
-```bash
-# Run all tests
-pytest
-
-# Run specific test file
-pytest tests/test_presentation.py
-
-# Run with coverage
-pytest --cov=src tests/
-```
-
-### Writing Tests
-- Write unit tests for new features
-- Place test files in the `tests/` directory
-- Prefix test files with `test_`
-- Use the pytest framework
+- Unit tests (`tests/unit/`) must run without Keynote or a GUI - mock the
+  runner with the fixtures in `tests/conftest.py`.
+- Integration tests (`tests/integration/`) are marked `keynote` and
+  deselected by default; they may only create documents under `.scratch/`
+  and must close them without saving.
+- New tools need: schema + method + dispatch case + unit tests + a verified
+  row in `docs/TOOL_MATRIX.md`.
 
 ## Commit Convention
 

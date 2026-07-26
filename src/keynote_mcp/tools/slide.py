@@ -1,19 +1,29 @@
-"""
-Slide management tools
-"""
+"""Slide management tools."""
 
-from typing import Any, Dict, List, Optional
-from mcp.types import Tool, TextContent
-from ..utils import AppleScriptRunner, validate_slide_number, ParameterError
+from mcp.types import TextContent, Tool
+
+from ..utils import AppleScriptRunner, validate_slide_number
+
+_DOC_ARG = {
+    "type": "string",
+    "description": "Document name (optional, defaults to front document)",
+}
+
+_RESOLVE_DOC = """
+        if docName is "" then
+            set targetDoc to front document
+        else
+            set targetDoc to document docName
+        end if"""
 
 
 class SlideTools:
     """Slide management tools class"""
-    
-    def __init__(self):
+
+    def __init__(self) -> None:
         self.runner = AppleScriptRunner()
-    
-    def get_tools(self) -> List[Tool]:
+
+    def get_tools(self) -> list[Tool]:
         """Get all slide management tools"""
         return [
             Tool(
@@ -22,20 +32,20 @@ class SlideTools:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
+                        "doc_name": _DOC_ARG,
                         "position": {
                             "type": "integer",
-                            "description": "Insert position (optional, 0 = append at end)"
+                            "description": "Insert position (optional, 0 = append at end)",
                         },
                         "layout": {
                             "type": "string",
-                            "description": "Layout type (optional)"
-                        }
-                    }
-                }
+                            "description": (
+                                "Slide layout (master slide) name, e.g. 'Blank'. Optional; "
+                                "defaults to Blank. See get_available_layouts."
+                            ),
+                        },
+                    },
+                },
             ),
             Tool(
                 name="delete_slide",
@@ -43,17 +53,14 @@ class SlideTools:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
+                        "doc_name": _DOC_ARG,
                         "slide_number": {
                             "type": "integer",
-                            "description": "Slide number to delete"
-                        }
+                            "description": "Slide number to delete",
+                        },
                     },
-                    "required": ["slide_number"]
-                }
+                    "required": ["slide_number"],
+                },
             ),
             Tool(
                 name="duplicate_slide",
@@ -61,21 +68,20 @@ class SlideTools:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
+                        "doc_name": _DOC_ARG,
                         "slide_number": {
                             "type": "integer",
-                            "description": "Slide number to duplicate"
+                            "description": "Slide number to duplicate",
                         },
                         "new_position": {
                             "type": "integer",
-                            "description": "New position (optional, 0 = append at end)"
-                        }
+                            "description": (
+                                "Position for the copy (optional, 0 = right after the source)"
+                            ),
+                        },
                     },
-                    "required": ["slide_number"]
-                }
+                    "required": ["slide_number"],
+                },
             ),
             Tool(
                 name="move_slide",
@@ -83,74 +89,57 @@ class SlideTools:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
+                        "doc_name": _DOC_ARG,
                         "from_position": {
                             "type": "integer",
-                            "description": "Source position"
+                            "description": "Source position",
                         },
                         "to_position": {
                             "type": "integer",
-                            "description": "Target position"
-                        }
+                            "description": "Target position",
+                        },
                     },
-                    "required": ["from_position", "to_position"]
-                }
+                    "required": ["from_position", "to_position"],
+                },
             ),
             Tool(
                 name="get_slide_count",
                 description="Get slide count",
                 inputSchema={
                     "type": "object",
-                    "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        }
-                    }
-                }
+                    "properties": {"doc_name": _DOC_ARG},
+                },
             ),
             Tool(
                 name="select_slide",
-                description="Select a specific slide",
+                description=(
+                    "Select (navigate to) a specific slide. Required before add_build_in "
+                    "when working on a different slide."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
-                        "slide_number": {
-                            "type": "integer",
-                            "description": "Slide number"
-                        }
+                        "doc_name": _DOC_ARG,
+                        "slide_number": {"type": "integer", "description": "Slide number"},
                     },
-                    "required": ["slide_number"]
-                }
+                    "required": ["slide_number"],
+                },
             ),
             Tool(
                 name="set_slide_layout",
-                description="Set slide layout",
+                description="Set slide layout (base slide / master slide)",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
-                        "slide_number": {
-                            "type": "integer",
-                            "description": "Slide number"
-                        },
+                        "doc_name": _DOC_ARG,
+                        "slide_number": {"type": "integer", "description": "Slide number"},
                         "layout": {
                             "type": "string",
-                            "description": "Layout type"
-                        }
+                            "description": "Layout name (see get_available_layouts)",
+                        },
                     },
-                    "required": ["slide_number", "layout"]
-                }
+                    "required": ["slide_number", "layout"],
+                },
             ),
             Tool(
                 name="get_slide_info",
@@ -158,167 +147,135 @@ class SlideTools:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        },
-                        "slide_number": {
-                            "type": "integer",
-                            "description": "Slide number"
-                        }
+                        "doc_name": _DOC_ARG,
+                        "slide_number": {"type": "integer", "description": "Slide number"},
                     },
-                    "required": ["slide_number"]
-                }
+                    "required": ["slide_number"],
+                },
             ),
             Tool(
                 name="get_available_layouts",
-                description="Get list of available slide layouts",
+                description="Get list of available slide layouts (master slides)",
                 inputSchema={
                     "type": "object",
-                    "properties": {
-                        "doc_name": {
-                            "type": "string",
-                            "description": "Document name (optional, defaults to front document)"
-                        }
-                    }
-                }
-            )
+                    "properties": {"doc_name": _DOC_ARG},
+                },
+            ),
         ]
-    
-    async def add_slide(self, doc_name: str = "", position: int = 0, layout: str = "", clear_default_content: bool = True) -> List[TextContent]:
-        """Add a new slide"""
+
+    async def add_slide(
+        self, doc_name: str = "", position: int = 0, layout: str = "Blank"
+    ) -> list[TextContent]:
+        """Add a new slide."""
         try:
-            # If clearing default content is enabled and no layout specified, use Blank layout
-            if clear_default_content and layout == "":
+            if position != 0:
+                validate_slide_number(position)
+            if not layout:
                 layout = "Blank"
-            
-            result = self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    activate
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    if {position} is 0 then
-                        set newSlide to make new slide at end of slides of targetDoc
-                    else
-                        set newSlide to make new slide at slide {position} of targetDoc
-                    end if
-                    
-                    if "{layout}" is not "" then
+            position_clause = (
+                "set newSlide to make new slide at end of slides of targetDoc"
+                if position == 0
+                else f"set newSlide to make new slide at before slide {position} of targetDoc"
+            )
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    set layoutName to item 2 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        {position_clause}
+                        set layoutNote to layoutName
                         try
-                            set base slide of newSlide to master slide "{layout}" of targetDoc
+                            set base layout of newSlide to slide layout layoutName of targetDoc
                         on error
-                            -- If layout not found, try using Blank layout
-                            try
-                                set base slide of newSlide to master slide "Blank" of targetDoc
-                                log "Layout {layout} not found, using Blank layout"
-                            on error
-                                log "Neither {layout} nor Blank layout found, using default layout"
-                            end try
+                            set layoutNote to "'" & layoutName & "' not found, kept default layout"
                         end try
-                    end if
-                    
-                    return slide number of newSlide
-                end tell
-            ''')
-            
-            layout_info = f" (layout: {layout})" if layout else " (default layout)"
-            return [TextContent(
-                type="text",
-                text=f"✅ Added slide #{result}{layout_info}"
-            )]
-            
-        except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to add slide: {str(e)}"
-            )]
-    
-    async def delete_slide(self, slide_number: int, doc_name: str = "") -> List[TextContent]:
-        """Delete a slide"""
-        try:
-            validate_slide_number(slide_number)
-            
-            self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    delete slide {slide_number} of targetDoc
-                end tell
-            ''')
-            
-            return [TextContent(
-                type="text",
-                text=f"✅ Deleted slide {slide_number}"
-            )]
-            
-        except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to delete slide: {str(e)}"
-            )]
-    
-    async def duplicate_slide(self, slide_number: int, doc_name: str = "", new_position: int = 0) -> List[TextContent]:
-        """Duplicate a slide"""
-        try:
-            validate_slide_number(slide_number)
-            
-            result = self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-
-                    tell targetDoc
-                        set sourceSlide to slide {slide_number}
-                        if {new_position} is 0 then
-                            -- Duplicate right after the source slide
-                            duplicate sourceSlide to after sourceSlide
-                            set newSlideNum to {slide_number} + 1
-                        else if {new_position} > {slide_number} then
-                            duplicate sourceSlide to after slide {new_position} of targetDoc
-                            set newSlideNum to {new_position} + 1
-                        else
-                            duplicate sourceSlide to before slide {new_position} of targetDoc
-                            set newSlideNum to {new_position}
-                        end if
+                        return (slide number of newSlide as text) & "|" & layoutNote
                     end tell
-
-                    return newSlideNum
-                end tell
-            ''')
-            
-            return [TextContent(
-                type="text",
-                text=f"✅ Duplicated slide, new number: {result}"
-            )]
-            
+                end run
+                """,
+                doc_name,
+                layout,
+            )
+            number, _, layout_note = result.partition("|")
+            return [TextContent(type="text", text=f"Added slide #{number} (layout: {layout_note})")]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to duplicate slide: {str(e)}"
-            )]
-    
-    async def move_slide(self, from_position: int, to_position: int, doc_name: str = "") -> List[TextContent]:
-        """Move a slide to a different position"""
+            return [TextContent(type="text", text=f"Failed to add slide: {e}")]
+
+    async def delete_slide(self, slide_number: int, doc_name: str = "") -> list[TextContent]:
+        """Delete a slide."""
+        try:
+            validate_slide_number(slide_number)
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        -- Keynote silently ignores deleting a nonexistent
+                        -- slide; check explicitly so the caller hears about it
+                        if not (exists slide {slide_number} of targetDoc) then
+                            error "Slide {slide_number} does not exist. Invalid index." number -1719
+                        end if
+                        delete slide {slide_number} of targetDoc
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [TextContent(type="text", text=f"Deleted slide {slide_number}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to delete slide: {e}")]
+
+    async def duplicate_slide(
+        self, slide_number: int, doc_name: str = "", new_position: int = 0
+    ) -> list[TextContent]:
+        """Duplicate a slide."""
+        try:
+            validate_slide_number(slide_number)
+            if new_position != 0:
+                validate_slide_number(new_position)
+            if new_position == 0:
+                duplicate_clause = "duplicate sourceSlide to after sourceSlide"
+                new_number = slide_number + 1
+            elif new_position > slide_number:
+                duplicate_clause = (
+                    f"duplicate sourceSlide to after slide {new_position} of targetDoc"
+                )
+                new_number = new_position + 1
+            else:
+                duplicate_clause = (
+                    f"duplicate sourceSlide to before slide {new_position} of targetDoc"
+                )
+                new_number = new_position
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set sourceSlide to slide {slide_number} of targetDoc
+                        {duplicate_clause}
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [TextContent(type="text", text=f"Duplicated slide, new number: {new_number}")]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to duplicate slide: {e}")]
+
+    async def move_slide(
+        self, from_position: int, to_position: int, doc_name: str = ""
+    ) -> list[TextContent]:
+        """Move a slide to a different position."""
         try:
             validate_slide_number(from_position)
             validate_slide_number(to_position)
 
             if from_position == to_position:
-                return [TextContent(
-                    type="text",
-                    text=f"✅ Slide already at position {to_position}"
-                )]
+                return [TextContent(type="text", text=f"Slide already at position {to_position}")]
 
             # Use 'before' when moving backward, 'after' when moving forward.
             # Plain 'move X to slide Y' REPLACES slide Y, destroying it.
@@ -327,234 +284,198 @@ class SlideTools:
             else:
                 insert_ref = f"after slide {to_position}"
 
-            self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-
-                    move slide {from_position} of targetDoc to {insert_ref} of targetDoc
-                end tell
-            ''')
-
-            return [TextContent(
-                type="text",
-                text=f"✅ Moved slide from position {from_position} to position {to_position}"
-            )]
-            
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        move slide {from_position} of targetDoc to {insert_ref} of targetDoc
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Moved slide from position {from_position} to position {to_position}",
+                )
+            ]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to move slide: {str(e)}"
-            )]
-    
-    async def get_slide_count(self, doc_name: str = "") -> List[TextContent]:
-        """Get slide count"""
+            return [TextContent(type="text", text=f"Failed to move slide: {e}")]
+
+    async def get_slide_count(self, doc_name: str = "") -> list[TextContent]:
+        """Get slide count."""
         try:
-            result = self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    return count of slides of targetDoc
-                end tell
-            ''')
-            
-            return [TextContent(
-                type="text",
-                text=f"📊 Slide count: {result}"
-            )]
-            
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        return count of slides of targetDoc
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [TextContent(type="text", text=f"Slide count: {result}")]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to get slide count: {str(e)}"
-            )]
-    
-    async def select_slide(self, slide_number: int, doc_name: str = "") -> List[TextContent]:
-        """Select a specific slide"""
+            return [TextContent(type="text", text=f"Failed to get slide count: {e}")]
+
+    async def select_slide(self, slide_number: int, doc_name: str = "") -> list[TextContent]:
+        """Select a specific slide."""
         try:
             validate_slide_number(slide_number)
-            
-            self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    set current slide of targetDoc to slide {slide_number} of targetDoc
-                end tell
-            ''')
-            
-            return [TextContent(
-                type="text",
-                text=f"✅ Selected slide {slide_number}"
-            )]
-            
+            self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set current slide of targetDoc to slide {slide_number} of targetDoc
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            return [TextContent(type="text", text=f"Selected slide {slide_number}")]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to select slide: {str(e)}"
-            )]
-    
-    async def set_slide_layout(self, slide_number: int, layout: str, doc_name: str = "") -> List[TextContent]:
-        """Set slide layout"""
+            return [TextContent(type="text", text=f"Failed to select slide: {e}")]
+
+    async def set_slide_layout(
+        self, slide_number: int, layout: str, doc_name: str = ""
+    ) -> list[TextContent]:
+        """Set slide layout."""
         try:
             validate_slide_number(slide_number)
-            
-            result = self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    try
-                        -- Find target layout
-                        set targetLayout to missing value
-                        repeat with masterSlide in master slides of targetDoc
-                            if name of masterSlide is "{layout}" then
-                                set targetLayout to masterSlide
-                                exit repeat
-                            end if
-                        end repeat
-                        
-                        if targetLayout is missing value then
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    set layoutName to item 2 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        if not (exists slide layout layoutName of targetDoc) then
                             return "layout_not_found"
                         end if
-                        
-                        -- Set slide layout (using correct syntax: base slide)
-                        set base slide of slide {slide_number} of targetDoc to targetLayout
+                        set base layout of slide {slide_number} of targetDoc to ¬
+                            slide layout layoutName of targetDoc
                         return "success"
-                    on error errMsg
-                        return "error: " & errMsg
-                    end try
-                end tell
-            ''')
-            
+                    end tell
+                end run
+                """,
+                doc_name,
+                layout,
+            )
             if result == "success":
-                return [TextContent(
+                return [
+                    TextContent(type="text", text=f"Set slide {slide_number} layout to: {layout}")
+                ]
+            return [
+                TextContent(
                     type="text",
-                    text=f"✅ Set slide {slide_number} layout to: {layout}"
-                )]
-            elif result == "layout_not_found":
-                return [TextContent(
-                    type="text",
-                    text=f"❌ Layout not found: {layout}"
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"❌ Failed to set layout: {result}"
-                )]
-                
+                    text=(
+                        f"Layout not found: {layout}. "
+                        "Use get_available_layouts to list valid names."
+                    ),
+                )
+            ]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to set slide layout: {str(e)}"
-            )]
-    
-    async def get_slide_info(self, slide_number: int, doc_name: str = "") -> List[TextContent]:
-        """Get slide info"""
+            return [TextContent(type="text", text=f"Failed to set slide layout: {e}")]
+
+    async def get_slide_info(self, slide_number: int, doc_name: str = "") -> list[TextContent]:
+        """Get slide info."""
         try:
             validate_slide_number(slide_number)
-            
-            result = self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    set targetSlide to slide {slide_number} of targetDoc
-                    set slideInfo to {{}}
-                    
-                    set end of slideInfo to slide number of targetSlide
-                    
-                    try
-                        set end of slideInfo to name of master slide of targetSlide
-                    on error
-                        set end of slideInfo to "Unknown Layout"
-                    end try
-                    
-                    try
-                        set end of slideInfo to count of text items of targetSlide
-                    on error
-                        set end of slideInfo to 0
-                    end try
-                    
-                    return slideInfo as string
-                end tell
-            ''')
-            
-            info_parts = result.replace("{", "").replace("}", "").split(", ")
-            if len(info_parts) >= 3:
-                number, layout, text_count = info_parts[0], info_parts[1], info_parts[2]
-                return [TextContent(
-                    type="text",
-                    text=f"📊 Slide {slide_number} info:\n• Number: {number}\n• Layout: {layout}\n• Text item count: {text_count}"
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"📊 Slide {slide_number} info: {result}"
-                )]
-                
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set targetSlide to slide {slide_number} of targetDoc
+                        set layoutName to "Unknown Layout"
+                        try
+                            set layoutName to name of base layout of targetSlide
+                        end try
+                        -- Count only real text items: Keynote's raw count
+                        -- includes the default title/body placeholder objects
+                        -- even when hidden, and twice when showing
+                        set textCount to 0
+                        try
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item of targetSlide
+                            end try
+                            try
+                                set defB to default body item of targetSlide
+                            end try
+                            set titleShown to title showing of targetSlide
+                            set bodyShown to body showing of targetSlide
+                            set seenTitle to false
+                            set seenBody to false
+                            repeat with i from 1 to (count of text items of targetSlide)
+                                set ti to text item i of targetSlide
+                                set phantom to false
+                                if defT is not missing value and ti is defT then
+                                    if seenTitle or (not titleShown) then set phantom to true
+                                    set seenTitle to true
+                                else if defB is not missing value and ti is defB then
+                                    if seenBody or (not bodyShown) then set phantom to true
+                                    set seenBody to true
+                                end if
+                                if not phantom then set textCount to textCount + 1
+                            end repeat
+                        end try
+                        return (slide number of targetSlide as text) & "|||" & ¬
+                            layoutName & "|||" & (textCount as text)
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            parts = result.split("|||")
+            if len(parts) >= 3:
+                number, layout, text_count = parts[0], parts[1], parts[2]
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Slide {slide_number} info:\n- Number: {number}\n"
+                            f"- Layout: {layout}\n- Text item count: {text_count}"
+                        ),
+                    )
+                ]
+            return [TextContent(type="text", text=f"Slide {slide_number} info: {result}")]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to get slide info: {str(e)}"
-            )]
-    
-    async def get_available_layouts(self, doc_name: str = "") -> List[TextContent]:
-        """Get available layouts"""
+            return [TextContent(type="text", text=f"Failed to get slide info: {e}")]
+
+    async def get_available_layouts(self, doc_name: str = "") -> list[TextContent]:
+        """Get available layouts."""
         try:
-            result = self.runner.run_inline_script(f'''
-                tell application "Keynote"
-                    if "{doc_name}" is "" then
-                        set targetDoc to front document
-                    else
-                        set targetDoc to document "{doc_name}"
-                    end if
-                    
-                    set layoutList to {{}}
-                    repeat with masterSlide in master slides of targetDoc
-                        set end of layoutList to name of masterSlide
-                    end repeat
-                    
-                    -- Use special delimiter to avoid comma issues in layout names
-                    set AppleScript's text item delimiters to "|||"
-                    set layoutString to layoutList as string
-                    set AppleScript's text item delimiters to ""
-                    
-                    return layoutString
-                end tell
-            ''')
-            
-            if result:
-                layouts = result.split("|||")
-                layout_list = "\n".join([f"• {layout.strip()}" for layout in layouts if layout.strip()])
-                return [TextContent(
-                    type="text",
-                    text=f"📐 Available layouts:\n{layout_list}"
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="📐 No available layouts found"
-                )]
-                
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        set layoutNames to name of every slide layout of targetDoc
+                        set AppleScript's text item delimiters to "|||"
+                        set joined to layoutNames as text
+                        set AppleScript's text item delimiters to ""
+                        return joined
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            layouts = [layout.strip() for layout in result.split("|||") if layout.strip()]
+            if layouts:
+                listing = "\n".join(f"- {layout}" for layout in layouts)
+                return [TextContent(type="text", text=f"Available layouts:\n{listing}")]
+            return [TextContent(type="text", text="No available layouts found")]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=f"❌ Failed to get layouts: {str(e)}"
-            )] 
+            return [TextContent(type="text", text=f"Failed to get layouts: {e}")]

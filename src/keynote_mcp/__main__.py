@@ -1,7 +1,6 @@
-"""
-Allow running keynote-mcp as a module: python -m keynote_mcp
-"""
+"""Allow running keynote-mcp as a module: python -m keynote_mcp"""
 
 from keynote_mcp.server import main
 
-main()
+if __name__ == "__main__":
+    main()

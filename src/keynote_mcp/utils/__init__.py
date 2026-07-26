@@ -1,29 +1,35 @@
-"""
-Utility modules for Keynote-MCP
-"""
+"""Utility modules for Keynote-MCP."""
 
 from .applescript_runner import AppleScriptRunner
 from .error_handler import (
-    KeynoteError,
+    ELEMENT_TYPE_MAP,
     AppleScriptError,
     FileOperationError,
+    KeynoteError,
     ParameterError,
-    validate_slide_number,
+    parse_color,
     validate_coordinates,
-    validate_file_path,
-    validate_element_type,
     validate_dimensions,
+    validate_element_type,
+    validate_file_path,
+    validate_index,
+    validate_number,
+    validate_slide_number,
 )
 
 __all__ = [
-    'AppleScriptRunner',
-    'KeynoteError',
-    'AppleScriptError',
-    'FileOperationError',
-    'ParameterError',
-    'validate_slide_number',
-    'validate_coordinates',
-    'validate_file_path',
-    'validate_element_type',
-    'validate_dimensions',
-] 
+    "ELEMENT_TYPE_MAP",
+    "AppleScriptError",
+    "AppleScriptRunner",
+    "FileOperationError",
+    "KeynoteError",
+    "ParameterError",
+    "parse_color",
+    "validate_coordinates",
+    "validate_dimensions",
+    "validate_element_type",
+    "validate_file_path",
+    "validate_index",
+    "validate_number",
+    "validate_slide_number",
+]

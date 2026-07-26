@@ -168,6 +168,7 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
+.scratch/
 tmp/
 temp/
 *.keynote
@@ -182,11 +183,6 @@ screenshots/
 
 # AppleScript compiled files
 *.scpt
-
-# Test files
-test_*.py
-*_test.py
-*_demo.py
 
 # Logs
 *.log

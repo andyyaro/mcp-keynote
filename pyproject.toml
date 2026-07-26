@@ -1,19 +1,20 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
 
 [project]
 name = "keynote-mcp"
-version = "1.0.1"
+version = "2.2.0"
 description = "An MCP server for controlling Apple Keynote presentations via AppleScript"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    {name = "easychen", email = "easychen@gmail.com"},
-    {name = "ByAxe"},
+    { name = "easychen", email = "easychen@gmail.com" },
+    { name = "ByAxe" },
 ]
 maintainers = [
-    {name = "ByAxe"},
+    { name = "Andy Yaro" },
 ]
 keywords = [
     "keynote",
@@ -23,172 +24,96 @@ keywords = [
     "automation",
     "presentation",
     "macos",
-    "ai",
-    "llm",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Multimedia :: Graphics :: Presentation",
     "Topic :: Office/Business :: Office Suites",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.0.0",
-    "typing-extensions>=4.0.0",
-    "aiohttp>=3.8.0",
-    "aiofiles>=0.8.0",
-    "Pillow>=9.0.0",
-    "python-dotenv>=1.0.0",
+    "mcp>=1.28,<2",
+    "aiohttp>=3.9",
+    "aiofiles>=23.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=22.0.0",
-    "isort>=5.0.0",
-    "flake8>=5.0.0",
-    "mypy>=1.0.0",
-    "bandit>=1.7.0",
-    "safety>=2.0.0",
-    "pre-commit>=2.20.0",
-    "coverage>=6.0.0",
-]
-docs = [
-    "sphinx>=5.0.0",
-    "sphinx-rtd-theme>=1.0.0",
-    "sphinx-autodoc-typehints>=1.19.0",
-]
-build = [
-    "build>=0.8.0",
-    "twine>=4.0.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-aiofiles",
+    "pre-commit>=4.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/ByAxe/keynote-mcp"
-Repository = "https://github.com/ByAxe/keynote-mcp"
-Documentation = "https://github.com/ByAxe/keynote-mcp#readme"
-"Bug Reports" = "https://github.com/ByAxe/keynote-mcp/issues"
+Homepage = "https://github.com/andyyaro/mcp-keynote"
+Repository = "https://github.com/andyyaro/mcp-keynote"
+Upstream = "https://github.com/ByAxe/keynote-mcp"
+Original = "https://github.com/easychen/keynote-mcp"
 
 [project.scripts]
 keynote-mcp = "keynote_mcp.server:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "S",   # bandit (security)
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501", # long lines in embedded AppleScript are clearer unwrapped
+]
+# Keynote's own error text uses curly quotes; tests and matchers must too.
+allowed-confusables = ["’"]
 
-[tool.setuptools.package-data]
-keynote_mcp = ["applescript/*.scpt", "applescript/*.applescript"]
+[tool.ruff.lint.per-file-ignores]
+# S108: unit tests use literal /tmp paths as opaque strings (never written to)
+"tests/*" = ["S101", "S603", "S108"]
+# S608: AppleScript source in f-strings trips the SQL-injection heuristic
+"src/keynote_mcp/tools/content.py" = ["S608"]
 
-# Black config
-[tool.black]
-line-length = 88
-target-version = ['py310']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
-
-# isort config
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-known_first_party = ["keynote_mcp"]
-
-# MyPy config
 [tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
+python_version = "3.11"
+strict = true
+files = ["src"]
 
 [[tool.mypy.overrides]]
-module = [
-    "mcp.*",
-    "aiohttp.*",
-    "aiofiles.*",
-    "PIL.*",
-]
+module = ["aiohttp.*", "aiofiles.*"]
 ignore_missing_imports = true
 
-# Pytest config
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--verbose",
-    "--cov=keynote_mcp",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-report=xml",
-]
+addopts = "-m 'not keynote' --strict-markers --strict-config"
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
+    "keynote: integration tests that drive a real Keynote.app (deselected by default; run with -m keynote)",
 ]
+asyncio_mode = "auto"
 
-# Coverage config
 [tool.coverage.run]
 source = ["keynote_mcp"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-    "*/__pycache__/*",
-    "*/venv/*",
-    "*/env/*",
-]
 
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if 0:",
     "if __name__ == .__main__.:",
-    "class .*\\bProtocol\\):",
-    "@(abc\\.)?abstractmethod",
+    "if TYPE_CHECKING:",
 ]
-
-# Bandit config
-[tool.bandit]
-exclude_dirs = ["tests", "venv", "env"]
-skips = ["B101", "B601"] 
