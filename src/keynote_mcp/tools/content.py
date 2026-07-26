@@ -1073,6 +1073,12 @@ class ContentTools:
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        -- Keynote silently ignores deleting a nonexistent
+                        -- element; check explicitly so the caller hears about it
+                        if not (exists {as_type} {element_index} of ¬
+                                slide {slide_number} of targetDoc) then
+                            error "No {as_type} {element_index} on slide {slide_number}. Invalid index." number -1719
+                        end if
                         delete {as_type} {element_index} of slide {slide_number} of targetDoc
                     end tell
                 end run
@@ -1346,14 +1352,6 @@ class ContentTools:
 
     # --- Build animations (UI scripting) ---
 
-    def _get_window_title(self, doc_name: str = "") -> str:
-        """Get the Keynote window title for UI scripting."""
-        if doc_name:
-            return doc_name
-        return self.runner.run(
-            'tell application "Keynote" to return name of front document'
-        ).strip()
-
     def _select_slide_for_ui(self, slide_number: int) -> None:
         """Select the slide in a separate osascript call before UI scripting.
 
@@ -1384,18 +1382,17 @@ class ContentTools:
             validate_element_type(element_type)
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
-            win_title = self._get_window_title()
             self._select_slide_for_ui(slide_number)
 
-            # Full UI scripting flow:
+            # Full UI scripting flow (targets window 1 of the Keynote process -
+            # window titles do not reliably match document names):
             # 1. Select element  2. Open Animate inspector  3. Build In tab
             # 4. Add effect  5. Set delivery
             self.runner.run(
                 f"""
                 on run argv
-                    set winTitle to item 1 of argv
-                    set effectName to item 2 of argv
-                    set deliveryName to item 3 of argv
+                    set effectName to item 1 of argv
+                    set deliveryName to item 2 of argv
 
                     -- Step 1: Select element (select_slide first, or the popover
                     -- will not appear - error -2700)
@@ -1421,7 +1418,7 @@ class ContentTools:
                     -- Step 3: Click Build In tab (radio button 1 = Build In)
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window winTitle
+                            set targetWin to window 1
                             click radio button 1 of radio group 1 of targetWin
                         end tell
                     end tell
@@ -1430,7 +1427,7 @@ class ContentTools:
                     -- Step 4: Click "Add an Effect" or "Change" button
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window winTitle
+                            set targetWin to window 1
                             set btnName to ""
                             try
                                 get button "Add an Effect" of targetWin
@@ -1454,7 +1451,7 @@ class ContentTools:
                     -- Select effect from popover
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window winTitle
+                            set targetWin to window 1
                             set po to missing value
                             try
                                 set po to pop over 1 of button "Add an Effect" of targetWin
@@ -1481,7 +1478,7 @@ class ContentTools:
                     if deliveryName is not "All at Once" then
                         tell application "System Events"
                             tell application process "Keynote"
-                                set targetWin to window winTitle
+                                set targetWin to window 1
                                 set deliveryPopup to pop up button 3 of ¬
                                     scroll area 1 of targetWin
                                 click deliveryPopup
@@ -1493,7 +1490,6 @@ class ContentTools:
                     end if
                 end run
                 """,
-                win_title,
                 effect,
                 delivery,
                 timeout=_UI_SCRIPT_TIMEOUT,
@@ -1520,14 +1516,11 @@ class ContentTools:
             validate_element_type(element_type)
             validate_index(element_index, "element_index")
             as_type = ELEMENT_TYPE_MAP[element_type]
-            win_title = self._get_window_title()
             self._select_slide_for_ui(slide_number)
 
             self.runner.run(
                 f"""
                 on run argv
-                    set winTitle to item 1 of argv
-
                     -- Select element
                     tell application "Keynote"
                         activate
@@ -1550,7 +1543,7 @@ class ContentTools:
 
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window winTitle
+                            set targetWin to window 1
                             click radio button 1 of radio group 1 of targetWin
                             delay 0.3
 
@@ -1570,7 +1563,7 @@ class ContentTools:
                     -- Select "None" from the popover
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window winTitle
+                            set targetWin to window 1
                             set po to missing value
                             try
                                 set po to pop over 1 of targetWin
@@ -1589,7 +1582,6 @@ class ContentTools:
                     delay 0.3
                 end run
                 """,
-                win_title,
                 timeout=_UI_SCRIPT_TIMEOUT,
             )
 

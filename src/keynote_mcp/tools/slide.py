@@ -217,6 +217,11 @@ class SlideTools:
                     set docName to item 1 of argv
                     tell application "Keynote"
                         {_RESOLVE_DOC}
+                        -- Keynote silently ignores deleting a nonexistent
+                        -- slide; check explicitly so the caller hears about it
+                        if not (exists slide {slide_number} of targetDoc) then
+                            error "Slide {slide_number} does not exist. Invalid index." number -1719
+                        end if
                         delete slide {slide_number} of targetDoc
                     end tell
                 end run

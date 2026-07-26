@@ -418,7 +418,7 @@ class KeynoteMCPServer:
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
-    async def run(self) -> None:
+    async def run(self) -> None:  # pragma: no cover - exercised via subprocess stdio tests
         """Start the server on stdio."""
         async with stdio_server() as (read_stream, write_stream):
             await self.server.run(
@@ -428,13 +428,13 @@ class KeynoteMCPServer:
             )
 
 
-async def _async_main() -> None:
+async def _async_main() -> None:  # pragma: no cover - exercised via subprocess stdio tests
     """Async entry point."""
     server = KeynoteMCPServer()
     await server.run()
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover - exercised via subprocess stdio tests
     """Sync entry point for console_scripts."""
     _configure_logging()
     asyncio.run(_async_main())
