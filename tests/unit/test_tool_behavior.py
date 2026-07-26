@@ -213,6 +213,20 @@ class TestContentTools:
         assert "(item 1 of pos) is 0" not in script
         assert "delete image" not in script
 
+    async def test_centered_title_computes_x_server_side(self, content_tools, mock_subprocess_run):
+        mock_subprocess_run.return_value.stdout = "1"
+        result = await content_tools.add_title(1, "Big", font_size=96, centered=True)
+        script = last_script(mock_subprocess_run)
+        assert "((width of targetDoc) - (width of newItem)) div 2" in script
+        # centering must run AFTER the final box width is known (post font-size)
+        assert script.index("div 2") > script.index("set size of object text")
+        assert "centered" in result[0].text
+
+    async def test_uncentered_title_has_no_centering_math(self, content_tools, mock_subprocess_run):
+        mock_subprocess_run.return_value.stdout = "1"
+        await content_tools.add_subtitle(1, "s")
+        assert "div 2" not in last_script(mock_subprocess_run)
+
     async def test_add_returns_identity_located_index_not_count(
         self, content_tools, mock_subprocess_run
     ):

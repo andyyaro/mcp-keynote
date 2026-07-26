@@ -201,6 +201,7 @@ class KeynoteMCPServer:
                 font_size=arguments.get("font_size"),
                 font_name=arguments.get("font_name", ""),
                 color=arguments.get("color", ""),
+                centered=arguments.get("centered", False),
                 doc_name=doc_name,
             )
         elif name == "add_subtitle":
@@ -212,6 +213,7 @@ class KeynoteMCPServer:
                 font_size=arguments.get("font_size"),
                 font_name=arguments.get("font_name", ""),
                 color=arguments.get("color", ""),
+                centered=arguments.get("centered", False),
                 doc_name=doc_name,
             )
         elif name == "add_bullet_list":

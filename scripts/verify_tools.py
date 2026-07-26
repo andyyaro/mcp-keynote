@@ -259,6 +259,36 @@ async def main():
         )
     check("delete round-trip slide", await slides.delete_slide(4), "Deleted slide 4")
 
+    # --- server-side centering (field test 8.6) ---
+    check("add_slide(blank, for centering)", await slides.add_slide(), "Added slide #4")
+    size_text = text_of(await pres.get_slide_size())
+    slide_w = float(re.search(r"Size: (\d+)", size_text).group(1))
+    for tool_name, call in [
+        ("add_title", lambda: content.add_title(4, "Centered Headline", y=100, font_size=60, centered=True)),
+        ("add_subtitle", lambda: content.add_subtitle(4, "Centered sub", y=300, centered=True)),
+    ]:
+        reply = text_of(await call())
+        m = re.search(r"text item index (\d+)", reply)
+        if not m:
+            record(f"{tool_name}(centered) returns an index", False, reply[:140])
+            continue
+        idx = int(m.group(1))
+        report = text_of(await content.get_slide_content(4))
+        entry = next((e for e in report.split("|||") if e.startswith(f"TEXT:{idx}:::")), "")
+        try:
+            pos_part, size_part = entry.split(":::")[2], entry.split(":::")[3]
+            x = float(pos_part.split(",")[0])
+            w = float(size_part.split(",")[0])
+            centered_ok = abs(x - (slide_w - w) / 2) <= 1.0
+        except (IndexError, ValueError):
+            centered_ok = False
+        record(
+            f"{tool_name}(centered) box is horizontally centered",
+            centered_ok,
+            entry[:120] or report[:120],
+        )
+    check("delete centering slide", await slides.delete_slide(4), "Deleted slide 4")
+
     # --- export tools ---
     shot = SCRATCH / "slide2.png"
     check("screenshot_slide(2)", await export.screenshot_slide(2, str(shot)), "Captured")

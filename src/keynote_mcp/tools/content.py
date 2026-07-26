@@ -105,6 +105,14 @@ class ContentTools:
                             "type": "string",
                             "description": "Text color as 'r,g,b' with values 0-65535 (optional)",
                         },
+                        "centered": {
+                            "type": "boolean",
+                            "description": (
+                                "Horizontally center the box on the slide, computed "
+                                "server-side from the final box width (optional; "
+                                "overrides x)"
+                            ),
+                        },
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["slide_number", "title"],
@@ -128,6 +136,14 @@ class ContentTools:
                         "color": {
                             "type": "string",
                             "description": "Text color as 'r,g,b' with values 0-65535 (optional)",
+                        },
+                        "centered": {
+                            "type": "boolean",
+                            "description": (
+                                "Horizontally center the box on the slide, computed "
+                                "server-side from the final box width (optional; "
+                                "overrides x)"
+                            ),
                         },
                         "doc_name": _DOC_ARG,
                     },
@@ -584,6 +600,7 @@ class ContentTools:
         doc_name: str,
         width: float | None = None,
         height: float | None = None,
+        centered: bool = False,
     ) -> str:
         """Create a text item; returns its 1-based index on the slide.
 
@@ -647,6 +664,16 @@ class ContentTools:
             if font_size is not None
             else "-- no restore needed"
         )
+        # Server-side horizontal centering: runs AFTER sizing/text restore so
+        # the box width is final; keeps whatever y is in effect. Spares
+        # callers the read-width-then-move_element dance.
+        center_h = (
+            """set curPos to position of newItem
+                        set position of newItem to ¬
+                            {((width of targetDoc) - (width of newItem)) div 2, item 2 of curPos}"""
+            if centered
+            else "-- no centering"
+        )
 
         return self.runner.run(
             f"""
@@ -666,6 +693,7 @@ class ContentTools:
                         {set_size}
                         {restore_text}
                         {set_color}
+                        {center_h}
                         set newIndex to 0
                         repeat with i from 1 to (count of text items)
                             if text item i is newItem then
@@ -723,17 +751,27 @@ class ContentTools:
         font_size: float | None = None,
         font_name: str = "",
         color: str = "",
+        centered: bool = False,
         doc_name: str = "",
     ) -> list[TextContent]:
         """Add title."""
         try:
             index = await self._add_text_element(
-                slide_number, title, x, y, font_size or 36, font_name, color, doc_name
+                slide_number,
+                title,
+                x,
+                y,
+                font_size or 36,
+                font_name,
+                color,
+                doc_name,
+                centered=centered,
             )
+            note = ", centered" if centered else ""
             return [
                 TextContent(
                     type="text",
-                    text=f"Added title to slide {slide_number} (text item index {index})",
+                    text=f"Added title to slide {slide_number} (text item index {index}{note})",
                 )
             ]
         except Exception as e:
@@ -748,17 +786,27 @@ class ContentTools:
         font_size: float | None = None,
         font_name: str = "",
         color: str = "",
+        centered: bool = False,
         doc_name: str = "",
     ) -> list[TextContent]:
         """Add subtitle."""
         try:
             index = await self._add_text_element(
-                slide_number, subtitle, x, y, font_size or 24, font_name, color, doc_name
+                slide_number,
+                subtitle,
+                x,
+                y,
+                font_size or 24,
+                font_name,
+                color,
+                doc_name,
+                centered=centered,
             )
+            note = ", centered" if centered else ""
             return [
                 TextContent(
                     type="text",
-                    text=f"Added subtitle to slide {slide_number} (text item index {index})",
+                    text=f"Added subtitle to slide {slide_number} (text item index {index}{note})",
                 )
             ]
         except Exception as e:
