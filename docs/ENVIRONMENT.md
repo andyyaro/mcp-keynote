@@ -16,6 +16,25 @@ newer Keynote with the command below).
 | uv | 0.11.29 | `uv --version` |
 | mcp (resolved) | 1.28.1 | `.venv/bin/python -c "import importlib.metadata; print(importlib.metadata.version('mcp'))"` |
 
+### Re-verified host (2026-09-23)
+
+The live suites were re-run on a second machine. Keynote 15 installs as
+`/Applications/Keynote Creator Studio.app` (bundle id still
+`com.apple.Keynote`), so the version command needs the new path.
+
+| Item | Value | How captured |
+|------|-------|--------------|
+| macOS | 27.0 | `sw_vers -productVersion` |
+| Keynote | 15.3.1 | `defaults read "/Applications/Keynote Creator Studio.app/Contents/Info" CFBundleShortVersionString` |
+| Python (project venv) | 3.13.15 (uv-managed CPython) | `.venv/bin/python --version` |
+| uv | 0.12.7 | `uv --version` |
+| mcp (resolved) | 1.30.0 | as above |
+
+Results: `make check` green, `pytest -m keynote` 9/9, and
+`scripts/verify_tools.py` 289 checks with 4 failures (see
+`docs/TOOL_MATRIX.md`). The sdef was not regenerated for 15.3.1, so
+`docs/keynote-14.5.sdef` is still the spec on file.
+
 ## MCP SDK versions on PyPI (verified 2026-07-25)
 
 `uv pip index versions` does not exist in uv 0.11.29, so versions were
