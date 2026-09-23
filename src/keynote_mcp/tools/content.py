@@ -47,6 +47,54 @@ _RESOLVE_DOC = """
 # deliberate delays, so they need more headroom than plain AppleScript.
 _UI_SCRIPT_TIMEOUT = 60.0
 
+# Resolves `insp`, the element that holds the Animate inspector's controls,
+# found by its "Build In" tab. Keynote 14.x puts them directly on the window;
+# 15.x nests them in splitter group 1, where the Format pane also has a radio
+# group, so the tab name is what tells the panes apart. 15.x also draws the
+# pane late, so poll for up to 3 s. Must run inside
+# `tell application process "Keynote"`.
+_FIND_INSPECTOR = """
+                            set targetWin to window 1
+                            set insp to missing value
+                            repeat 30 times
+                                try
+                                    if exists (first radio button of radio group 1 of ¬
+                                        splitter group 1 of targetWin ¬
+                                        whose description is "Build In") then ¬
+                                        set insp to splitter group 1 of targetWin
+                                end try
+                                if insp is missing value then
+                                    try
+                                        if exists radio group 1 of targetWin then set insp to targetWin
+                                    end try
+                                end if
+                                if insp is not missing value then exit repeat
+                                delay 0.1
+                            end repeat
+                            if insp is missing value then error "Could not find the Animate inspector"
+"""
+
+
+def _show_inspector_pane(pane: str) -> str:
+    """AppleScript that switches the inspector to ``pane`` ("Format"/"Animate").
+
+    Clicks the toolbar's pane button: on 15.x the View > Inspector menu item
+    stops switching panes after the first use. The menu is the fallback for
+    toolbars without the button. ``pane`` is a trusted literal, never user text.
+    """
+    return f"""
+                    tell application "System Events"
+                        tell application process "Keynote"
+                            try
+                                click (first radio button of group 1 of toolbar 1 of window 1 ¬
+                                    whose description is "{pane}")
+                            on error
+                                click menu item "{pane}" of menu 1 of menu item "Inspector" of ¬
+                                    menu 1 of menu bar item "View" of menu bar 1
+                            end try
+                        end tell
+                    end tell"""
+
 
 # One consistent routing signal on every element-creating primitive: with 59
 # tools on the surface, a model asked for a 15-slide deck will otherwise chain
@@ -1639,14 +1687,7 @@ class ContentTools(DocumentTargetedTools):
         """
         try:
             self.runner.run(
-                """
-                tell application "System Events"
-                    tell application process "Keynote"
-                        click menu item "Format" of menu 1 of menu item "Inspector" of ¬
-                            menu 1 of menu bar item "View" of menu bar 1
-                    end tell
-                end tell
-                """,
+                _show_inspector_pane("Format"),
                 timeout=10.0,
             )
         except Exception:
@@ -1696,19 +1737,13 @@ class ContentTools(DocumentTargetedTools):
                     delay 0.5
 
                     -- Step 2: Open Animate inspector
-                    tell application "System Events"
-                        tell application process "Keynote"
-                            click menu item "Animate" of menu 1 of menu item "Inspector" of ¬
-                                menu 1 of menu bar item "View" of menu bar 1
-                        end tell
-                    end tell
+{_show_inspector_pane("Animate")}
                     delay 0.5
 
                     -- Step 3: Click Build In tab (radio button 1 = Build In)
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            click radio button 1 of radio group 1 of targetWin
+{_FIND_INSPECTOR}                            click radio button 1 of radio group 1 of insp
                         end tell
                     end tell
                     delay 0.3
@@ -1716,22 +1751,21 @@ class ContentTools(DocumentTargetedTools):
                     -- Step 4: Click "Add an Effect" or "Change" button
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            set btnName to ""
+{_FIND_INSPECTOR}                            set btnName to ""
                             try
-                                get button "Add an Effect" of targetWin
+                                get button "Add an Effect" of insp
                                 set btnName to "Add an Effect"
                             end try
                             if btnName is "" then
                                 try
-                                    get button "Change" of targetWin
+                                    get button "Change" of insp
                                     set btnName to "Change"
                                 end try
                             end if
                             if btnName is "" then
                                 error "Could not find Add an Effect or Change button"
                             end if
-                            click button btnName of targetWin
+                            click button btnName of insp
                         end tell
                     end tell
                     -- MUST break out of tell block to let Keynote show the popover
@@ -1740,14 +1774,18 @@ class ContentTools(DocumentTargetedTools):
                     -- Select effect from popover
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            set po to missing value
+{_FIND_INSPECTOR}                            set po to missing value
                             try
-                                set po to pop over 1 of button "Add an Effect" of targetWin
+                                set po to pop over 1 of button "Add an Effect" of insp
                             end try
                             if po is missing value then
                                 try
-                                    set po to pop over 1 of button "Change" of targetWin
+                                    set po to pop over 1 of button "Change" of insp
+                                end try
+                            end if
+                            if po is missing value then
+                                try
+                                    set po to pop over 1 of insp
                                 end try
                             end if
                             if po is missing value then
@@ -1767,9 +1805,8 @@ class ContentTools(DocumentTargetedTools):
                     if deliveryName is not "All at Once" then
                         tell application "System Events"
                             tell application process "Keynote"
-                                set targetWin to window 1
-                                set deliveryPopup to pop up button 3 of ¬
-                                    scroll area 1 of targetWin
+{_FIND_INSPECTOR}                                set deliveryPopup to pop up button 3 of ¬
+                                    scroll area 1 of insp
                                 click deliveryPopup
                                 delay 0.3
                                 click menu item deliveryName of menu 1 of deliveryPopup
@@ -1827,28 +1864,22 @@ class ContentTools(DocumentTargetedTools):
                     delay 0.5
 
                     -- Open Animate inspector, Build In tab
-                    tell application "System Events"
-                        tell application process "Keynote"
-                            click menu item "Animate" of menu 1 of menu item "Inspector" of ¬
-                                menu 1 of menu bar item "View" of menu bar 1
-                        end tell
-                    end tell
+{_show_inspector_pane("Animate")}
                     delay 0.5
 
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            click radio button 1 of radio group 1 of targetWin
+{_FIND_INSPECTOR}                            click radio button 1 of radio group 1 of insp
                             delay 0.3
 
                             -- "Change" button means a build exists
                             try
-                                get button "Change" of targetWin
+                                get button "Change" of insp
                             on error
                                 return "no_build"
                             end try
 
-                            click button "Change" of targetWin
+                            click button "Change" of insp
                         end tell
                     end tell
                     -- MUST break out of tell block to let Keynote show the popover
@@ -1857,14 +1888,18 @@ class ContentTools(DocumentTargetedTools):
                     -- Select "None" from the popover
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            set po to missing value
+{_FIND_INSPECTOR}                            set po to missing value
                             try
-                                set po to pop over 1 of targetWin
+                                set po to pop over 1 of insp
                             end try
                             if po is missing value then
                                 try
-                                    set po to pop over 1 of button "Change" of targetWin
+                                    set po to pop over 1 of button "Change" of insp
+                                end try
+                            end if
+                            if po is missing value then
+                                try
+                                    set po to pop over 1 of targetWin
                                 end try
                             end if
                             if po is missing value then

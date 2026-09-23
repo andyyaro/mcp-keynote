@@ -125,6 +125,16 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
 - Invalid indices surface as error **-1719** ("Invalid index"), not -1728.
 - Window titles don't reliably match document names — UI scripting targets
   `window 1` of the Keynote process.
+- Keynote 15.x ("Keynote Creator Studio", probed on 15.3.1) moved the
+  Animate inspector's controls (Build In/Action/Build Out tabs, "Add an
+  Effect"/"Change", the delivery scroll area) off the window and into
+  `splitter group 1` of it. The Format pane has a radio group in the same
+  place, so `_FIND_INSPECTOR` recognizes the Animate pane by its "Build In"
+  tab, and it polls because 15.x draws the pane late. View > Inspector >
+  Animate stops switching panes after its first use, so
+  `_show_inspector_pane` clicks the toolbar's Format/Animate button and
+  keeps the menu only as a fallback. System Events calls AXSplitGroup
+  `splitter group`; "split group" is only its accessibility description.
 - The legacy ">48pt tiny-box clipping" does NOT reproduce on Keynote 14.5 in
   the server's single-osascript-call flow (probed at 96/150/300/500pt with
   long/multiline/CJK text): auto-fit tracks the text at every size, Keynote
