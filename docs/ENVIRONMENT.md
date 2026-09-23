@@ -31,8 +31,9 @@ The live suites were re-run on a second machine. Keynote 15 installs as
 | mcp (resolved) | 1.30.0 | as above |
 
 Results: `make check` green, `pytest -m keynote` 9/9, and
-`scripts/verify_tools.py` 289 checks with 4 failures (see
-`docs/TOOL_MATRIX.md`). The sdef was not regenerated for 15.3.1, so
+`scripts/verify_tools.py` 289 checks with 3 failures (see
+`docs/TOOL_MATRIX.md`). Every Apple event takes ~17 ms on this host, for
+Finder and System Events as well as Keynote; batch reads accordingly. The sdef was not regenerated for 15.3.1, so
 `docs/keynote-14.5.sdef` is still the spec on file.
 
 ## MCP SDK versions on PyPI (verified 2026-07-25)

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import math
 import os
 import re
@@ -98,8 +99,11 @@ _ELEMENT_TYPES = {
 # ASCII unit/record separators for structured readbacks (never appear in
 # normal slide text; a deck containing them would corrupt field splits).
 # Scripts build them with `character id` so no control bytes land in source.
+logger = logging.getLogger(__name__)
+
 _FS = "\x1f"
 _RS = "\x1e"
+_GS = "\x1d"
 _AS_FS = "(character id 31)"
 _AS_RS = "(character id 30)"
 
@@ -2180,6 +2184,149 @@ class DeckTools(DocumentTargetedTools):
             return [TextContent(type="text", text=f"Failed to describe deck: {e}")]
 
     def _summarize_slides(self, doc_name: str, numbers: list[int]) -> list[dict[str, Any]]:
+        """Per-slide counts and titles, read a class at a time.
+
+        Each Apple event has a fixed cost, measured at ~17 ms on macOS 27
+        against ~0.35 ms on macOS 26, so the per-slide loop in
+        ``_summarize_slides_per_slide`` (about 20 events per slide) took 12 s
+        on the 35-slide profiling deck. Here every read is ``<property> of
+        every <class> of every slide``: about ten events for any deck size.
+
+        Phantom placeholders are subtracted by count, not by identity: a
+        default title/body item is counted once while hidden and twice while
+        showing, and real items come first, so each existing default item
+        adds exactly one phantom, trailing. Falls back to the per-slide path
+        if any list read fails.
+        """
+        try:
+            return self._summarize_slides_batched(doc_name, numbers)
+        except Exception:
+            logger.debug("Batched summary failed; reading slide by slide", exc_info=True)
+            return self._summarize_slides_per_slide(doc_name, numbers)
+
+    def _summarize_slides_batched(self, doc_name: str, numbers: list[int]) -> list[dict[str, Any]]:
+        raw = self.runner.run(
+            f"""
+            on run argv
+                set docName to item 1 of argv
+                set fs to character id 31
+                set rs to character id 30
+                set gs to character id 29
+                tell application "Keynote"
+                    {RESOLVE_DOC}
+                    set slideCount to count of slides of targetDoc
+                    set allTexts to object text of every text item of every slide of targetDoc
+                    set allImages to every image of every slide of targetDoc
+                    set allShapes to every shape of every slide of targetDoc
+                    set allTables to every table of every slide of targetDoc
+                    set allCharts to every chart of every slide of targetDoc
+                    set allLines to every line of every slide of targetDoc
+                    set allSkipped to skipped of every slide of targetDoc
+                    set allTitleShown to title showing of every slide of targetDoc
+                    -- One event each while every slide has the item; if one
+                    -- lacks it the list read fails, so ask slide by slide.
+                    try
+                        set defTitles to object text of default title item of ¬
+                            every slide of targetDoc
+                    on error
+                        set defTitles to {{}}
+                        repeat with n from 1 to slideCount
+                            set t to "none"
+                            try
+                                set t to (object text of default title item of ¬
+                                    slide n of targetDoc) as text
+                            end try
+                            set end of defTitles to t
+                        end repeat
+                    end try
+                    try
+                        get default body item of every slide of targetDoc
+                        set defBodies to {{}}
+                        repeat slideCount times
+                            set end of defBodies to true
+                        end repeat
+                    on error
+                        set defBodies to {{}}
+                        repeat with n from 1 to slideCount
+                            set b to false
+                            try
+                                get default body item of slide n of targetDoc
+                                set b to true
+                            end try
+                            set end of defBodies to b
+                        end repeat
+                    end try
+                end tell
+                set out to ""
+                repeat with n from 1 to slideCount
+                    set slideTexts to item n of allTexts
+                    set textOut to ""
+                    repeat with tx in slideTexts
+                        set textOut to textOut & (tx as text) & gs
+                    end repeat
+                    set out to out & (n as text) & fs & ¬
+                        ((count of slideTexts) as text) & fs & ¬
+                        ((count of item n of allImages) as text) & fs & ¬
+                        ((count of item n of allShapes) as text) & fs & ¬
+                        ((count of item n of allTables) as text) & fs & ¬
+                        ((count of item n of allCharts) as text) & fs & ¬
+                        ((count of item n of allLines) as text) & fs & ¬
+                        ((item n of allSkipped) as text) & fs & ¬
+                        ((item n of allTitleShown) as text) & fs & ¬
+                        ((item n of defTitles) as text) & fs & ¬
+                        ((item n of defBodies) as text) & fs & ¬
+                        textOut & rs
+                end repeat
+                return out
+            end run
+            """,
+            doc_name,
+            timeout=_SLIDE_SESSION_TIMEOUT,
+        )
+        wanted = set(numbers)
+        by_slide: dict[int, dict[str, Any]] = {}
+        for record in raw.split(_RS):
+            if not record:
+                continue
+            f = record.split(_FS)
+            slide = int(f[0])
+            if slide not in wanted:
+                continue
+            has_title = f[9] != "none"
+            has_body = f[10] == "true"
+            total = int(f[1])
+            # The runner strips the output, and str.strip() treats \x1d-\x1f
+            # as whitespace, so the last slide loses its trailing empty texts.
+            texts = (f[11].split(_GS) + [""] * total)[:total] if len(f) > 11 else [""] * total
+            real = total - int(has_title) - int(has_body)
+            if real < 0:
+                raise RuntimeError(f"slide {slide}: fewer text items than default items")
+            counts = {
+                "text": real,
+                "image": int(f[2]),
+                "shape": int(f[3]),
+                "table": int(f[4]),
+                "chart": int(f[5]),
+                "line": int(f[6]),
+            }
+            title = f[9] if has_title and f[8] == "true" else ""
+            if not title:
+                title = next((t for t in texts[:real] if t), "")
+            entry: dict[str, Any] = {
+                "slide": slide,
+                "elements": sum(counts.values()),
+                "counts": {k: v for k, v in counts.items() if v},
+            }
+            if f[7] == "true":
+                entry["skipped"] = True
+            if title:
+                entry["title"] = title
+            by_slide[slide] = entry
+        return [by_slide[n] for n in numbers]
+
+    def _summarize_slides_per_slide(
+        self, doc_name: str, numbers: list[int]
+    ) -> list[dict[str, Any]]:
         """Per-slide counts and titles for the whole deck in ONE call.
 
         Measured on the 35-slide/735-element profiling deck: 0.3 s, against
