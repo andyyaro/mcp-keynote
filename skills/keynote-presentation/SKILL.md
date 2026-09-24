@@ -81,6 +81,8 @@ with a screenshot as usual.
 get_slide_size()
 get_available_themes()
 create_presentation(title="...", theme="Slate")
+# company theme not installed? pass its file instead:
+# create_presentation(title="...", theme_file="/path/to/Brand.kth")
 set_slide_layout(slide_number=1, layout="Blank")
 ```
 - Use **Slate** theme by default (dark gradient, works on Blank layout)

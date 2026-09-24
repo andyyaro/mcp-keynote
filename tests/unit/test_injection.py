@@ -194,7 +194,7 @@ async def test_build_deck_strings_via_argv(deck_tools, mock_subprocess_run, payl
         if "System Events" in script:
             stdout = "true"
         elif "make new document" in script:
-            stdout = "deck.key\x1ftheme: White\x1fBlank"
+            stdout = "deck.key\x1ftheme: White\x1f1920x1080\x1fBlank"
         elif "save document docName" in script:
             stdout = "1"
         else:
@@ -231,7 +231,7 @@ async def test_build_deck_run_font_via_argv(deck_tools, mock_subprocess_run, pay
     def fake_run(cmd, **kwargs):
         script = kwargs.get("input", "")
         if "make new document" in script:
-            stdout = "deck.key\x1ftheme: White\x1fBlank"
+            stdout = "deck.key\x1ftheme: White\x1f1920x1080\x1fBlank"
         else:
             stdout = ""
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")

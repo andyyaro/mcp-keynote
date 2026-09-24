@@ -23,7 +23,7 @@ def _deck_side_effect(batch_stdout="", layouts="Blank|||Title & Bullets", calls=
         if "System Events" in script:
             return _cp(cmd, "true")
         if "make new document" in script:
-            return _cp(cmd, f"deck.key{_FS}theme: White{_FS}{layouts}")
+            return _cp(cmd, f"deck.key{_FS}theme: White{_FS}1920x1080{_FS}{layouts}")
         if "close document" in script:
             return _cp(cmd, "")
         if "save document docName" in script:
@@ -186,7 +186,7 @@ class TestBuildDeckErrorIsolation:
             if "System Events" in script:
                 return _cp(cmd, "true")
             if "make new document" in script:
-                return _cp(cmd, f"deck.key{_FS}theme: White{_FS}Blank")
+                return _cp(cmd, f"deck.key{_FS}theme: White{_FS}1920x1080{_FS}Blank")
             if "save document docName" in script:
                 return _cp(cmd, "1")
             return subprocess.CompletedProcess(

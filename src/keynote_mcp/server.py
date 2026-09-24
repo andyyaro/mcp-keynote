@@ -206,6 +206,7 @@ class KeynoteMCPServer:
             return await self.presentation_tools.create_presentation(
                 title=arguments["title"],
                 theme=arguments.get("theme", ""),
+                theme_file=arguments.get("theme_file", ""),
                 save_path=arguments.get("save_path", ""),
             )
         elif name == "open_presentation":

@@ -1450,6 +1450,132 @@ async def check_edit_table(pres, objects, export):
     check("edit_table: close", await pres.close_presentation(doc_name=doc, should_save=False))
 
 
+def _changed_share(a, b):
+    """Share of pixels that differ visibly between two renders."""
+    if a.size != b.size:
+        b = b.resize(a.size)
+    diff = ImageChops.difference(a, b).convert("L").point(lambda v: 255 if v > 40 else 0)
+    return diff.histogram()[-1] / (a.width * a.height)
+
+
+async def check_theme_file(pres, slides, export, deck):
+    """theme_file, from a path OUTSIDE Keynote's sandbox, RENDERED.
+
+    The source is $KEYNOTE_MCP_VERIFY_THEME_FILE or, failing that, a theme the
+    user installed (Keynote keeps those in its container as UUID-named .kth
+    files), copied under .scratch with a space and '&' in its name the way a
+    shared-drive path has them. The rendered claims: the themed slide does not
+    look like the default theme's, and it still looks the same after the
+    staged copy is gone and the saved file is reopened.
+    """
+    source = os.environ.get("KEYNOTE_MCP_VERIFY_THEME_FILE", "")
+    if not source:
+        installed = sorted(
+            Path.home().glob(
+                "Library/Containers/com.apple.Keynote/Data/Library/Application Support/"
+                "User Templates/*.kth"
+            )
+        )
+        source = str(installed[0]) if installed else ""
+    if not source:
+        print("SKIP  theme_file: no .kth available (set KEYNOTE_MCP_VERIFY_THEME_FILE)")
+        return
+    theme_dir = SCRATCH / "theme file & co"
+    theme_dir.mkdir(parents=True, exist_ok=True)
+    kth = theme_dir / "Brand Theme & Co.kth"
+    if Path(source).is_dir():
+        shutil.rmtree(kth, ignore_errors=True)
+        shutil.copytree(source, kth)
+    else:
+        shutil.copyfile(source, kth)
+
+    key = SCRATCH / "theme-file.key"
+    plain_key = SCRATCH / "theme-file-plain.key"
+    for path in (key, plain_key):
+        shutil.rmtree(path, ignore_errors=True)
+        path.unlink(missing_ok=True)
+
+    check(
+        "theme_file: create_presentation from a .kth outside the sandbox",
+        await pres.create_presentation("theme-file", theme_file=str(kth), save_path=str(key)),
+        "theme file: Brand Theme & Co.kth",
+    )
+    doc = "theme-file.key"
+    staged_left = list(
+        Path.home().glob("Library/Containers/com.apple.Keynote/Data/tmp/keynote-mcp-theme-*")
+    )
+    record("theme_file staged copy was removed", not staged_left, str(staged_left)[:120])
+    w, h, layouts = _doc_facts(pres.runner, doc)
+
+    check(
+        "theme_file: default-theme doc for comparison",
+        await pres.create_presentation("theme-file-plain", save_path=str(plain_key)),
+        "Created presentation",
+    )
+    plain = "theme-file-plain.key"
+    pw, _, plain_layouts = _doc_facts(pres.runner, plain)
+    record(
+        "theme_file brings the theme's own layouts",
+        set(layouts) != set(plain_layouts),
+        f"{len(layouts)} layouts, first {layouts[:3]}",
+    )
+    check(
+        "theme_file: slide 1 on the theme's first layout",
+        await slides.set_slide_layout(1, layouts[0], doc_name=doc),
+    )
+    check(
+        "theme_file: plain slide 1 on its first layout",
+        await slides.set_slide_layout(1, plain_layouts[0], doc_name=plain),
+    )
+    themed, t_scale = await render_slide(export, 1, "theme-file", w, doc_name=doc)
+    default, d_scale = await render_slide(export, 1, "theme-file-plain", pw, doc_name=plain)
+    if themed is not None and default is not None:
+        # Both are mostly white (an export omits unfilled placeholders), so a
+        # changed-pixel share is tiny either way. What a theme adds is DETAIL:
+        # its logo, rules and footer text on the master.
+        themed_ink, default_ink = ink_fraction(themed, t_scale), ink_fraction(default, d_scale)
+        record(
+            "theme_file slide is RENDERED in the theme, not the default",
+            themed_ink > 0.002 and themed_ink > 3 * default_ink,
+            f"ink {themed_ink * 100:.2f}% vs default theme {default_ink * 100:.2f}%, "
+            f"themed ink box {ink_bbox(themed, t_scale)}",
+        )
+    check("theme_file: save", await pres.save_presentation(doc_name=doc), "Saved")
+    check("theme_file: close", await pres.close_presentation(doc_name=doc, should_save=False))
+    check("theme_file: reopen", await pres.open_presentation(str(key)), "Opened")
+    again, _ = await render_slide(export, 1, "theme-file-reopened", w, doc_name=doc)
+    if themed is not None and again is not None:
+        share = _changed_share(themed, again)
+        record(
+            "theme_file doc RENDERS the same after reopen (copy gone, file self-contained)",
+            share < 0.02,
+            f"{share * 100:.2f}% of pixels changed",
+        )
+    check(
+        "theme_file: close reopened", await pres.close_presentation(doc_name=doc, should_save=False)
+    )
+    check(
+        "theme_file: close plain", await pres.close_presentation(doc_name=plain, should_save=False)
+    )
+
+    md_key = SCRATCH / "theme-file-deck.key"
+    reply = check(
+        "theme_file: build_deck via markdown frontmatter",
+        await deck.build_deck(
+            markdown=f"---\ntheme_file: {kth}\nsave_path: {md_key}\n---\n# Hello\n\n## Two\n\n- a\n- b\n"
+        ),
+        "theme file: Brand Theme & Co.kth",
+    )
+    record(
+        "build_deck keeps the theme's own slide size",
+        f'"size": "{w}x{h}"' in reply,
+        f"theme is {w}x{h}; reply: {reply[:120]}",
+    )
+    doc_line = re.search(r'"document": "([^"]+)"', reply)
+    if doc_line:
+        await pres.close_presentation(doc_name=doc_line.group(1), should_save=False)
+
+
 async def main():
     pres = PresentationTools()
     slides = SlideTools()
@@ -2716,6 +2842,7 @@ async def main():
     await check_fill_is_unwritable(pres, slides, content, export, objects)
     await check_text_runs_author(pres, export, deck)
     await check_edit_table(pres, objects, export)
+    await check_theme_file(pres, slides, export, deck)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")

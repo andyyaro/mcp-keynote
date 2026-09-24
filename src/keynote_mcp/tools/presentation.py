@@ -6,7 +6,14 @@ import time
 
 from mcp.types import TextContent, Tool
 
-from ..utils import SESSION, AppleScriptRunner, validate_file_path, validate_number
+from ..utils import (
+    SESSION,
+    AppleScriptRunner,
+    ParameterError,
+    validate_file_path,
+    validate_number,
+)
+from ..utils.theme_file import discard_staged_theme, resolve_theme_file, stage_theme_file
 from .base import DocumentTargetedTools
 
 _DOC_ARG = {
@@ -99,7 +106,8 @@ class PresentationTools(DocumentTargetedTools):
                     "automation. The first slide is set to the Blank layout (matching "
                     "add_slide's default) so add_* tools start from an empty canvas; "
                     "use set_slide_content or set_slide_layout to opt into theme "
-                    "placeholders."
+                    "placeholders. For a company theme that is not installed, pass "
+                    "theme_file (a .kth path) instead of theme."
                 ),
                 inputSchema={
                     "type": "object",
@@ -114,6 +122,15 @@ class PresentationTools(DocumentTargetedTools):
                         "theme": {
                             "type": "string",
                             "description": "Theme name (optional, see get_available_themes)",
+                        },
+                        "theme_file": {
+                            "type": "string",
+                            "description": (
+                                "Path to a .kth theme file to build the document from "
+                                "(optional; any location, including cloud drives). Use "
+                                "when the theme is not in get_available_themes. Not "
+                                "combinable with theme. The theme's own slide size is kept."
+                            ),
                         },
                         "save_path": {
                             "type": "string",
@@ -283,10 +300,14 @@ class PresentationTools(DocumentTargetedTools):
         ]
 
     async def create_presentation(
-        self, title: str, theme: str = "", save_path: str = ""
+        self, title: str, theme: str = "", theme_file: str = "", save_path: str = ""
     ) -> list[TextContent]:
         """Create a new presentation, always saved to a concrete path."""
+        staged = ""
         try:
+            if theme and theme_file:
+                raise ParameterError("Pass theme or theme_file, not both.")
+            source_theme = resolve_theme_file(theme_file) if theme_file else ""
             if save_path and save_path.strip():
                 resolved_path = _normalize_key_path(save_path)
             else:
@@ -295,15 +316,21 @@ class PresentationTools(DocumentTargetedTools):
 
             if not self.runner.check_keynote_running():
                 self.runner.launch_keynote()
+            if source_theme:
+                staged = stage_theme_file(source_theme)
 
             result = self.runner.run(
                 """
                 on run argv
                     set themeName to item 1 of argv
                     set savePath to item 2 of argv
+                    set themeFile to item 3 of argv
                     tell application "Keynote"
                         activate
-                        if themeName is "" then
+                        if themeFile is not "" then
+                            set newDoc to make new document with data (POSIX file themeFile)
+                            set themeNote to "theme file: " & (item 4 of argv)
+                        else if themeName is "" then
                             set newDoc to make new document
                             set themeNote to "default theme"
                         else
@@ -335,6 +362,8 @@ class PresentationTools(DocumentTargetedTools):
                 """,
                 theme,
                 resolved_path,
+                staged,
+                os.path.basename(source_theme),
             )
             doc_name, _, rest = result.partition("|")
             theme_note, _, layout_note = rest.partition("|")
@@ -352,6 +381,11 @@ class PresentationTools(DocumentTargetedTools):
             ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to create presentation: {e}")]
+        finally:
+            # The document is saved by now (or never came to be), so it no
+            # longer needs the copy.
+            if staged:
+                discard_staged_theme(staged)
 
     async def open_presentation(self, file_path: str) -> list[TextContent]:
         """Open a presentation via LaunchServices, then wait for the document.

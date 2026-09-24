@@ -52,6 +52,7 @@ from ..utils.render import render_panel_png
 from ..utils.rendered_assets import decode_rendered_asset, panel_filename, stroke_filename
 from ..utils.stroke import render_stroke_png
 from ..utils.styles import DeckStyle, resolve_style
+from ..utils.theme_file import discard_staged_theme, resolve_theme_file, stage_theme_file
 from .base import DocumentTargetedTools
 from .fragments import (
     _RUN_SEP,
@@ -198,7 +199,17 @@ _UNREADABLE_NOTE: dict[str, str] = {
 #   UNKNOWN    - everything else. Hard error, nothing is created.
 
 _DECK_KEYS = frozenset(
-    {"title", "theme", "style", "width", "height", "save_path", "on_exists", "slides"}
+    {
+        "title",
+        "theme",
+        "theme_file",
+        "style",
+        "width",
+        "height",
+        "save_path",
+        "on_exists",
+        "slides",
+    }
 )
 # describe_deck's own envelope, so its output feeds straight back in.
 _DECK_TOLERATED = frozenset(
@@ -1427,8 +1438,8 @@ def _parse_attrs(line: str) -> tuple[str, dict[str, Any]]:
 def markdown_to_spec(markdown: str) -> dict[str, Any]:
     """Compile the markdown dialect into a deck spec.
 
-    Dialect: optional ``---`` frontmatter (title/theme/style/width/height/
-    save_path); ``#`` = title slide; ``##`` = new slide; ``-``/``*`` bullets;
+    Dialect: optional ``---`` frontmatter (title/theme/theme_file/style/
+    width/height/save_path); ``#`` = title slide; ``##`` = new slide; ``-``/``*`` bullets;
     ``1.`` numbered; ``>`` quote; fenced code (``` ```chart``` fences take a
     JSON chart object); ``![alt](path)`` images; GitHub tables; a paragraph
     starting ``Notes:`` becomes speaker notes; ``<!-- transition: push 1.0 -->``
@@ -1451,7 +1462,7 @@ def markdown_to_spec(markdown: str) -> dict[str, Any]:
                                 spec[key] = int(value)
                             except ValueError:
                                 pass
-                        elif key in ("title", "theme", "style", "save_path"):
+                        elif key in ("title", "theme", "theme_file", "style", "save_path"):
                             spec[key] = value
                 pos = end + 1
                 break
@@ -2270,15 +2281,17 @@ class DeckTools(DocumentTargetedTools):
                     "To revise a deck you built: describe_deck to get its spec "
                     "back, edit the spec, build_deck again. Pass either "
                     "`spec` (JSON) or `markdown` (dialect: --- frontmatter with "
-                    "title/theme/style/width/height/save_path; # title slide; "
+                    "title/theme/theme_file/style/width/height/save_path; # title slide; "
                     "## new slide; bullets/numbered/quotes/code fences/images/"
                     "GitHub tables; ```chart fences with a JSON chart object; "
                     "'Notes:' paragraphs become speaker notes; "
                     "<!-- transition: push 1.0 --> and <!-- skip --> per slide; "
                     "any block may end with <!-- x=.. y=.. width=.. "
                     "font_size=.. column=left/right --> for explicit placement "
-                    "or two-column flow). Spec shape: {title?, theme?, style?, "
-                    "width?, height?, save_path?, on_exists?, slides: [{layout?, "
+                    "or two-column flow). Spec shape: {title?, theme?, "
+                    "theme_file? (a .kth path, for a theme that is not installed; "
+                    "keeps the theme's slide size unless width/height are given), "
+                    "style?, width?, height?, save_path?, on_exists?, slides: [{layout?, "
                     "title?/body? (theme placeholders), notes?, skipped?, "
                     "transition? {effect, duration?, delay?, automatic?}, "
                     "elements?: [{type: <one of the types below>, ...}]}]}. "
@@ -2549,9 +2562,19 @@ class DeckTools(DocumentTargetedTools):
                     )
                 ]
 
-            theme = str(spec.get("theme", "") or deck_style.keynote_theme)
-            width = int(spec.get("width") or deck_style.width)
-            height = int(spec.get("height") or deck_style.height)
+            theme_file = str(spec.get("theme_file", "") or "")
+            if theme_file and spec.get("theme"):
+                raise ParameterError("Pass theme or theme_file in the spec, not both.")
+            source_theme = resolve_theme_file(theme_file) if theme_file else ""
+            theme = (
+                os.path.basename(source_theme)
+                if source_theme
+                else str(spec.get("theme", "") or deck_style.keynote_theme)
+            )
+            # A theme file brings its own slide size; the style's default would
+            # rescale every layout in it. Only an explicit spec size overrides.
+            width = int(spec.get("width") or (0 if source_theme else deck_style.width))
+            height = int(spec.get("height") or (0 if source_theme else deck_style.height))
             title = str(spec.get("title", "") or "deck")
             on_exists = str(spec.get("on_exists", "replace"))
             if on_exists not in ("replace", "error", "unique"):
@@ -2583,11 +2606,14 @@ class DeckTools(DocumentTargetedTools):
 
             # Session 1: replace any open doc at this path, create + save the
             # new document, and fetch the theme's layout names for validation.
-            setup = self.runner.run(
-                f"""
+            staged = stage_theme_file(source_theme) if source_theme else ""
+            try:
+                setup = self.runner.run(
+                    f"""
                 on run argv
                     set themeName to item 1 of argv
                     set savePath to item 2 of argv
+                    set themeFile to item 3 of argv
                     tell application "Keynote"
                         activate
                         repeat with d in documents
@@ -2602,28 +2628,46 @@ class DeckTools(DocumentTargetedTools):
                             end try
                         end repeat
                         set themeNote to "theme: " & themeName
-                        try
-                            set newDoc to make new document with properties ¬
-                                {{document theme:theme themeName, ¬
-                                width:{width}, height:{height}}}
-                        on error
-                            set newDoc to make new document with properties ¬
-                                {{width:{width}, height:{height}}}
-                            set themeNote to "theme '" & themeName & "' not found, used default"
-                        end try
+                        if themeFile is not "" then
+                            set newDoc to make new document with data (POSIX file themeFile)
+                            set themeNote to "theme file: " & themeName
+                            if {width} > 0 then set width of newDoc to {width}
+                            if {height} > 0 then set height of newDoc to {height}
+                        else
+                            try
+                                set newDoc to make new document with properties ¬
+                                    {{document theme:theme themeName, ¬
+                                    width:{width}, height:{height}}}
+                            on error
+                                set newDoc to make new document with properties ¬
+                                    {{width:{width}, height:{height}}}
+                                set themeNote to "theme '" & themeName & "' not found, used default"
+                            end try
+                        end if
                         save newDoc in POSIX file savePath
                         set layoutNames to name of every slide layout of newDoc
                         set AppleScript's text item delimiters to "|||"
                         set joined to layoutNames as text
                         set AppleScript's text item delimiters to ""
-                        return (name of newDoc) & {_AS_FS} & themeNote & {_AS_FS} & joined
+                        set docSize to ((width of newDoc) as integer as text) & "x" & ¬
+                            ((height of newDoc) as integer as text)
+                        return (name of newDoc) & {_AS_FS} & themeNote & {_AS_FS} & ¬
+                            docSize & {_AS_FS} & joined
                     end tell
                 end run
                 """,
-                theme,
-                resolved_path,
-            )
-            doc_name, theme_note, layouts_joined = setup.split(_FS)
+                    theme,
+                    resolved_path,
+                    staged,
+                )
+            finally:
+                # Saved inside the setup session, so the copy is no longer needed.
+                if staged:
+                    discard_staged_theme(staged)
+            doc_name, theme_note, doc_size, layouts_joined = setup.split(_FS)
+            # Layout flow needs the size the document really has, which for a
+            # theme file is the theme's own.
+            width, height = (int(v) for v in doc_size.split("x"))
             layouts = {name.strip() for name in layouts_joined.split("|||")}
             # The deck a caller just built is what the next call means, exactly
             # as for create_presentation/open_presentation.

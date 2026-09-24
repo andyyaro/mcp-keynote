@@ -270,8 +270,17 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
   policy, matching `add_slide`); `set_slide_content` opts back into theme
   placeholders by setting `title/body showing` before filling.
 
-### Table edits (probed 2026-09, Keynote 15.3.1)
+### Theme files and table edits (probed 2026-09, Keynote 15.3.1)
 
+- `make new document with data (POSIX file x.kth)` builds a document from an
+  uninstalled theme. The server copies the `.kth` into
+  `~/Library/Containers/com.apple.Keynote/Data/tmp` first
+  (`utils/theme_file.py`; 14.x used `com.apple.iWork.Keynote`), because a
+  path outside the sandbox risks the `open` wedge. The theme name reads back
+  as "Custom Theme", and the saved document does not need the copy. Installed
+  themes (the user's "My Themes") already work by name through `theme`.
+- `build_deck` with a `theme_file` keeps the theme's slide size; its setup
+  session returns the real size, and layout flow uses it.
 - `sort` leaves header rows in place, setting `row count` lower drops rows
   from the end, `clear range` wipes contents and formatting, and
   `set value … to missing value` empties a cell. The sdef's `format` enum

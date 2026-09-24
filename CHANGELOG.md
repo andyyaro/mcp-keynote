@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that earlier steps stayed applied. Probed on Keynote 15.3.1. The live check
   renders a merged, recoloured, centred header and measures that its text
   sits over the table's centre; an unmerged A1 would put it over column A.
+- **`theme_file`** on `create_presentation`, and as a `build_deck` spec and
+  frontmatter key, builds a document from a `.kth` that is not installed, at
+  any path, a shared Google Drive folder included. The server copies the file
+  into Keynote's sandbox container first (Keynote reading a file outside it
+  risks the same AppleEvent wedge as `open`) and deletes the copy once the
+  document is saved. `build_deck` keeps the theme's own slide size unless the
+  spec sets one; the style's default size would otherwise rescale every
+  layout.
+
+### Changed
+
+- `build_deck`'s setup session reads the document size back, and layout flow
+  uses that size instead of the requested one.
 
 ## [4.1.0] - 2026-07-26
 

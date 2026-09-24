@@ -49,7 +49,7 @@ by `scripts/verify_tools.py` (see `TOOL_MATRIX.md`).
 > (`replace_image`, `add_image` width/height/description,
 > `set_element_style`). Deliberately left unexposed (low value for a model
 > building decks — revisit here if that judgment changes): playback control,
-> document passwords, `make image slides`, `.kth` via make-with-data,
+> document passwords, `make image slides`,
 > `print`. Per-tool verification: [TOOL_MATRIX.md](TOOL_MATRIX.md); the
 > impossibility list with workarounds: [CEILING.md](CEILING.md).
 
@@ -170,7 +170,7 @@ protected` (r) all work (probe round-trip true→false). Tool: opt-in
 
 | Surface | Status | Note |
 |---|---|---|
-| `make new document with data POSIX file "theme.kth"` | unprobed (no `.kth` asset on this machine; `.kth` cannot be produced by script) | documented sdef path for custom-theme decks; accept as a `theme_file` arg and surface Keynote's error if it fails |
+| `make new document with data POSIX file "theme.kth"` | **exposed** as `theme_file` (2026-09). Works on 15.3.1 when the file is inside Keynote's container; probed with a 5.5 MB company theme: all layouts arrive, theme name reads back as "Custom Theme". A path outside the container was not tried, since the server always copies first | themes already in the theme chooser work by name through `theme`; `theme_file` is for ones that are not |
 | `print` command + `print settings` | unprobed (modal-dialog risk — printing without a dialog needs a configured printer) | deliberately left unexposed |
 | `document.id`, `theme.id` | trivially readable | expose in `get_presentation_info` |
 | `modified` of document | trivially readable | expose in info tools |
