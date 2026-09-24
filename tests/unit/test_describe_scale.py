@@ -20,9 +20,16 @@ from keynote_mcp.tools.deck import (
     _chunks,
     _parse_element_types,
     _parse_slide_range,
+    _props_read,
     _round_slide_numbers,
+    _soft_class_read,
 )
-from keynote_mcp.utils.error_handler import ParameterError
+from keynote_mcp.tools.fragments import (
+    _TEXT_ITEM_PREDICATE,
+    TEXT_ITEM_CLASSIFY,
+    TEXT_ITEM_FILTER,
+)
+from keynote_mcp.utils.error_handler import AppleScriptError, ParameterError
 
 
 class TestSlideRange:
@@ -250,3 +257,144 @@ class TestBatchedSummary:
         [entry] = tools._summarize_slides("d.key", [1])
         assert runner.run.call_count == 2
         assert entry["title"] == "Fallback"
+
+
+def _rec(*fields: object) -> str:
+    return FS.join(str(f) for f in fields) + RS
+
+
+def _slide_records(slide: int, *elements: str, groups: int = 0) -> str:
+    return (
+        _rec("D", slide)
+        + _rec("L", "Blank")
+        + _rec("K", "false")
+        + "".join(elements)
+        + _rec("GRP", groups)
+    )
+
+
+_TEXT = _rec("T", "Hello", 10, 20, 300, 40, "Helvetica", 24, "0,0,0", 1, "", 0, 100, "no fill", "")
+
+
+class TestBatchedDescribe:
+    """The full read, a class at a time: one event per property, not per element.
+
+    The per-element path sent ~200 Apple events per slide, which at ~17 ms each
+    on macOS 27 took 17.3 s for five slides of the profiling deck. The batched
+    path emits the same records, so both share one parser.
+    """
+
+    def _tools(self, *raws: str) -> tuple[Any, MagicMock]:
+        tools = DeckTools()
+        runner = MagicMock()
+        runner.run.side_effect = [r.strip() for r in raws]  # the real runner strips stdout
+        tools.runner = runner
+        return tools, runner
+
+    def test_one_osascript_call_reads_the_span_a_class_at_a_time(self) -> None:
+        raw = _slide_records(2, _TEXT) + _slide_records(4)
+        tools, runner = self._tools(raw)
+        slides = tools._describe_slides("d.key", [2, 4])
+        assert [s["slide"] for s in slides] == [2, 4]
+        assert slides[0]["elements"][0]["text"] == "Hello"
+        assert runner.run.call_count == 1
+        script = runner.run.call_args.args[0]
+        assert "every text item of slides 2 thru 4 of targetDoc" in script
+        assert "repeat with slideRef in {2, 4}" in script
+        # the per-element path's app-side identity loop is gone
+        assert "set ti to text item i" not in script
+
+    def test_the_document_name_is_argv_not_source(self) -> None:
+        tools, runner = self._tools(_slide_records(1))
+        tools._describe_slides('evil" & quit & "', [1])
+        assert "evil" not in runner.run.call_args.args[0]
+        assert runner.run.call_args.args[1] == 'evil" & quit & "'
+
+    def test_element_types_skip_whole_class_reads(self) -> None:
+        tools, runner = self._tools(_slide_records(1))
+        tools._describe_slides("d.key", [1], frozenset({"line"}))
+        script = runner.run.call_args.args[0]
+        assert "start point of every line" in script
+        for absent in ("every text item", "every image", "every shape", "every table"):
+            assert absent not in script
+
+    def test_text_runs_off_skips_the_character_reads(self) -> None:
+        tools, runner = self._tools(_slide_records(1))
+        tools._describe_slides("d.key", [1], include_text_runs=False)
+        assert "every character" not in runner.run.call_args.args[0]
+
+    def test_trailing_empty_fields_stripped_by_the_runner_are_restored(self) -> None:
+        # A stream ending in a text record whose optional fields are all empty:
+        # str.strip() eats the trailing separators.
+        raw = (
+            _rec("D", 1)
+            + _rec("L", "Blank")
+            + _rec("T", "Hi", 0, 0, 10, 10, "", "", "", 1, "", "", "", "", "")
+        )
+        tools, _ = self._tools(raw)
+        [slide] = tools._describe_slides("d.key", [1])
+        el = slide["elements"][0]
+        assert el["text"] == "Hi"
+        assert "font_size" not in el and "fill_type" not in el and "runs" not in el
+
+    def test_a_failed_batched_read_falls_back_to_the_per_element_path(self) -> None:
+        tools = DeckTools()
+        runner = MagicMock()
+        runner.run.side_effect = [
+            AppleScriptError("AppleEvent handler failed. (-10000)"),
+            _slide_records(1, _TEXT).strip(),
+        ]
+        tools.runner = runner
+        [slide] = tools._describe_slides("d.key", [1])
+        assert runner.run.call_count == 2
+        assert "set ti to text item i" in runner.run.call_args_list[1].args[0]
+        assert slide["elements"][0]["index"] == 1
+
+    def test_records_for_the_wrong_slides_fall_back(self) -> None:
+        tools, runner = self._tools(_slide_records(1), _slide_records(1) + _slide_records(2))
+        slides = tools._describe_slides("d.key", [1, 2])
+        assert runner.run.call_count == 2
+        assert [s["slide"] for s in slides] == [1, 2]
+
+    def test_line_endpoints_are_read_after_the_slides_line_positions(self) -> None:
+        # Keynote 15.3.1 reads endpoints as 0,0 unless the slide's line
+        # positions were read just before, so both paths read them first.
+        tools, runner = self._tools(_slide_records(1), _slide_records(1))
+        tools._describe_slides("d.key", [1], frozenset({"line"}))
+        batched = runner.run.call_args.args[0]
+        warm = batched.index("position of every line of slide n of targetDoc")
+        assert warm < batched.index("start point of every line of slide n of targetDoc")
+        assert "start point of every line of slides" not in batched
+        tools._describe_slides_per_element("d.key", [1], frozenset({"line"}))
+        per_element = runner.run.call_args.args[0]
+        assert per_element.index("position of every line") < per_element.index("start point")
+
+    def test_geometry_comes_from_one_properties_read_with_a_fallback(self) -> None:
+        # Keynote 15.3.1 charges every geometry read per slide, so position,
+        # width, height and rotation come from one `properties` read; the
+        # per-property reads stay in its `on error` branch.
+        block = _props_read("table", "SPAN", [("tbW", "width")], ["\nFALLBACK"])
+        assert "set propsAll to properties of every table of SPAN" in block
+        assert "set end of tbWOne to width of rec" in block
+        assert block.index("on error") < block.index("FALLBACK")
+        tools, runner = self._tools(_slide_records(1))
+        tools._describe_slides("d.key", [1])
+        script = runner.run.call_args.args[0]
+        for cls in ("text item", "shape", "table", "chart"):
+            assert f"properties of every {cls} of slides 1 thru 1" in script
+        # images cannot use it: `properties of every image` fails (-10000)
+        assert "properties of every image" not in script
+
+    def test_soft_reads_degrade_per_slide_then_per_element(self) -> None:
+        block = _soft_class_read("v", "rotation", "image", "slides 1 thru 3 of targetDoc", 1, 3)
+        assert "set v to rotation of every image of slides 1 thru 3 of targetDoc" in block
+        assert "(rotation of every image of slide n of targetDoc)" in block
+        assert "set x to rotation of image i of slide n of targetDoc" in block
+        direct = _soft_class_read("v", "file", "image", "s", 1, 3, per_slide=False)
+        assert "(file of every image of slide n of targetDoc)" not in direct
+        assert "set x to file of image i of slide n of targetDoc" in direct
+
+    def test_both_text_item_walks_share_one_predicate(self) -> None:
+        assert _TEXT_ITEM_PREDICATE in TEXT_ITEM_FILTER
+        assert _TEXT_ITEM_PREDICATE in TEXT_ITEM_CLASSIFY
+        assert "set ti to item i of tRefs" in TEXT_ITEM_CLASSIFY

@@ -58,23 +58,10 @@ RESOLVE_DOC = """
 # phantom and surfaced the text as slide.title instead. Same slide, two
 # numberings, and the offset changed with the layout - so an index taken from
 # one tool addressed a different element in the other. See docs/INDEX_CONTRACT.md.
-TEXT_ITEM_FILTER = """
-                    set defT to missing value
-                    set defB to missing value
-                    try
-                        set defT to default title item
-                    end try
-                    try
-                        set defB to default body item
-                    end try
-                    set titleShown to title showing
-                    set bodyShown to body showing
-                    set seenTitle to false
-                    set seenBody to false
-                    set realIndices to {}
-                    set realRoles to {}
-                    repeat with i from 1 to (count of text items)
-                        set ti to text item i
+# The predicate, shared by both ways of walking the text items below. `ti` is
+# the item being classified; defT/defB, titleShown/bodyShown and the seen flags
+# must already be set.
+_TEXT_ITEM_PREDICATE = """
                         set phantom to false
                         set role to ""
                         if defT is not missing value and ti is defT then
@@ -95,8 +82,49 @@ TEXT_ITEM_FILTER = """
                         if not phantom then
                             set end of realIndices to i
                             set end of realRoles to role
-                        end if
+                        end if"""
+
+TEXT_ITEM_FILTER = (
+    """
+                    set defT to missing value
+                    set defB to missing value
+                    try
+                        set defT to default title item
+                    end try
+                    try
+                        set defB to default body item
+                    end try
+                    set titleShown to title showing
+                    set bodyShown to body showing
+                    set seenTitle to false
+                    set seenBody to false
+                    set realIndices to {}
+                    set realRoles to {}
+                    repeat with i from 1 to (count of text items)
+                        set ti to text item i"""
+    + _TEXT_ITEM_PREDICATE
+    + """
                     end repeat"""
+)
+
+# The same filter over a list of text-item references fetched in one event
+# (`every text item of ...`), for readers that batch. Keynote returns a
+# placeholder's reference as `default title item of slide N`, so `ti is defT`
+# compares two local references with no Apple event; the app-side comparison
+# above costs one event per item. Needs tRefs, defT/defB and
+# titleShown/bodyShown set.
+TEXT_ITEM_CLASSIFY = (
+    """
+                    set seenTitle to false
+                    set seenBody to false
+                    set realIndices to {}
+                    set realRoles to {}
+                    repeat with i from 1 to (count of tRefs)
+                        set ti to item i of tRefs"""
+    + _TEXT_ITEM_PREDICATE
+    + """
+                    end repeat"""
+)
 
 
 # --- per-run text styling, read cheaply --------------------------------------
@@ -116,12 +144,9 @@ TEXT_ITEM_FILTER = """
 #
 # Emits: RUNSTART|end|font|size|r,g,b  per run, joined by RUNSEP.
 _RUN_SEP = "\x1d"
-TEXT_RUNS_FRAGMENT = """
-                            set runsOut to ""
-                            try
-                                set cols to color of every character of object text of ti
-                                set fnts to font of every character of object text of ti
-                                set szs to size of every character of object text of ti
+# Coalesces cols/fnts/szs (per-character lists already fetched) into runsOut.
+# Batched readers fetch the lists for every text item at once and run only this.
+TEXT_RUNS_COALESCE = """
                                 set charCount to count of cols
                                 if charCount > 0 then
                                     set runStart to 1
@@ -155,8 +180,19 @@ TEXT_RUNS_FRAGMENT = """
                                             end if
                                         end if
                                     end repeat
-                                end if
+                                end if"""
+
+TEXT_RUNS_FRAGMENT = (
+    """
+                            set runsOut to ""
+                            try
+                                set cols to color of every character of object text of ti
+                                set fnts to font of every character of object text of ti
+                                set szs to size of every character of object text of ti"""
+    + TEXT_RUNS_COALESCE
+    + """
                             end try"""
+)
 
 
 def exists_guard(as_type: str, index: int, slide_number: int) -> str:

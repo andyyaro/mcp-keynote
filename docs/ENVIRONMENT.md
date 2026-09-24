@@ -30,10 +30,15 @@ The live suites were re-run on a second machine. Keynote 15 installs as
 | uv | 0.12.7 | `uv --version` |
 | mcp (resolved) | 1.30.0 | as above |
 
-Results: `make check` green, `pytest -m keynote` 9/9, and
-`scripts/verify_tools.py` 289 checks with 3 failures (see
-`docs/TOOL_MATRIX.md`). Every Apple event takes ~17 ms on this host, for
-Finder and System Events as well as Keynote; batch reads accordingly. The sdef was not regenerated for 15.3.1, so
+Results: `make check` green, `pytest -m keynote` 8/9, and
+`scripts/verify_tools.py` 289 checks with 1 failure, the flaky `add_table`
+header check (see `docs/TOOL_MATRIX.md`). The failing pytest is
+`test_build_animation_add_and_remove` ("Could not find effect popover for
+removal"); it fails the same way with the describe_deck change stashed.
+Every Apple event takes ~17 ms on this host, for Finder and System Events as
+well as Keynote; batch reads accordingly. On top of that, Keynote charges
+each geometry read (position, width, height, rotation) ~40-90 ms per slide
+however it is batched. The sdef was not regenerated for 15.3.1, so
 `docs/keynote-14.5.sdef` is still the spec on file.
 
 ## MCP SDK versions on PyPI (verified 2026-07-25)
