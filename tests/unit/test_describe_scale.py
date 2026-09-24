@@ -9,11 +9,14 @@ which ~4.5 s was pure process overhead (0.125 s x 36 calls, one per slide), and
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from keynote_mcp.tools import deck as deck_mod
 from keynote_mcp.tools.deck import (
     _ALL_ELEMENT_CLASSES,
     DeckTools,
@@ -368,6 +371,18 @@ class TestBatchedDescribe:
         tools._describe_slides_per_element("d.key", [1], frozenset({"line"}))
         per_element = runner.run.call_args.args[0]
         assert per_element.index("position of every line") < per_element.index("start point")
+
+    def test_no_other_module_reads_line_endpoints(self) -> None:
+        # Probed live: get_slide_content lists no lines, move/resize reject
+        # them, and add_line/build_deck read back position and size, which
+        # read correctly cold. A new endpoint reader needs _LINE_WARM_UP.
+        package = Path(deck_mod.__file__).parents[1]
+        readers = sorted(
+            p.name
+            for p in package.rglob("*.py")
+            if re.search(r"(start|end) point of", p.read_text())
+        )
+        assert readers == ["deck.py"]
 
     def test_geometry_comes_from_one_properties_read_with_a_fallback(self) -> None:
         # Keynote 15.3.1 charges every geometry read per slide, so position,

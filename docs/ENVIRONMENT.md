@@ -31,10 +31,14 @@ The live suites were re-run on a second machine. Keynote 15 installs as
 | mcp (resolved) | 1.30.0 | as above |
 
 Results: `make check` green, `pytest -m keynote` 8/9, and
-`scripts/verify_tools.py` 289 checks with 1 failure, the flaky `add_table`
-header check (see `docs/TOOL_MATRIX.md`). The failing pytest is
-`test_build_animation_add_and_remove` ("Could not find effect popover for
-removal"); it fails the same way with the describe_deck change stashed.
+`scripts/verify_tools.py` 289 checks with 2 failures: the flaky `add_table`
+header check (see `docs/TOOL_MATRIX.md`) and `add_build_in(text 2)`. That
+failure and the failing pytest (`test_build_animation_by_paragraph_delivery`
+this run, `test_build_animation_add_and_remove` in earlier ones) are the same
+"Could not find effect popover" UI-scripting flake: both build tests then
+passed twice in a row on a rerun. Measured after the `get_slide_content`
+batching, on a freshly restarted Keynote: one slide of the scale deck takes
+0.43-0.45 s, against 1.27-1.45 s element by element.
 Every Apple event takes ~17 ms on this host, for Finder and System Events as
 well as Keynote; batch reads accordingly. On top of that, Keynote charges
 each geometry read (position, width, height, rotation) ~40-90 ms per slide

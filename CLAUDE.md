@@ -270,6 +270,37 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
   policy, matching `add_slide`); `set_slide_content` opts back into theme
   placeholders by setting `title/body showing` before filling.
 
+### Keynote 15.3.1 / macOS 27 read-cost facts (probed 2026-09)
+
+- **Every Apple event costs ~17 ms on macOS 27** (Finder and System Events
+  too), against ~0.35 ms on macOS 26. Batch reads:
+  `<property> of every <class> of slides lo thru hi` is one event.
+- **Keynote charges each geometry read (position, width, height, rotation)
+  ~40-90 ms per slide, however it is batched.** `properties of every <class>`
+  returns all of them for the cost of one, for text items, shapes, tables,
+  charts and lines. It fails with -10000 for images (their `file` property),
+  so images keep per-property list reads. `_props_read` in `deck.py` and
+  `get_slide_content` rely on this, with the per-property reads as fallback.
+- **A line's `start point` / `end point` read as 0,0** unless that slide's
+  line positions were read just before, and only the slide read last stays
+  readable. `position of every line of slide n` fixes it (~30 ms a slide,
+  `_LINE_WARM_UP`); counting the lines, getting the slide or getting the line
+  reference does not. Position and width read correctly without it. Only
+  `describe_deck` reads endpoints, and a unit test keeps it that way; a new
+  endpoint reader needs the warm-up.
+- **`every text item` returns placeholders as `default title item of slide
+  N` / `default body item of slide N`**, so `ti is defT` on fetched references
+  compares locally, with no Apple event, and agrees with the app-side
+  comparison (70 of 70 on the scale deck, 0.13 s against 5.4 s).
+  `TEXT_ITEM_CLASSIFY` does this; `TEXT_ITEM_FILTER` sends one event per item
+  and stays for the per-element fallbacks.
+- **`repeat with x in (<app expression>)` re-queries Keynote on every
+  iteration.** Fetch the list into a variable first.
+- **Timings drift.** The same full describe took 12 s in one session and
+  120 s later with no code change, and once Keynote sat at 98% CPU and 2.8 GB
+  until restarted. Compare old and new code in the same Keynote session, and
+  restart Keynote (ask the user first) before taking numbers for docs.
+
 ## Development
 
 ```bash

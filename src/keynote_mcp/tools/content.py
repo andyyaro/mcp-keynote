@@ -20,6 +20,7 @@ from ..utils import (
 )
 from .base import DocumentTargetedTools
 from .fragments import (
+    TEXT_ITEM_CLASSIFY,
     TEXT_ITEM_FILTER,
     Argv,
     exists_guard,
@@ -115,6 +116,160 @@ _INDEX_TAG = (
     "is merely STALE still addresses a real - and different - element, so re-read "
     "the slide after anything that deletes or adds elements."
 )
+
+
+def _slide_content_script(slide_number: int) -> str:
+    """get_slide_content element by element: the fallback for the batched read.
+
+    Sends one app-side identity comparison per text item and three or four
+    property reads per element.
+    """
+    filter_block = TEXT_ITEM_FILTER
+    return f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        tell slide {slide_number} of targetDoc
+                            set rawTextCount to count of text items
+                            set imageCount to count of images
+                            set shapeCount to count of shapes
+                            set tableCount to count of tables
+
+                            -- Placeholder filtering is defined ONCE, in
+                            -- fragments.TEXT_ITEM_FILTER, so this reader and
+                            -- describe_deck cannot disagree about which text
+                            -- item is number i. See docs/INDEX_CONTRACT.md.
+{filter_block}
+
+                            set output to "text_items:" & (count of realIndices) & ¬
+                                "|images:" & imageCount ¬
+                                & "|shapes:" & shapeCount & "|tables:" & tableCount
+
+                            repeat with n from 1 to (count of realIndices)
+                                set i to (item n of realIndices) as integer
+                                set role to item n of realRoles
+                                set ti to text item i
+                                set pos to position of ti
+                                set output to output & "|||TEXT:" & i & ":::" & ¬
+                                    (object text of ti) & ":::" & (item 1 of pos) & "," & ¬
+                                    (item 2 of pos) & ":::" & (width of ti) & "," & ¬
+                                    (height of ti) & ":::role:" & role
+                            end repeat
+
+                            repeat with i from 1 to imageCount
+                                set img to image i
+                                set pos to position of img
+                                set output to output & "|||IMAGE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of img) & "," & (height of img)
+                            end repeat
+
+                            repeat with i from 1 to shapeCount
+                                set sh to shape i
+                                set pos to position of sh
+                                set output to output & "|||SHAPE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of sh) & "," & (height of sh) & ":::opacity:" & ¬
+                                    (opacity of sh)
+                            end repeat
+
+                            repeat with i from 1 to tableCount
+                                set tb to table i
+                                set pos to position of tb
+                                set output to output & "|||TABLE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of tb) & "," & (height of tb)
+                            end repeat
+
+                            return output
+                        end tell
+                    end tell
+                end run
+    """
+
+
+def _slide_content_script_batched(slide_number: int) -> str:
+    """get_slide_content in a fixed number of Apple events, same output bytes.
+
+    Probed on Keynote 15.3.1 (slide with 5 text items, 4 images, 1 table):
+    1.3 s element by element. Keynote charges each geometry read per call,
+    so `properties of every <class>` replaces the per-element reads (images
+    fail it with -10000 and keep three list reads), and placeholders are
+    found by comparing the references `every text item` returns, locally,
+    with TEXT_ITEM_CLASSIFY. A failed read or a list whose length disagrees
+    fails the script, and the caller falls back to _slide_content_script.
+    """
+    return f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        tell slide {slide_number} of targetDoc
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item
+                            end try
+                            try
+                                set defB to default body item
+                            end try
+                            set titleShown to title showing
+                            set bodyShown to body showing
+                            set tRefs to every text item
+                            set txProps to properties of every text item
+                            if (count of txProps) is not (count of tRefs) then error "text item count"
+                            set imPos to position of every image
+                            set imW to width of every image
+                            set imH to height of every image
+                            set shProps to properties of every shape
+                            set tbProps to properties of every table
+{TEXT_ITEM_CLASSIFY}
+
+                            set output to "text_items:" & (count of realIndices) & ¬
+                                "|images:" & (count of imPos) ¬
+                                & "|shapes:" & (count of shProps) & "|tables:" & (count of tbProps)
+
+                            repeat with n from 1 to (count of realIndices)
+                                set i to (item n of realIndices) as integer
+                                set role to item n of realRoles
+                                set rec to item i of txProps
+                                set pos to position of rec
+                                set output to output & "|||TEXT:" & i & ":::" & ¬
+                                    (object text of rec) & ":::" & (item 1 of pos) & "," & ¬
+                                    (item 2 of pos) & ":::" & (width of rec) & "," & ¬
+                                    (height of rec) & ":::role:" & role
+                            end repeat
+
+                            repeat with i from 1 to (count of imPos)
+                                set pos to item i of imPos
+                                set output to output & "|||IMAGE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (item i of imW) & "," & (item i of imH)
+                            end repeat
+
+                            repeat with i from 1 to (count of shProps)
+                                set rec to item i of shProps
+                                set pos to position of rec
+                                set output to output & "|||SHAPE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of rec) & "," & (height of rec) & ":::opacity:" & ¬
+                                    (opacity of rec)
+                            end repeat
+
+                            repeat with i from 1 to (count of tbProps)
+                                set rec to item i of tbProps
+                                set pos to position of rec
+                                set output to output & "|||TABLE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of rec) & "," & (height of rec)
+                            end repeat
+
+                            return output
+                        end tell
+                    end tell
+                end run
+                """
 
 
 class ContentTools(DocumentTargetedTools):
@@ -1186,76 +1341,19 @@ class ContentTools(DocumentTargetedTools):
     # --- Read / Edit / Delete tools ---
 
     async def get_slide_content(self, slide_number: int, doc_name: str = "") -> list[TextContent]:
-        """Get all elements on a slide."""
+        """Get all elements on a slide.
+
+        The batched read runs first; if it fails, the element-by-element read
+        it replaces runs instead and supplies the reply or the error.
+        """
         try:
             validate_slide_number(slide_number)
             doc_name = self._doc(doc_name)
-            filter_block = TEXT_ITEM_FILTER
-            result = self.runner.run(
-                f"""
-                on run argv
-                    set docName to item 1 of argv
-                    tell application "Keynote"
-                        {_RESOLVE_DOC}
-                        tell slide {slide_number} of targetDoc
-                            set rawTextCount to count of text items
-                            set imageCount to count of images
-                            set shapeCount to count of shapes
-                            set tableCount to count of tables
-
-                            -- Placeholder filtering is defined ONCE, in
-                            -- fragments.TEXT_ITEM_FILTER, so this reader and
-                            -- describe_deck cannot disagree about which text
-                            -- item is number i. See docs/INDEX_CONTRACT.md.
-{filter_block}
-
-                            set output to "text_items:" & (count of realIndices) & ¬
-                                "|images:" & imageCount ¬
-                                & "|shapes:" & shapeCount & "|tables:" & tableCount
-
-                            repeat with n from 1 to (count of realIndices)
-                                set i to (item n of realIndices) as integer
-                                set role to item n of realRoles
-                                set ti to text item i
-                                set pos to position of ti
-                                set output to output & "|||TEXT:" & i & ":::" & ¬
-                                    (object text of ti) & ":::" & (item 1 of pos) & "," & ¬
-                                    (item 2 of pos) & ":::" & (width of ti) & "," & ¬
-                                    (height of ti) & ":::role:" & role
-                            end repeat
-
-                            repeat with i from 1 to imageCount
-                                set img to image i
-                                set pos to position of img
-                                set output to output & "|||IMAGE:" & i & ":::" & ¬
-                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
-                                    (width of img) & "," & (height of img)
-                            end repeat
-
-                            repeat with i from 1 to shapeCount
-                                set sh to shape i
-                                set pos to position of sh
-                                set output to output & "|||SHAPE:" & i & ":::" & ¬
-                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
-                                    (width of sh) & "," & (height of sh) & ":::opacity:" & ¬
-                                    (opacity of sh)
-                            end repeat
-
-                            repeat with i from 1 to tableCount
-                                set tb to table i
-                                set pos to position of tb
-                                set output to output & "|||TABLE:" & i & ":::" & ¬
-                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
-                                    (width of tb) & "," & (height of tb)
-                            end repeat
-
-                            return output
-                        end tell
-                    end tell
-                end run
-                """,
-                doc_name,
-            )
+            try:
+                result = self.runner.run(_slide_content_script_batched(slide_number), doc_name)
+            except Exception:
+                logger.debug("Batched get_slide_content failed; reading per element", exc_info=True)
+                result = self.runner.run(_slide_content_script(slide_number), doc_name)
             return [TextContent(type="text", text=result)]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to get slide content: {e}")]
