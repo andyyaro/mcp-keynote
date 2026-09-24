@@ -19,6 +19,7 @@ per-element tools in ``content.py``/``objects.py`` and the batched
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..utils import AppleScriptRunner, ParameterError, validate_number, validate_slide_number
@@ -547,6 +548,43 @@ def range_name(row1: int, col1: int, row2: int, col2: int) -> str:
     return f"{_column_letter(col1)}{row1}:{_column_letter(col2)}{row2}"
 
 
+_CELL_REF = re.compile(r"^([A-Z]{1,3})([1-9][0-9]{0,4})$")
+
+
+def parse_cell(ref: object, what: str = "cell") -> tuple[int, int]:
+    """A1-notation cell -> (row, column), 1-based. Case-insensitive."""
+    match = _CELL_REF.match(str(ref).strip().upper()) if isinstance(ref, str) else None
+    if not match:
+        raise ParameterError(f"{what}: {ref!r} is not a cell reference like 'B2'.")
+    col = 0
+    for letter in match.group(1):
+        col = col * 26 + (ord(letter) - ord("A") + 1)
+    return int(match.group(2)), col
+
+
+def parse_range(ref: object, what: str = "range") -> tuple[int, int, int, int]:
+    """'A1:C3' (or a single cell 'B2') -> (row1, col1, row2, col2), normalized
+    so row1 <= row2 and col1 <= col2."""
+    if not isinstance(ref, str):
+        raise ParameterError(f"{what}: {ref!r} is not a range like 'A1:C3'.")
+    first, sep, second = ref.partition(":")
+    r1, c1 = parse_cell(first, what)
+    r2, c2 = parse_cell(second, what) if sep else (r1, c1)
+    return min(r1, r2), min(c1, c2), max(r1, r2), max(c1, c2)
+
+
+def cell_value_expr(argv: Argv, cell: object) -> str:
+    """AppleScript expression for a cell value. Numbers and booleans are
+    interpolated (so they stay numeric in Keynote); strings go through argv,
+    and a leading '=' makes them live formulas."""
+    if isinstance(cell, bool):
+        return "true" if cell else "false"
+    if isinstance(cell, (int, float)):
+        validate_number(cell, "cell value", minimum=-1e15, maximum=1e15)
+        return _fmt_num(cell)
+    return argv.ref(str(cell))
+
+
 def table_fragment(
     argv: Argv,
     tag: str,
@@ -600,13 +638,7 @@ def table_fragment(
         for c, cell in enumerate(row, start=1):
             if cell is None or cell == "":
                 continue
-            if isinstance(cell, bool):
-                value_expr = "true" if cell else "false"
-            elif isinstance(cell, (int, float)):
-                value_expr = _fmt_num(cell)
-            else:
-                value_expr = argv.ref(str(cell))
-            cell_sets.append(f"set value of cell {c} of row {r} to {value_expr}")
+            cell_sets.append(f"set value of cell {c} of row {r} to {cell_value_expr(argv, cell)}")
     if cell_sets:
         lines.append("tell newTable")
         lines += cell_sets

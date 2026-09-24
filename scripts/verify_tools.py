@@ -1309,6 +1309,147 @@ async def check_text_runs_author(pres, export, deck):
     )
 
 
+def _doc_facts(runner, doc_name):
+    """(width, height, layout names) of an open document, read directly."""
+    raw = runner.run(
+        """
+        on run argv
+            tell application "Keynote"
+                set d to document (item 1 of argv)
+                set AppleScript's text item delimiters to "|||"
+                set names to (name of every slide layout of d) as text
+                set AppleScript's text item delimiters to ""
+                return ((width of d) as integer as text) & "x" & ¬
+                    ((height of d) as integer as text) & "@@" & names
+            end tell
+        end run
+        """,
+        doc_name,
+    )
+    size, _, names = raw.partition("@@")
+    w, h = (int(v) for v in size.split("x"))
+    return w, h, names.split("|||")
+
+
+async def check_edit_table(pres, objects, export):
+    """edit_table, RENDERED: a merged, centred, recoloured header row.
+
+    Read-backs can confirm values moved and the row count grew; only pixels
+    show that a merge happened. A header written into A1 of an UNMERGED row
+    centres its text over column A, so the ink centre sits a third of the way
+    across; merged, it sits over the table's centre. The background is sampled
+    in all three column positions for the same reason.
+    """
+    key = SCRATCH / "edit-table.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    check(
+        "edit_table: create doc",
+        await pres.create_presentation("edit-table", save_path=str(key)),
+        "Created presentation",
+    )
+    doc = "edit-table.key"
+    slide_w, _, _ = _doc_facts(pres.runner, doc)
+    box = (100, 100, 600, 240)
+    check(
+        "edit_table: add 4x3 table",
+        await objects.add_table(
+            1,
+            [["Team", "Now", "Plan"], ["Eng", 24, 30], ["Sales", 11, 14], ["Ops", 18, 9]],
+            x=box[0],
+            y=box[1],
+            width=box[2],
+            height=box[3],
+            doc_name=doc,
+        ),
+        "table index 1",
+    )
+    red = (200, 40, 40)
+    check(
+        "edit_table: grow, write, sort, merge, style",
+        await objects.edit_table(
+            1,
+            1,
+            row_count=5,
+            values=[["Headcount", "", ""]],
+            sort={"column": "B", "direction": "descending"},
+            merge=["A1:C1"],
+            styles=[
+                {
+                    "range": "A1:C1",
+                    "background_color": "#C82828",
+                    "text_color": "#FFFFFF",
+                    "alignment": "center",
+                },
+                {"range": "C2:C5", "format": "percent"},
+            ],
+            doc_name=doc,
+        ),
+        "Now 5x3",
+    )
+    # The fifth row arrives empty; fill it after the sort so it stays last.
+    check(
+        "edit_table: fill the added row",
+        await objects.edit_table(1, 1, values=[["Support", 7, 0.5]], start_cell="A5", doc_name=doc),
+        "3 cell(s) written",
+    )
+    facts = pres.runner.run(
+        """
+        on run argv
+            tell application "Keynote"
+                tell table 1 of slide 1 of document (item 1 of argv)
+                    set names to {}
+                    repeat with r from 2 to row count
+                        set end of names to (value of cell 1 of row r) as text
+                    end repeat
+                    set AppleScript's text item delimiters to ","
+                    set joined to names as text
+                    set AppleScript's text item delimiters to ""
+                    return joined & "|" & (formatted value of cell 3 of row 5) & "|" & ¬
+                        ((height of row 1) as integer as text) & "|" & ¬
+                        ((item 1 of (get position)) as integer as text) & "," & ¬
+                        ((item 2 of (get position)) as integer as text) & "," & ¬
+                        ((width) as integer as text)
+                end tell
+            end tell
+        end run
+        """,
+        doc,
+    )
+    order, formatted, row1_h, geom = facts.split("|")
+    record(
+        "edit_table sort kept the header and ordered the body by column B",
+        order == "Eng,Ops,Sales,Support",
+        f"body column A: {order}",
+    )
+    record("edit_table number format applied", "%" in formatted, f"C5 shows {formatted!r}")
+    tx, ty, tw = (int(v) for v in geom.split(","))
+    row_h = int(row1_h)
+
+    image, scale = await render_slide(export, 1, "edit-table", slide_w, doc_name=doc)
+    if image is not None:
+        mid_y = ty + row_h / 2
+        samples = [at(image, scale, tx + tw * f, mid_y + row_h * 0.3) for f in (0.08, 0.5, 0.92)]
+        body = at(image, scale, tx + tw * 0.08, ty + row_h * 1.5)
+        record(
+            "edit_table header background is RENDERED across all three columns",
+            all(near(s, red, 45) for s in samples) and not near(body, red, 45),
+            f"header samples {samples}, body {body}, asked {red}",
+        )
+        ink = ink_bbox(image, scale, box=(tx + 4, ty + 2, tw - 8, row_h - 4))
+        centre = (ink[0] + ink[2]) / 2 if ink else None
+        record(
+            "edit_table merge+center is RENDERED: header text sits over the table centre",
+            centre is not None and abs(centre - (tx + tw / 2)) < 25,
+            f"ink centre x={centre}, table centre x={tx + tw / 2} "
+            f"(unmerged would be ~{tx + tw / 6:.0f})",
+        )
+
+    bad = text_of(await objects.edit_table(1, 1, merge=["A1:D9"], doc_name=doc))
+    record("edit_table out-of-range merge refused", "outside the 5x3 table" in bad, bad[:120])
+    check("edit_table: close", await pres.close_presentation(doc_name=doc, should_save=False))
+
+
 async def main():
     pres = PresentationTools()
     slides = SlideTools()
@@ -2574,6 +2715,7 @@ async def main():
     await check_document_resolution(pres, slides, content, export, objects)
     await check_fill_is_unwritable(pres, slides, content, export, objects)
     await check_text_runs_author(pres, export, deck)
+    await check_edit_table(pres, objects, export)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")

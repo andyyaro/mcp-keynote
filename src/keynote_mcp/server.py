@@ -481,6 +481,26 @@ class KeynoteMCPServer:
                 style=arguments.get("style", ""),
                 doc_name=doc_name,
             )
+        elif name == "edit_table":
+            return await self.object_tools.edit_table(
+                slide_number=arguments["slide_number"],
+                table_index=arguments["table_index"],
+                values=arguments.get("values"),
+                start_cell=arguments.get("start_cell", "A1"),
+                row_count=arguments.get("row_count"),
+                column_count=arguments.get("column_count"),
+                header_rows=arguments.get("header_rows"),
+                header_columns=arguments.get("header_columns"),
+                footer_rows=arguments.get("footer_rows"),
+                clear=arguments.get("clear"),
+                sort=arguments.get("sort"),
+                unmerge=arguments.get("unmerge"),
+                merge=arguments.get("merge"),
+                styles=arguments.get("styles"),
+                column_widths=arguments.get("column_widths"),
+                row_heights=arguments.get("row_heights"),
+                doc_name=doc_name,
+            )
         elif name == "add_chart":
             return await self.object_tools.add_chart(
                 slide_number=arguments["slide_number"],

@@ -143,6 +143,23 @@ async def test_add_table_cells_via_argv(object_tools, mock_subprocess_run, paylo
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
+async def test_edit_table_strings_via_argv(object_tools, mock_subprocess_run, payload):
+    def fake_run(cmd, **kwargs):
+        stdout = "3,3" if "return (row count as text)" in kwargs["input"] else "3,3|0,0|9x9"
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+
+    mock_subprocess_run.side_effect = fake_run
+    await object_tools.edit_table(
+        1,
+        1,
+        values=[[payload]],
+        styles=[{"range": "A1", "font_name": payload}],
+        doc_name="d",
+    )
+    _assert_string_safe(mock_subprocess_run, payload)
+
+
+@pytest.mark.parametrize("payload", ADVERSARIAL)
 async def test_add_chart_names_via_argv(object_tools, mock_subprocess_run, payload):
     mock_subprocess_run.return_value.stdout = "CH|1|0,0|600,400"
     await object_tools.add_chart(1, "bar", [payload], [payload, "col"], [[1, 2]])

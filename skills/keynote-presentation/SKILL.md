@@ -28,7 +28,7 @@ Keynote serializes either way). Pass `style` (`plain`/`boardroom`/`midnight`/`ed
 Two-column layouts: give elements `"column": "left"` / `"right"`.
 Element order in the spec is z-order (put `panel` elements before the text
 that sits on them). `describe_deck` reads any open deck back as the same
-JSON. Native `add_table` (live `=SUM(…)` formulas, min 2×2) and `add_chart`
+JSON. Native `add_table` (live `=SUM(…)` formulas, min 2×2; change an existing table with `edit_table`) and `add_chart`
 (17 native types; data is write-once — delete and re-add to change it) beat
 drawing tables/charts out of text boxes. Colored panels are RENDERED
 IMAGES (fill color is not scriptable, re-probed at 4.0.0) — not recolorable

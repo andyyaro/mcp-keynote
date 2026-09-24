@@ -74,6 +74,8 @@ DISPATCH_CASES = [
     ("add_shape", {"slide_number": 1, "opacity": 8}, ""),
     ("add_table", {"slide_number": 1, "data": [["a", "b"], ["c", 1]]}, "TB|1|0,0|600,300"),
     ("add_table", {"slide_number": 1, "data": [["tiny"]]}, ""),
+    ("edit_table", {"slide_number": 1, "table_index": 1}, ""),
+    ("edit_table", {"slide_number": 1, "table_index": 1, "merge": ["A1:B1"]}, "3,3"),
     (
         "add_chart",
         {

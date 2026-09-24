@@ -3,7 +3,7 @@
 ## What this is
 
 An MCP (Model Context Protocol) server that controls Apple Keynote via
-AppleScript. It exposes 59 tools: whole-deck declarative building
+AppleScript. It exposes 62 tools: whole-deck declarative building
 (`build_deck`/`describe_deck`), presentations, slides, content (text,
 images, lists, code blocks, theme placeholders), NATIVE tables and charts,
 rendered color panels, per-range text styling, transitions, styles
@@ -48,7 +48,7 @@ src/keynote_mcp/
     fragments.py         — SINGLE SOURCE of element-creation AppleScript
                            (argv-safe fragment builders + trusted literal
                            maps) consumed by content/objects/deck alike
-    objects.py           — native add_table/add_chart, add_line, rendered
+    objects.py           — native add_table/edit_table/add_chart, add_line, rendered
                            add_colored_panel, style_text_range,
                            replace_image, set_element_style
     deck.py              — build_deck (JSON spec + markdown dialect,
@@ -269,6 +269,14 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
 - New presentations default slide 1 to the **Blank layout** (documented
   policy, matching `add_slide`); `set_slide_content` opts back into theme
   placeholders by setting `title/body showing` before filling.
+
+### Table edits (probed 2026-09, Keynote 15.3.1)
+
+- `sort` leaves header rows in place, setting `row count` lower drops rows
+  from the end, `clear range` wipes contents and formatting, and
+  `set value … to missing value` empties a cell. The sdef's `format` enum
+  includes Numbers-only entries (checkbox, slider, …); `edit_table` exposes
+  only the ones that make sense in Keynote.
 
 ### Keynote 15.3.1 / macOS 27 read-cost facts (probed 2026-09)
 
