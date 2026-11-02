@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>mcp-keynote: launch film</title>
+    <script src="assets/vendor/gsap.min.js"></script>
+    <script src="assets/vo.js"></script>
+    <script src="assets/timing.js"></script>
+    <script src="assets/board.js"></script>
+    <style>
+      /* The system face, loaded exactly as the CERFODES architecture film does (Mac-only: SF via local()).
+         A bare -apple-system/system-ui primary is silently replaced at render time. No other text face is used. */
+      @font-face { font-family: "HostUI"; src: local("SF Pro"), local("SF Pro Display"), local(".SF NS"); font-weight: 100 900; }
+      /* HIG Native light tokens (as in the CERFODES source), plus mcp-keynote's own brand colours */
+      :root {
+        --grouped-background-primary: #f2f2f7;
+        --background-primary: #ffffff;
+        --label-primary: #000000;
+        --label-secondary: #68686d; /* video legibility: solid, >= 4.5:1 on white and on the grouped background */
+        --separator: rgba(0, 0, 0, 0.12);
+        --fill-primary: rgba(120, 120, 120, 0.2);
+        --fill-secondary: rgba(120, 120, 128, 0.16);
+        --fill-tertiary: rgba(118, 118, 128, 0.12);
+        --fill-quaternary: rgba(116, 116, 128, 0.08);
+        --system-green: #34c759;
+        --system-gray: #8e8e93;
+        --system-gray-3: #c7c7cc;
+        --system-gray-5: #e5e5ea;
+        --system-blue: #0088ff;
+        --system-teal: #00c3d0;
+        --system-indigo: #6155f5;
+        --system-red: #ff383c;
+        --brand-sky: #8ec9ff;
+        --brand-blue: #2f64b0;
+        --brand-navy: #0b1e3f;
+        --radius-group: 26px;
+        --radius-capsule: 9999px;
+        --font-ui: "HostUI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--grouped-background-primary); }
+      #main {
+        position: relative; width: 1920px; height: 1080px; overflow: hidden;
+        color: var(--label-primary); font-family: var(--font-ui); -webkit-font-smoothing: antialiased;
+      }
+      #bg { position: absolute; inset: 0; background: var(--grouped-background-primary); }
+      /* glyphs: 24x24 line icons from the sprite, sized by the parent's font-size */
+      .ic { display: block; width: 1em; height: 1em; flex: none; overflow: visible; }
+
+      /* shared HIG parts (every scene uses them; scene-only parts carry the scene's prefix) */
+      .sec { position: absolute; left: 64px; top: 50px; display: flex; align-items: baseline; gap: 16px; white-space: nowrap; }
+      .sec b { font-size: 34px; line-height: 42px; font-weight: 700; color: var(--label-primary); letter-spacing: -0.2px; }
+      .sec span { font-size: 24px; line-height: 30px; font-weight: 400; color: var(--label-secondary); }
+      .card { position: absolute; display: flex; gap: 14px; align-items: center; padding: 14px 16px; border-radius: 20px; background: var(--background-primary); }
+      .tile { flex: none; width: 44px; height: 44px; border-radius: 11px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 26px; }
+      .tx { min-width: 0; display: flex; flex-direction: column; }
+      .t { font-size: 23px; line-height: 27px; font-weight: 600; color: var(--label-primary); white-space: nowrap; }
+      .s { margin-top: 2px; font-size: 18px; line-height: 22px; color: var(--label-secondary); text-wrap: balance; }
+      .st { margin-top: 8px; display: flex; align-items: center; gap: 8px; font-size: 22px; line-height: 26px; font-weight: 500; color: var(--label-primary); white-space: nowrap; }
+      .dot { display: block; flex: none; width: 11px; height: 11px; border-radius: 50%; }
+      .dot.live { background: var(--system-green); }
+      .dot.ci { background: var(--system-blue); }
+      .dot.no { background: var(--system-red); }
+      .chip { display: inline-block; padding: 3px 11px; border-radius: var(--radius-capsule); background: var(--fill-tertiary);
+              font-size: 18px; line-height: 22px; font-weight: 500; color: var(--label-primary); white-space: nowrap; }
+      /* code words: the SAME sans, semibold (no monospace anywhere) */
+      .code { font-weight: 600; }
+
+      /* subtitle layer: its own track; the band y >= 936 is kept free of board content */
+      #subtitles { position: absolute; inset: 0; pointer-events: none; z-index: 50; }
+      .sub {
+        position: absolute; left: 0; right: 0; bottom: 30px; margin: 0 auto; width: fit-content; max-width: 1240px;
+        padding: 8px 26px 10px; border-radius: 18px; background: rgba(0, 0, 0, 0.74); color: #ffffff; white-space: pre-line;
+        font-family: var(--font-ui); font-size: 38px; line-height: 47px; font-weight: 500; letter-spacing: -0.1px; text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="main" data-composition-id="main" data-start="0" data-duration="66.6" data-width="1920" data-height="1080">
+      <div id="bg"></div>
+      <!-- HF:ICONS (generated by scripts/build-icons.mjs, do not hand-edit) -->
+      <svg id="ic-sprite" width="0" height="0" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+        <symbol id="ic-person-crop-circle" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6.3 18.2a6.6 6.6 0 0 1 11.4 0" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-doc" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4.5A1.5 1.5 0 0 1 7.5 3H14l4 4v12.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19.5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-list-bullet" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="7" r="1.2" fill="currentColor" stroke="none"/><circle cx="5.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="5.5" cy="17" r="1.2" fill="currentColor" stroke="none"/><path d="M9.5 7h10M9.5 12h10M9.5 17h10" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-checkmark-circle" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 12.3l2.8 2.8L16.2 9.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-square-3-layers-3d-top-filled" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4z" fill="currentColor" stroke="none"/><path d="M4 12l8 4 8-4M4 17l8 4 8-4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-square-grid-2x2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-document-on-document" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6.5V4.5A1.5 1.5 0 0 1 10.5 3h6L20 6.5v9a1.5 1.5 0 0 1-1.5 1.5H16" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 9.5A1.5 1.5 0 0 1 5.5 8h6.5l3.5 3.5v8a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 19.5z" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-photo" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="10" r="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 17l5-4.5 4 3.5 3-2.5 5 4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-arrow-uturn-backward" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14.5L4.5 10 9 5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4.5 10H14a5.5 5.5 0 0 1 0 11h-2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-lock" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-play-fill" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l10.6-6.8a.8.8 0 0 0 0-1.4L9.2 4.5A.8.8 0 0 0 8 5.2z" fill="currentColor" stroke="none"/></symbol>
+        <symbol id="ic-square-and-arrow-up" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5V15M8 7.5l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 10.5H7a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6.5a2 2 0 0 0-2-2h-1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-checkmark-circle-fill" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5" fill="currentColor" stroke="none"/><path d="M8 12.3l2.8 2.8L16.2 9.5" fill="none" stroke="var(--knock, #fff)" stroke-width="1.8"/></symbol>
+        <symbol id="ic-xmark-circle-fill" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5" fill="currentColor" stroke="none"/><path d="M9 9l6 6M15 9l-6 6" fill="none" stroke="var(--knock, #fff)" stroke-width="1.8"/></symbol>
+        <symbol id="ic-flag" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 21V4M5.5 4.5c4.5-2 8 2 13 0v9c-5 2-8.5-2-13 0" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-gearshape" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M19.39 10.23L21.51 10.72L21.51 13.28L19.39 13.77A7.6 7.6 0 0 1 18.48 15.97L18.48 15.97L19.63 17.82L17.82 19.63L15.97 18.48A7.6 7.6 0 0 1 13.77 19.39L13.77 19.39L13.28 21.51L10.72 21.51L10.23 19.39A7.6 7.6 0 0 1 8.03 18.48L8.03 18.48L6.18 19.63L4.37 17.82L5.52 15.97A7.6 7.6 0 0 1 4.61 13.77L4.61 13.77L2.49 13.28L2.49 10.72L4.61 10.23A7.6 7.6 0 0 1 5.52 8.03L5.52 8.03L4.37 6.18L6.18 4.37L8.03 5.52A7.6 7.6 0 0 1 10.23 4.61L10.23 4.61L10.72 2.49L13.28 2.49L13.77 4.61A7.6 7.6 0 0 1 15.97 5.52L15.97 5.52L17.82 4.37L19.63 6.18L18.48 8.03A7.6 7.6 0 0 1 19.39 10.23Z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-arrow-uturn-forward" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14.5l4.5-4.5L15 5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.5 10H10a5.5 5.5 0 0 0 0 11h2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-globe" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><ellipse cx="12" cy="12" rx="3.8" ry="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 12h18M4.5 7.5h15M4.5 16.5h15" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-chevron-right" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5L16 12l-6.5 6.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-text-alignleft" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 10h10M4 14h16M4 18h10" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="ic-checkmark" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+      </svg>
+      <!-- /HF:ICONS -->
+
+      <audio id="soundtrack" class="clip" src="assets/audio/mix.wav" data-start="0" data-duration="66.6" data-track-index="0" data-volume="1"></audio>
+
+      <div id="s1-hook" data-composition-id="s1-hook" data-composition-src="compositions/s1-hook.html" data-start="0" data-duration="6.114" data-track-index="1" data-width="1920" data-height="1080"></div>
+      <div id="s2-name" data-composition-id="s2-name" data-composition-src="compositions/s2-name.html" data-start="5.714" data-duration="4.572" data-track-index="2" data-width="1920" data-height="1080"></div>
+      <div id="s3-board" data-composition-id="s3-board" data-composition-src="compositions/s3-board.html" data-start="9.886" data-duration="51.085" data-track-index="3" data-width="1920" data-height="1080"></div>
+      <div id="s4-end" data-composition-id="s4-end" data-composition-src="compositions/s4-end.html" data-start="60.571" data-duration="6.029" data-track-index="4" data-width="1920" data-height="1080"></div>
+
+      <div id="subtitles">
+        <!-- HF:SUBS (written by build.py from narration/lines.json + assets/vo.js) -->
+        <div id="sub-1" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="0.766" data-duration="4.878" data-track-index="5">Twenty Keynote slides, built one
+element at a time: 81 tool calls.</div>
+        <div id="sub-2" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="5.684" data-duration="3.908" data-track-index="5">mcp-keynote builds the whole
+deck from one spec, in one call.</div>
+        <div id="sub-3" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="10.323" data-duration="4.689" data-track-index="5">Claude writes one spec: slides,
+tables, charts, notes and transitions.</div>
+        <div id="sub-4" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="15.052" data-duration="3.541" data-track-index="5">The server checks all of it
+before anything is created.</div>
+        <div id="sub-5" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="18.633" data-duration="4.307" data-track-index="5">A typo or an invented key comes back
+named, with what to use instead.</div>
+        <div id="sub-6" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="23.673" data-duration="4.756" data-track-index="5">Your text reaches AppleScript as
+arguments, never pasted into the script,</div>
+        <div id="sub-7" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="28.469" data-duration="3.563" data-track-index="5">so a title full of quotes can't
+break it, or take it over.</div>
+        <div id="sub-8" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="32.072" data-duration="3.098" data-track-index="5">Then Keynote builds native
+tables with live formulas,</div>
+        <div id="sub-9" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="35.21" data-duration="2.983" data-track-index="5">17 chart types and styled connectors,</div>
+        <div id="sub-10" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="38.233" data-duration="3.547" data-track-index="5">and exports to PDF,
+PowerPoint, a movie or HTML.</div>
+        <div id="sub-11" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="42.635" data-duration="5.182" data-track-index="5">describe_deck reads an open deck back
+into the same spec, ready to diff in git.</div>
+        <div id="sub-12" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="47.857" data-duration="2.917" data-track-index="5">757 unit tests pass.</div>
+        <div id="sub-13" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="50.814" data-duration="4.699" data-track-index="5">On a real Keynote,
+289 live checks ran: none failed.</div>
+        <div id="sub-14" class="clip sub subtitle-cue" data-layout-allow-overlap data-start="55.553" data-duration="4.667" data-track-index="5">It rebuilds ByAxe's keynote-mcp,
+a fork of easychen's original.</div>
+        <!-- /HF:SUBS -->
+      </div>
+    </div>
+    <script>
+      // Host timeline: nothing animates across scenes (each scene animates itself; subtitles are plain clips).
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

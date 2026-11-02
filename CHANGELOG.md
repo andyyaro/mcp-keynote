@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **The launch film.** A 67-second film of one call building a whole deck: the spec checked
+  before anything is created, text passed to AppleScript as arguments, native tables, charts and
+  exports, and `describe_deck` reading the deck back. It credits easychen's original keynote-mcp
+  and ByAxe's fork. It plays at the top of the README and on its
+  [watch page](https://andyyaro.github.io/mcp-keynote/film.html), with captions and a transcript.
+  Its source is in [media/launch-film/](media/launch-film/); the MP4 is a release asset, not in
+  git, and [film.yml](.github/workflows/film.yml) publishes the page to GitHub Pages.
+
 ## [4.1.0] - 2026-07-26
 
 Round-2 field feedback: three defects, plus the run-authoring gap they exposed.

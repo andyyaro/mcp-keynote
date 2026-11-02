@@ -1,0 +1,127 @@
+<template>
+  <!--
+    The hook (v01): a 20-slide deck built with primitive tools, one element at a time: 81 tool calls
+    (README.md:108, the 3.0.0 live benchmark; call counts only, no seconds). The 20 thumbnails are skeleton slides,
+    not real content. On the drop (TM.drop) they gather into the three cards of the mark, which s2 pops over them.
+  -->
+  <style>
+    #root { position: absolute; inset: 0; }
+    #h-card { position: absolute; left: 64px; top: 206px; width: 1110px; height: 620px; border-radius: 26px; background: var(--background-primary); }
+    #h-cardh { position: absolute; left: 96px; top: 238px; display: flex; align-items: center; gap: 14px; }
+    #h-count { position: absolute; left: 1206px; top: 206px; width: 650px; height: 620px; border-radius: 26px; background: var(--background-primary); }
+    #h-counth { position: absolute; left: 1238px; top: 238px; display: flex; align-items: center; gap: 14px; }
+    #h-num { position: absolute; left: 1230px; top: 318px; font-size: 250px; line-height: 260px; font-weight: 700; letter-spacing: -6px;
+             color: var(--brand-navy); font-variant-numeric: tabular-nums; transform-origin: 0% 60%; }
+    #h-numl { position: absolute; left: 1240px; top: 586px; font-size: 30px; line-height: 36px; font-weight: 600; color: var(--label-primary); }
+    #h-nowl { position: absolute; left: 1240px; top: 688px; font-size: 22px; line-height: 28px; color: var(--label-secondary); }
+    #h-now { position: absolute; left: 1238px; top: 724px; height: 50px; width: 590px; }
+    .h-call { position: absolute; left: 0; top: 0; display: inline-flex; align-items: center; gap: 12px; padding: 7px 20px 7px 14px;
+              border-radius: var(--radius-capsule); background: var(--fill-tertiary); font-size: 28px; line-height: 36px; font-weight: 600; white-space: nowrap; }
+    .h-call .ic { font-size: 26px; color: var(--system-indigo); }
+    .h-th { position: absolute; width: 196px; height: 110px; border-radius: 9px; }
+    .h-sk { background: var(--fill-quaternary); }
+    .h-sl { background: #fff; border: 2px solid var(--system-gray-5); overflow: hidden; }
+    .h-sl i { position: absolute; display: block; border-radius: 4px; }
+    .h-sl .ti { background: rgba(0, 0, 0, 0.62); height: 11px; }
+    .h-sl .ln { background: var(--system-gray-3); height: 7px; }
+    .h-sl .im { background: var(--brand-sky); border-radius: 6px; }
+  </style>
+  <div id="root" data-composition-id="s1-hook" data-width="1920" data-height="1080">
+    <div id="h-sec" class="sec"><b>One element at a time</b><span>a 20-slide deck, built with primitive tools</span></div>
+    <div id="h-card"></div>
+    <div id="h-cardh">
+      <div class="tile" style="background:var(--system-indigo)"><svg class="ic"><use href="#ic-play-fill" /></svg></div>
+      <div class="tx"><div class="t">Keynote</div><div class="s" style="font-size:22px; line-height:26px">20 slides</div></div>
+    </div>
+    <div id="h-sks"></div>
+    <div id="h-count"></div>
+    <div id="h-counth">
+      <div class="tile" style="background:var(--system-gray)"><svg class="ic"><use href="#ic-list-bullet" /></svg></div>
+      <div class="tx"><div class="t">Primitive tools</div><div class="s" style="font-size:22px; line-height:26px">one call per element</div></div>
+    </div>
+    <div id="h-num">0</div>
+    <div id="h-numl">tool calls</div>
+    <div id="h-nowl">now calling</div>
+    <div id="h-now">
+      <div class="h-call"><svg class="ic"><use href="#ic-chevron-right" /></svg>create_presentation</div>
+      <div class="h-call"><svg class="ic"><use href="#ic-chevron-right" /></svg>add_slide</div>
+      <div class="h-call"><svg class="ic"><use href="#ic-chevron-right" /></svg>add_title</div>
+      <div class="h-call"><svg class="ic"><use href="#ic-chevron-right" /></svg>add_bullet_list</div>
+    </div>
+    <div id="h-sls"></div>
+  </div>
+  <script>
+    (function () {
+      const TM = window.TM, VO = window.VO;
+      const S0 = TM.s1[0], S1 = TM.s1[1];
+      const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const W = (k, w, nth = 0) => {
+        const alts = w.split("|");
+        for (const exact of [true, false]) {
+          let c = 0;
+          for (const x of VO[k].words) {
+            const t = norm(x.w);
+            if (alts.some((a) => (exact ? t === a : t.startsWith(a)))) { if (c === nth) return x.t0 - S0; c++; }
+          }
+        }
+        return VO[k].start - S0;
+      };
+      // 20 slides: a skeleton slot each, and a slide that fills it (three simple layouts, skeleton shapes only)
+      const sks = document.getElementById("h-sks"), sls = document.getElementById("h-sls");
+      const LAYOUTS = [
+        '<i class="ti" style="left:48px; top:44px; width:100px; height:14px"></i><i class="ln" style="left:62px; top:66px; width:72px"></i>',
+        '<i class="ti" style="left:16px; top:16px; width:96px"></i><i class="ln" style="left:16px; top:42px; width:150px"></i><i class="ln" style="left:16px; top:58px; width:130px"></i><i class="ln" style="left:16px; top:74px; width:110px"></i>',
+        '<i class="ti" style="left:16px; top:16px; width:84px"></i><i class="ln" style="left:16px; top:42px; width:72px"></i><i class="ln" style="left:16px; top:58px; width:60px"></i><i class="im" style="left:104px; top:38px; width:74px; height:54px"></i>',
+      ];
+      const pos = [];
+      for (let i = 0; i < 20; i++) {
+        const c = i % 5, r = Math.floor(i / 5), x = 96 + c * 212, y = 306 + r * 126;
+        pos.push([x, y]);
+        const sk = document.createElement("div"); sk.className = "h-th h-sk"; sk.style.cssText = `left:${x}px; top:${y}px`; sks.appendChild(sk);
+        const sl = document.createElement("div"); sl.className = "h-th h-sl"; sl.id = `h-sl${i}`; sl.style.cssText = `left:${x}px; top:${y}px`;
+        sl.innerHTML = LAYOUTS[i === 0 ? 0 : 1 + (i % 2)]; sls.appendChild(sl);
+      }
+
+      const tl = gsap.timeline({ paused: true });
+      const t20 = W("v01", "20"), t81 = W("v01", "81");
+      const calls = gsap.utils.toArray(".h-call");
+      gsap.set(calls, { opacity: 0 });
+      gsap.set(".h-sl", { opacity: 0 });
+      tl.set({}, {}, S1 - S0 - 0.001);
+
+      tl.fromTo("#h-sec", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 0.15);
+      tl.fromTo(["#h-card", "#h-count"], { opacity: 0, y: 18, scale: 0.98 }, { opacity: 1, y: 0, scale: 1, duration: 0.6, ease: "back.out(1.4)", stagger: 0.1 }, 0.2);
+      tl.fromTo(["#h-cardh", "#h-sks", "#h-counth", "#h-num", "#h-numl", "#h-nowl"], { opacity: 0 }, { opacity: 1, duration: 0.45, ease: "power1.out", stagger: 0.05 }, 0.45);
+
+      // one slide after another, from "Twenty" to just before "81"
+      const step = (t81 - 0.15 - t20) / 19;
+      for (let i = 0; i < 20; i++) {
+        tl.fromTo(`#h-sl${i}`, { opacity: 0, scale: 0.92 }, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(1.6)" }, t20 + i * step);
+      }
+      // the count runs with them and lands on the spoken "81"
+      const n = { v: 0 };
+      tl.fromTo(n, { v: 0 }, { v: 81, duration: t81 - t20, ease: "none",
+        onUpdate: () => { document.querySelector("#h-num").textContent = String(Math.max(1, Math.round(n.v))); } }, t20);
+      tl.to("#h-num", { scale: 1.05, duration: 0.18, ease: "power2.out" }, t81);
+      tl.to("#h-num", { scale: 1, duration: 0.35, ease: "power2.inOut" }, t81 + 0.18);
+      // one call at a time, changing calmly (never a log flood)
+      const at = [t20 - 0.05, t20 + 0.6, t20 + 1.25, t20 + 1.9];
+      calls.forEach((el, i) => {
+        tl.fromTo(el, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out" }, at[i]);
+        if (i < calls.length - 1) tl.to(el, { opacity: 0, y: -8, duration: 0.2, ease: "power1.in" }, at[i + 1] - 0.18);
+      });
+
+      // the drop: the frame clears and the 20 slides gather into the three cards of the mark
+      const D = TM.drop - S0;
+      tl.to(["#h-sec", "#h-card", "#h-cardh", "#h-sks", "#h-count", "#h-counth", "#h-num", "#h-numl", "#h-nowl", "#h-now"],
+        { opacity: 0, duration: 0.35, ease: "power1.in" }, D - 0.65);
+      const CARDS = [[942.5, 281.1], [960, 306], [977.5, 330.9]]; // the mark's three slide cards, at the mark's place in s2
+      for (let i = 0; i < 20; i++) {
+        const [x, y] = pos[i], g = CARDS[Math.min(2, Math.floor(i / 7))];
+        tl.to(`#h-sl${i}`, { x: g[0] - (x + 98), y: g[1] - (y + 55), scale: 0.41, rotation: ((i * 37) % 9) - 4, duration: 0.5, ease: "power2.inOut" }, D - 0.55 + i * 0.008);
+      }
+      tl.to(".h-sl", { opacity: 0, duration: 0.2, ease: "power1.in" }, D + 0.05);
+      window.__timelines["s1-hook"] = tl;
+    })();
+  </script>
+</template>

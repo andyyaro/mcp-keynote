@@ -1,0 +1,52 @@
+<template>
+  <!--
+    The end card (v14), on the track's own fade-out: the mark, the wordmark, and two short lines with glyphs (the
+    tagline from Andy's brand sheet, and the repo). These lines are not repeated in the captions (as in CERFODES).
+  -->
+  <style>
+    #root { position: absolute; inset: 0; }
+    #e-stack { position: absolute; left: 0; right: 0; top: 262px; /* the 532 px stack sits on the optical centre: no caption pill below it here */ display: flex; flex-direction: column; align-items: center; }
+    #e-mark { display: block; width: 200px; height: 200px; }
+    #e-word { display: block; margin-top: 44px; width: 780px; height: 100px; }
+    #e-lines { margin-top: 56px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+    .e-l { display: flex; align-items: center; gap: 16px; font-size: 46px; line-height: 56px; font-weight: 600; color: var(--label-primary); white-space: nowrap; }
+    .e-l .ic { font-size: 42px; color: var(--label-secondary); }
+  </style>
+  <div id="root" data-composition-id="s4-end" data-width="1920" data-height="1080">
+    <div id="e-stack">
+      <svg id="e-mark" viewBox="0 0 120 120" aria-label="mcp-keynote"><rect width="120" height="120" rx="26.4" fill="#8EC9FF" /><g transform="translate(60 60) scale(0.68) translate(-60 -60)"><rect x="14" y="22" width="64" height="36" rx="6" fill="#2F64B0" /><rect x="14" y="22" width="64" height="36" rx="6" fill="none" stroke="#8EC9FF" stroke-width="5" /><rect x="28" y="42" width="64" height="36" rx="6" fill="#FFFFFF" /><rect x="28" y="42" width="64" height="36" rx="6" fill="none" stroke="#8EC9FF" stroke-width="5" /><rect x="42" y="62" width="64" height="36" rx="6" fill="#0B1E3F" /><rect x="42" y="62" width="64" height="36" rx="6" fill="none" stroke="#8EC9FF" stroke-width="5" /><rect x="51" y="71" width="27" height="6.5" rx="3.25" fill="#FFFFFF" /><rect x="51" y="82" width="17" height="5" rx="2.5" fill="#FFFFFF" fill-opacity="0.702" /></g></svg>
+      <img id="e-word" src="assets/brand/wordmark-navy.svg" alt="mcp-keynote" />
+      <div id="e-lines">
+        <div class="e-l" id="e-l1"><svg class="ic"><use href="#ic-doc" /></svg><span>Keynote decks, built from one declarative spec.</span></div>
+        <div class="e-l" id="e-l2"><svg class="ic"><use href="#ic-globe" /></svg><span>github.com/andyyaro/mcp-keynote</span></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const TM = window.TM, VO = window.VO;
+      const S0 = TM.s4[0], S1 = TM.s4[1];
+      const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const W = (k, w, nth = 0) => {
+        const alts = w.split("|");
+        for (const exact of [true, false]) {
+          let c = 0;
+          for (const x of VO[k].words) {
+            const t = norm(x.w);
+            if (alts.some((a) => (exact ? t === a : t.startsWith(a)))) { if (c === nth) return x.t0 - S0; c++; }
+          }
+        }
+        return VO[k].start - S0;
+      };
+      const tl = gsap.timeline({ paused: true });
+      tl.set({}, {}, S1 - S0 - 0.001);
+      tl.fromTo("#e-mark", { opacity: 0, scale: 0.88, y: 20 }, { opacity: 1, scale: 1, y: 0, duration: 0.8, ease: "back.out(1.4)" }, 0.12);
+      tl.fromTo("#e-word", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, W("v14", "mcp") - 0.05);
+      tl.fromTo("#e-l1", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.55, ease: "power2.out" }, W("v14", "keynote", 1) - 0.1);
+      tl.fromTo("#e-l2", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.55, ease: "power2.out" }, W("v14", "built") + 0.1);
+      // the end card fades to the background over the last second, with the music's own fade-out
+      tl.to("#e-stack", { opacity: 0, duration: 1.0, ease: "power1.inOut" }, S1 - S0 - 1.05);
+      window.__timelines["s4-end"] = tl;
+    })();
+  </script>
+</template>
