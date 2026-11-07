@@ -1530,15 +1530,21 @@ async def check_theme_file(pres, slides, export, deck):
     themed, t_scale = await render_slide(export, 1, "theme-file", w, doc_name=doc)
     default, d_scale = await render_slide(export, 1, "theme-file-plain", pw, doc_name=plain)
     if themed is not None and default is not None:
-        # Both are mostly white (an export omits unfilled placeholders), so a
-        # changed-pixel share is tiny either way. What a theme adds is DETAIL:
-        # its logo, rules and footer text on the master.
+        # A theme shows in one of two ways. A white theme differs from the
+        # default only in DETAIL: its logo, rules and footer text on the
+        # master (an export omits unfilled placeholders), so a changed-pixel
+        # share is tiny. A theme that paints its own backdrop, such as
+        # Keynote's Gradient, has no detail at all, since the ink mask ignores
+        # gradients by design, but changes most of the slide's pixels. Had
+        # the theme not been applied, both would read ~0.
         themed_ink, default_ink = ink_fraction(themed, t_scale), ink_fraction(default, d_scale)
+        backdrop_share = _changed_share(themed, default)
         record(
             "theme_file slide is RENDERED in the theme, not the default",
-            themed_ink > 0.002 and themed_ink > 3 * default_ink,
+            (themed_ink > 0.002 and themed_ink > 3 * default_ink) or backdrop_share > 0.25,
             f"ink {themed_ink * 100:.2f}% vs default theme {default_ink * 100:.2f}%, "
-            f"themed ink box {ink_bbox(themed, t_scale)}",
+            f"themed ink box {ink_bbox(themed, t_scale)}; "
+            f"{backdrop_share * 100:.1f}% of pixels differ from the default theme's",
         )
     check("theme_file: save", await pres.save_presentation(doc_name=doc), "Saved")
     check("theme_file: close", await pres.close_presentation(doc_name=doc, should_save=False))
