@@ -42,6 +42,7 @@ from mcp.types import TextContent, Tool
 from ..utils import (
     SESSION,
     AppleScriptRunner,
+    AppleScriptTimeout,
     ParameterError,
     explain_unsupported,
     parse_color,
@@ -52,7 +53,12 @@ from ..utils.render import render_panel_png
 from ..utils.rendered_assets import decode_rendered_asset, panel_filename, stroke_filename
 from ..utils.stroke import render_stroke_png
 from ..utils.styles import DeckStyle, resolve_style
-from ..utils.theme_file import discard_staged_theme, resolve_theme_file, stage_theme_file
+from ..utils.theme_file import (
+    discard_staged_theme,
+    keynote_bundle_id,
+    resolve_theme_file,
+    stage_theme_file,
+)
 from .base import DocumentTargetedTools
 from .fragments import (
     _RUN_SEP,
@@ -65,6 +71,7 @@ from .fragments import (
     TRANSITION_EFFECTS,
     Argv,
     chart_fragment,
+    finite_cell_number,
     image_fragment,
     line_fragment,
     notes_fragment,
@@ -477,6 +484,21 @@ def _parse_runs(raw: str) -> list[dict[str, Any]]:
 
 def _chunks(items: list[int], size: int) -> list[list[int]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _span_chunks(items: list[int], size: int) -> list[list[int]]:
+    """Chunks of sorted slide numbers whose SPAN is at most ``size`` slides.
+
+    The batched read covers `slides lo thru hi`, so a sparse range chunked by
+    count ("1-10,290-300") would read 290 slides in one session.
+    """
+    out: list[list[int]] = []
+    for n in items:
+        if out and n - out[-1][0] < size:
+            out[-1].append(n)
+        else:
+            out.append([n])
+    return out
 
 
 # --- describe_deck, read a class at a time ------------------------------------
@@ -1303,6 +1325,18 @@ def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) 
                 errors.append(_err(path, "table rows must all have the same length"))
             elif widths.pop() < 2:
                 errors.append(_err(path, "table needs at least 2 columns (Keynote 2x2 minimum)"))
+            bad = [
+                f"[{r}][{c}]"
+                for r, row in enumerate(data)
+                for c, cell in enumerate(row)
+                if isinstance(cell, (int, float))
+                and not isinstance(cell, bool)
+                and not finite_cell_number(cell)
+            ]
+            if bad:
+                errors.append(
+                    _err(path, f"table cells {', '.join(bad[:5])} are not finite numbers")
+                )
     elif etype == "chart":
         if el.get("chart_type") not in CHART_TYPES:
             errors.append(
@@ -2606,7 +2640,11 @@ class DeckTools(DocumentTargetedTools):
 
             # Session 1: replace any open doc at this path, create + save the
             # new document, and fetch the theme's layout names for validation.
-            staged = stage_theme_file(source_theme) if source_theme else ""
+            staged = (
+                stage_theme_file(source_theme, keynote_bundle_id(self.runner))
+                if source_theme
+                else ""
+            )
             try:
                 setup = self.runner.run(
                     f"""
@@ -2975,7 +3013,7 @@ class DeckTools(DocumentTargetedTools):
                 )
             else:
                 slides: list[dict[str, Any]] = []
-                for chunk in _chunks(numbers, _DESCRIBE_BATCH_SLIDES):
+                for chunk in _span_chunks(numbers, _DESCRIBE_BATCH_SLIDES):
                     slides.extend(self._describe_slides(doc_name, chunk, want, include_text_runs))
                 if round_coordinates:
                     for sl in slides:
@@ -3015,6 +3053,8 @@ class DeckTools(DocumentTargetedTools):
         """
         try:
             return self._summarize_slides_batched(doc_name, numbers)
+        except AppleScriptTimeout:
+            raise  # retrying slide by slide would only double the wait
         except Exception:
             logger.debug("Batched summary failed; reading slide by slide", exc_info=True)
             return self._summarize_slides_per_slide(doc_name, numbers)
@@ -3040,18 +3080,28 @@ class DeckTools(DocumentTargetedTools):
                     set allTitleShown to title showing of every slide of targetDoc
                     -- One event each while every slide has the item; if one
                     -- lacks it the list read fails, so ask slide by slide.
+                    -- hasTitles is its own list: a marker value in defTitles
+                    -- would collide with a title that is literally that text.
                     try
                         set defTitles to object text of default title item of ¬
                             every slide of targetDoc
+                        set hasTitles to {{}}
+                        repeat slideCount times
+                            set end of hasTitles to true
+                        end repeat
                     on error
                         set defTitles to {{}}
+                        set hasTitles to {{}}
                         repeat with n from 1 to slideCount
-                            set t to "none"
+                            set t to ""
+                            set h to false
                             try
                                 set t to (object text of default title item of ¬
                                     slide n of targetDoc) as text
+                                set h to true
                             end try
                             set end of defTitles to t
+                            set end of hasTitles to h
                         end repeat
                     end try
                     try
@@ -3090,6 +3140,7 @@ class DeckTools(DocumentTargetedTools):
                         ((item n of allTitleShown) as text) & fs & ¬
                         ((item n of defTitles) as text) & fs & ¬
                         ((item n of defBodies) as text) & fs & ¬
+                        ((item n of hasTitles) as text) & fs & ¬
                         textOut & rs
                 end repeat
                 return out
@@ -3107,12 +3158,12 @@ class DeckTools(DocumentTargetedTools):
             slide = int(f[0])
             if slide not in wanted:
                 continue
-            has_title = f[9] != "none"
+            has_title = f[11] == "true"
             has_body = f[10] == "true"
             total = int(f[1])
             # The runner strips the output, and str.strip() treats \x1d-\x1f
             # as whitespace, so the last slide loses its trailing empty texts.
-            texts = (f[11].split(_GS) + [""] * total)[:total] if len(f) > 11 else [""] * total
+            texts = (f[12].split(_GS) + [""] * total)[:total] if len(f) > 12 else [""] * total
             real = total - int(has_title) - int(has_body)
             if real < 0:
                 raise RuntimeError(f"slide {slide}: fewer text items than default items")
@@ -3257,6 +3308,8 @@ class DeckTools(DocumentTargetedTools):
             if [sl["slide"] for sl in slides] != numbers:
                 raise RuntimeError("batched describe returned the wrong slides")
             return slides
+        except AppleScriptTimeout:
+            raise  # retrying element by element would only double the wait
         except Exception:
             logger.debug("Batched describe failed; reading element by element", exc_info=True)
             slides = []

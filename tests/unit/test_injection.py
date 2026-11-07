@@ -145,7 +145,9 @@ async def test_add_table_cells_via_argv(object_tools, mock_subprocess_run, paylo
 @pytest.mark.parametrize("payload", ADVERSARIAL)
 async def test_edit_table_strings_via_argv(object_tools, mock_subprocess_run, payload):
     def fake_run(cmd, **kwargs):
-        stdout = "3,3" if "return (row count as text)" in kwargs["input"] else "3,3|0,0|9x9"
+        stdout = (
+            "3,3,1,0,0" if "return (row count as text)" in kwargs["input"] else "3,3|0,0|9x9|1,0,0"
+        )
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
 
     mock_subprocess_run.side_effect = fake_run

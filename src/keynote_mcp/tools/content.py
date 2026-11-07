@@ -8,6 +8,7 @@ from mcp.types import TextContent, Tool
 from ..utils import (
     ELEMENT_TYPE_MAP,
     AppleScriptRunner,
+    AppleScriptTimeout,
     ParameterError,
     parse_color,
     validate_coordinates,
@@ -1351,6 +1352,8 @@ class ContentTools(DocumentTargetedTools):
             doc_name = self._doc(doc_name)
             try:
                 result = self.runner.run(_slide_content_script_batched(slide_number), doc_name)
+            except AppleScriptTimeout:
+                raise  # retrying element by element would only double the wait
             except Exception:
                 logger.debug("Batched get_slide_content failed; reading per element", exc_info=True)
                 result = self.runner.run(_slide_content_script(slide_number), doc_name)

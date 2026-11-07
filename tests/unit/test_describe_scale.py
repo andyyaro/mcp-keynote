@@ -32,7 +32,7 @@ from keynote_mcp.tools.fragments import (
     TEXT_ITEM_CLASSIFY,
     TEXT_ITEM_FILTER,
 )
-from keynote_mcp.utils.error_handler import AppleScriptError, ParameterError
+from keynote_mcp.utils.error_handler import AppleScriptError, AppleScriptTimeout, ParameterError
 
 
 class TestSlideRange:
@@ -147,8 +147,9 @@ def _record(
         *(str(c) for c in counts),
         str(skipped).lower(),
         str(title_shown).lower(),
-        "none" if default_title is None else default_title,
+        "" if default_title is None else default_title,
         str(has_body).lower(),
+        str(default_title is not None).lower(),
         "".join(t + GS for t in texts),
     ]
     return FS.join(fields) + RS
@@ -210,6 +211,17 @@ class TestBatchedSummary:
         tools, _ = self._tools(raw)
         [entry] = tools._summarize_slides("d.key", [1])
         assert entry["counts"] == {"text": 2}
+
+    def test_a_title_that_reads_none_is_still_a_title(self) -> None:
+        # The has-title flag is its own field: a marker value in the title
+        # field once made a title of "none" read as "no title placeholder",
+        # counting the phantom as a real item and its text as the title.
+        # 2 real (empty) items, then the hidden title and body phantoms.
+        raw = _record(1, ["", "", "none", ""], default_title="none")
+        tools, _ = self._tools(raw)
+        [entry] = tools._summarize_slides("d.key", [1])
+        assert entry["counts"] == {"text": 2}  # was 3: the phantom counted as real
+        assert "title" not in entry  # was "none": the phantom's text
 
     def test_skipped_and_slide_subset(self) -> None:
         raw = (
@@ -352,6 +364,34 @@ class TestBatchedDescribe:
         assert runner.run.call_count == 2
         assert "set ti to text item i" in runner.run.call_args_list[1].args[0]
         assert slide["elements"][0]["index"] == 1
+
+    def test_a_timed_out_batched_read_does_not_fall_back(self) -> None:
+        # Keynote is wedged or still busy with the batched event: a second,
+        # longer per-element read would double the wait or land on the wedge.
+        tools = DeckTools()
+        runner = MagicMock()
+        runner.run.side_effect = AppleScriptTimeout("osascript timed out after 120s.")
+        tools.runner = runner
+        with pytest.raises(AppleScriptTimeout):
+            tools._describe_slides("d.key", [1])
+        assert runner.run.call_count == 1
+        runner.run.reset_mock()
+        with pytest.raises(AppleScriptTimeout):
+            tools._summarize_slides("d.key", [1])
+        assert runner.run.call_count == 1
+
+    def test_a_sparse_range_is_read_in_bounded_spans(self) -> None:
+        # The batched read covers `slides lo thru hi`; chunking "1-10,290-300"
+        # by count alone read 290 slides in one session.
+        wanted = list(range(1, 11)) + list(range(290, 301))
+        chunks = deck_mod._span_chunks(wanted, deck_mod._DESCRIBE_BATCH_SLIDES)
+        assert [c[-1] - c[0] + 1 <= deck_mod._DESCRIBE_BATCH_SLIDES for c in chunks] == [
+            True
+        ] * len(chunks)
+        assert [n for c in chunks for n in c] == wanted
+        assert chunks == [list(range(1, 11)), list(range(290, 301))]
+        dense = list(range(1, 36))
+        assert deck_mod._span_chunks(dense, 20) == [dense[:20], dense[20:]]
 
     def test_records_for_the_wrong_slides_fall_back(self) -> None:
         tools, runner = self._tools(_slide_records(1), _slide_records(1) + _slide_records(2))

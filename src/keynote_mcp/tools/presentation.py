@@ -13,7 +13,12 @@ from ..utils import (
     validate_file_path,
     validate_number,
 )
-from ..utils.theme_file import discard_staged_theme, resolve_theme_file, stage_theme_file
+from ..utils.theme_file import (
+    discard_staged_theme,
+    keynote_bundle_id,
+    resolve_theme_file,
+    stage_theme_file,
+)
 from .base import DocumentTargetedTools
 
 _DOC_ARG = {
@@ -317,7 +322,7 @@ class PresentationTools(DocumentTargetedTools):
             if not self.runner.check_keynote_running():
                 self.runner.launch_keynote()
             if source_theme:
-                staged = stage_theme_file(source_theme)
+                staged = stage_theme_file(source_theme, keynote_bundle_id(self.runner))
 
             result = self.runner.run(
                 """
@@ -366,7 +371,8 @@ class PresentationTools(DocumentTargetedTools):
                 os.path.basename(source_theme),
             )
             doc_name, _, rest = result.partition("|")
-            theme_note, _, layout_note = rest.partition("|")
+            # rpartition: the theme note carries the theme file's name, which may hold '|'.
+            theme_note, _, layout_note = rest.rpartition("|")
             notes = f"{theme_note}; {layout_note}" if layout_note else theme_note
             SESSION.set_default(doc_name)
             return [

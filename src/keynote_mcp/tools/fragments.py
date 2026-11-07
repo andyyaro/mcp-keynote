@@ -19,6 +19,7 @@ per-element tools in ``content.py``/``objects.py`` and the batched
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -573,6 +574,20 @@ def parse_range(ref: object, what: str = "range") -> tuple[int, int, int, int]:
     return min(r1, r2), min(c1, c2), max(r1, r2), max(c1, c2)
 
 
+def finite_cell_number(cell: object) -> bool:
+    """True for a number cell AppleScript can take as a literal.
+
+    NaN and infinity would interpolate as the bare identifiers ``nan``/``inf``
+    (an undefined-variable runtime error), and an int too large for a float
+    has no real form. Magnitude is otherwise unbounded: add_table never capped
+    it, and a cap here would make a spec that built before fail mid-batch.
+    """
+    try:
+        return math.isfinite(float(cell))  # type: ignore[arg-type]
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
 def cell_value_expr(argv: Argv, cell: object) -> str:
     """AppleScript expression for a cell value. Numbers and booleans are
     interpolated (so they stay numeric in Keynote); strings go through argv,
@@ -580,7 +595,8 @@ def cell_value_expr(argv: Argv, cell: object) -> str:
     if isinstance(cell, bool):
         return "true" if cell else "false"
     if isinstance(cell, (int, float)):
-        validate_number(cell, "cell value", minimum=-1e15, maximum=1e15)
+        if not finite_cell_number(cell):
+            raise ParameterError(f"Invalid cell value: {cell!r}. Must be a finite number.")
         return _fmt_num(cell)
     return argv.ref(str(cell))
 

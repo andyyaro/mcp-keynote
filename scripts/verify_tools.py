@@ -57,6 +57,7 @@ from keynote_mcp.tools.export import ExportTools  # noqa: E402
 from keynote_mcp.tools.objects import ObjectTools  # noqa: E402
 from keynote_mcp.tools.presentation import PresentationTools  # noqa: E402
 from keynote_mcp.tools.slide import SlideTools  # noqa: E402
+from keynote_mcp.utils.theme_file import keynote_bundle_id, keynote_container_data  # noqa: E402
 
 # Test bitmaps are generated, opaque and visibly sized. The base64 blobs
 # they replace were a 1x1 half-transparent red and a 1x1 BROKEN PNG ("broken
@@ -1468,13 +1469,14 @@ async def check_theme_file(pres, slides, export, deck):
     look like the default theme's, and it still looks the same after the
     staged copy is gone and the saved file is reopened.
     """
+    # The container of the Keynote actually being driven: 14.x and 15.x use
+    # different bundle ids, and a hardcoded one made this check skip on 14.x
+    # and its staged-copy check look in the wrong folder (always passing).
+    container = Path(keynote_container_data(keynote_bundle_id(pres.runner)))
     source = os.environ.get("KEYNOTE_MCP_VERIFY_THEME_FILE", "")
     if not source:
         installed = sorted(
-            Path.home().glob(
-                "Library/Containers/com.apple.Keynote/Data/Library/Application Support/"
-                "User Templates/*.kth"
-            )
+            container.glob("Library/Application Support/User Templates/*.kth")
         )
         source = str(installed[0]) if installed else ""
     if not source:
@@ -1501,9 +1503,7 @@ async def check_theme_file(pres, slides, export, deck):
         "theme file: Brand Theme & Co.kth",
     )
     doc = "theme-file.key"
-    staged_left = list(
-        Path.home().glob("Library/Containers/com.apple.Keynote/Data/tmp/keynote-mcp-theme-*")
-    )
+    staged_left = list(container.glob("tmp/keynote-mcp-theme-*"))
     record("theme_file staged copy was removed", not staged_left, str(staged_left)[:120])
     w, h, layouts = _doc_facts(pres.runner, doc)
 

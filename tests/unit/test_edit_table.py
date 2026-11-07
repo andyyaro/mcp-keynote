@@ -14,8 +14,9 @@ def _cp(cmd, stdout):
     return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
 
 
-def _table_run(size="4,3", reply="4,3|10,20|400x200", calls=None):
-    """First call reads the table size, the second applies the edits."""
+def _table_run(size="4,3,1,0,0", reply="4,3|10,20|400x200|1,0,0", calls=None):
+    """First call reads the table size and header/footer counts, the second
+    applies the edits and reads them back."""
 
     def fake_run(cmd, **kwargs):
         script = kwargs.get("input", "")
@@ -157,7 +158,7 @@ class TestEditTableScript:
         def fake_run(cmd, **kwargs):
             script = kwargs.get("input", "")
             if "return (row count as text)" in script:
-                return _cp(cmd, "4,3")
+                return _cp(cmd, "4,3,1,0,0")
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=1,
@@ -169,3 +170,91 @@ class TestEditTableScript:
         mock_subprocess_run.side_effect = fake_run
         result = await object_tools.edit_table(1, 1, merge=["A1:C1"], doc_name="d")
         assert "merge A1:C1" in result[0].text
+
+
+class TestEditTableFixes:
+    """Review fixes: bounded counts, read-back, strict flags, numeric range."""
+
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            ({"header_rows": 3, "footer_rows": 1}, "leave fewer than 1 body row"),
+            ({"header_columns": 3}, "leave fewer than 1 body column"),
+            ({"row_count": 2, "header_rows": 2}, "in a 2-row table"),
+            ({"styles": [{"range": "A1", "wrap": "false"}]}, "wrap must be true or false"),
+            ({"sort": {"column": "B2"}}, "column letter or number"),
+            ({"clear": []}, "Nothing to edit"),
+            ({"values": [[None]]}, "Nothing to edit"),
+        ],
+    )
+    async def test_refused_after_the_size_read(
+        self, object_tools, mock_subprocess_run, kwargs, message
+    ):
+        calls = []
+        mock_subprocess_run.side_effect = _table_run(calls=calls)
+        result = await object_tools.edit_table(1, 1, doc_name="d", **kwargs)
+        assert message in result[0].text, result[0].text
+        assert len(calls) == 1  # the size read only; nothing was applied
+
+    async def test_counts_are_reported_from_the_document(self, object_tools, mock_subprocess_run):
+        # Keynote's own counts, not the request, end up in the reply.
+        mock_subprocess_run.side_effect = _table_run(reply="4,3|10,20|400x200|2,1,0")
+        result = await object_tools.edit_table(1, 1, header_rows=2, header_columns=1, doc_name="d")
+        assert "header rows 2, header columns 1, footer rows 0" in result[0].text
+
+    async def test_counts_go_before_a_shrink_and_after_a_grow(
+        self, object_tools, mock_subprocess_run
+    ):
+        calls = []
+        mock_subprocess_run.side_effect = _table_run(size="5,3,3,0,0", calls=calls)
+        await object_tools.edit_table(1, 1, row_count=3, header_rows=1, doc_name="d")
+        shrink = calls[-1][1]
+        assert shrink.index("set header row count to 1") < shrink.index("set row count to 3")
+        calls.clear()
+        mock_subprocess_run.side_effect = _table_run(size="3,3,1,0,0", calls=calls)
+        await object_tools.edit_table(1, 1, row_count=6, header_rows=2, doc_name="d")
+        grow = calls[-1][1]
+        assert grow.index("set row count to 6") < grow.index("set header row count to 2")
+
+    async def test_the_timeout_scales_with_the_work(self, object_tools, mock_subprocess_run):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            return _table_run()(cmd, **kwargs)
+
+        mock_subprocess_run.side_effect = fake_run
+        big = [[i] * 3 for i in range(4)]
+        await object_tools.edit_table(1, 1, values=big, doc_name="d")
+        assert calls[-1] > 30.0
+        await object_tools.edit_table(1, 1, values=[[1] * 3] * 4000, row_count=4000, doc_name="d")
+        assert calls[-1] == 300.0
+
+
+class TestTableNumbers:
+    """edit_table's value expression is shared with add_table and build_deck."""
+
+    async def test_add_table_keeps_large_numbers(self, object_tools, mock_subprocess_run):
+        # A ±1e15 cap added with edit_table refused cells add_table always took.
+        mock_subprocess_run.return_value.stdout = "TB|1|0,0|600,300"
+        result = await object_tools.add_table(1, [["a", "b"], [1e16, -2.5e20]], doc_name="d")
+        assert result[0].text.startswith("Added"), result[0].text
+        script = mock_subprocess_run.call_args.kwargs["input"]
+        assert "to 10000000000000000" in script and "to -250000000000000000000" in script
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 10**400])
+    async def test_non_finite_numbers_are_refused(self, object_tools, mock_subprocess_run, bad):
+        result = await object_tools.add_table(1, [["a", "b"], [bad, 1]], doc_name="d")
+        assert "finite" in result[0].text
+        assert not mock_subprocess_run.called
+
+    def test_build_deck_refuses_non_finite_cells_up_front(self):
+        from keynote_mcp.tools.deck import _validate_element
+
+        errors: list[str] = []
+        _validate_element(
+            {"type": "table", "data": [["a", float("nan")], [1e16, 2]]},
+            "slides[0].elements[0]",
+            errors,
+        )
+        assert errors == ["slides[0].elements[0]: table cells [0][1] are not finite numbers"]

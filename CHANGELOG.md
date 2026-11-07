@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cell alone, '' empties it, a leading '=' makes a formula), row and column
   count, header/footer counts, clear, sort, merge/unmerge, range styles (font,
   size, text and background colour, horizontal/vertical alignment, wrap,
-  number format), column widths and row heights. Ranges are checked against
-  the table's post-resize size before anything reaches Keynote. Steps run in a
+  number format), column widths and row heights. Ranges, and the header/footer
+  counts (at least one body row and column must remain), are checked against
+  the table's post-resize size before any edit reaches Keynote, and the reply
+  reports the counts read back from the table, not the ones requested. Steps run in a
   fixed order, and a failing step is named in the reply along with the fact
   that earlier steps stayed applied. Probed on Keynote 15.3.1. The live check
   renders a merged, recoloured, centred header and measures that its text
@@ -24,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   any path, a shared Google Drive folder included. The server copies the file
   into Keynote's sandbox container first (Keynote reading a file outside it
   risks the same AppleEvent wedge as `open`) and deletes the copy once the
-  document is saved. `build_deck` keeps the theme's own slide size unless the
+  document is saved. The copy goes into the container of the Keynote that
+  `tell application "Keynote"` actually drives (14.x and 15.x have different
+  bundle ids, and both containers can exist on one Mac), and a copy that fails
+  part-way is removed too. `build_deck` keeps the theme's own slide size unless the
   spec sets one; the style's default size would otherwise rescale every
   layout.
 - **The launch film.** A 67-second film of one call building a whole deck: the spec checked
@@ -39,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `build_deck`'s setup session reads the document size back, and layout flow
   uses that size instead of the requested one.
+- `describe_deck` and `get_slide_content` read a class at a time (one Apple
+  event per property for a span of slides) instead of element by element. On
+  macOS 27, where an Apple event costs ~17 ms, a full 35-slide describe went
+  from 117-129 s to 11.9 s. The element-by-element reads stay as fallbacks for
+  a batched script that errors, but not for one that times out: Keynote is
+  then wedged or still busy, and a second long read only doubles the wait.
+  A sparse `slide_range` is read in spans of at most 20 slides, never the
+  whole stretch between its ends.
+- The build-animation tools find the Animate inspector by its "Build In" tab,
+  which Keynote 15 moved into a splitter group, and switch inspector panes
+  with the toolbar buttons, falling back to the View menu.
+
+### Fixed
+
+- `add_table` and `build_deck` tables accept any finite number again; a cap at
+  ±1e15 had come in with `edit_table`'s shared cell code. NaN and infinity,
+  which would reach AppleScript as undefined identifiers, are refused, and in
+  `build_deck` by the spec validator, before anything is built.
 
 ## [4.1.0] - 2026-07-26
 

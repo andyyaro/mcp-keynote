@@ -9,6 +9,7 @@ Everything here was probed live against Keynote 14.5 before being built
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 from mcp.types import TextContent, Tool
@@ -78,6 +79,12 @@ _TABLE_FORMAT_MAP = {
     "date_and_time": "date and time",
     "duration": "duration",
 }
+# Keynote keeps at least one body row/column beside the header/footer counts.
+_MIN_BODY_ROWS = 1
+_MIN_BODY_COLUMNS = 1
+# Upper bound for one edit_table session, however many cells it writes.
+_EDIT_TABLE_MAX_TIMEOUT = 300.0
+
 _TABLE_STYLE_KEYS = frozenset(
     {
         "range",
@@ -718,16 +725,36 @@ class ObjectTools(DocumentTargetedTools):
                         {RESOLVE_DOC}
                         {exists_guard("table", table_index, slide_number)}
                         tell table {table_index} of slide {slide_number} of targetDoc
-                            return (row count as text) & "," & (column count as text)
+                            return (row count as text) & "," & (column count as text) & ¬
+                                "," & (header row count as text) & "," & ¬
+                                (header column count as text) & "," & ¬
+                                (footer row count as text)
                         end tell
                     end tell
                 end run
                 """,
                 doc_name,
             )
-            cur_rows, cur_cols = (int(v) for v in current.split(","))
+            cur_rows, cur_cols, cur_hr, cur_hc, cur_fr = (int(v) for v in current.split(","))
             rows = int(row_count) if row_count is not None else cur_rows
             cols = int(column_count) if column_count is not None else cur_cols
+            # Header/footer counts are checked against the size the table will
+            # have, like every range: Keynote either refuses or clamps a count
+            # the table cannot hold, and the reply must not claim a count the
+            # document does not have.
+            new_hr = int(header_rows) if header_rows is not None else cur_hr
+            new_hc = int(header_columns) if header_columns is not None else cur_hc
+            new_fr = int(footer_rows) if footer_rows is not None else cur_fr
+            if new_hr + new_fr > rows - _MIN_BODY_ROWS:
+                raise ParameterError(
+                    f"{new_hr} header row(s) + {new_fr} footer row(s) leave fewer than "
+                    f"{_MIN_BODY_ROWS} body row(s) in a {rows}-row table."
+                )
+            if new_hc > cols - _MIN_BODY_COLUMNS:
+                raise ParameterError(
+                    f"{new_hc} header column(s) leave fewer than {_MIN_BODY_COLUMNS} body "
+                    f"column(s) in a {cols}-column table."
+                )
 
             def in_bounds(ref: object, what: str) -> str:
                 r1, c1, r2, c2 = parse_range(ref, what)
@@ -740,26 +767,27 @@ class ObjectTools(DocumentTargetedTools):
             steps: list[tuple[str, list[str]]] = []
             done: list[str] = []
 
-            if row_count is not None or column_count is not None:
-                ops = []
-                if row_count is not None:
-                    ops.append(f"set row count to {rows}")
-                if column_count is not None:
-                    ops.append(f"set column count to {cols}")
-                steps.append(("size", ops))
-                done.append(f"size {cur_rows}x{cur_cols} -> {rows}x{cols}")
-
-            counts = []
-            for prop, val in (
-                ("header row count", header_rows),
-                ("header column count", header_columns),
-                ("footer row count", footer_rows),
-            ):
-                if val is not None:
-                    counts.append(f"set {prop} to {int(val)}")
-                    done.append(f"{prop} {int(val)}")
-            if counts:
-                steps.append(("header counts", counts))
+            size_ops = []
+            if row_count is not None:
+                size_ops.append(f"set row count to {rows}")
+            if column_count is not None:
+                size_ops.append(f"set column count to {cols}")
+            counts = [
+                f"set {prop} to {int(val)}"
+                for prop, val in (
+                    ("header row count", header_rows),
+                    ("header column count", header_columns),
+                    ("footer row count", footer_rows),
+                )
+                if val is not None
+            ]
+            shrinking = rows < cur_rows or cols < cur_cols
+            for kind in ("counts", "size") if shrinking else ("size", "counts"):
+                if kind == "size" and size_ops:
+                    steps.append(("size", size_ops))
+                    done.append(f"size {cur_rows}x{cur_cols} -> {rows}x{cols}")
+                elif kind == "counts" and counts:
+                    steps.append(("header counts", counts))
 
             for i, ref in enumerate(clear or []):
                 name = in_bounds(ref, f"clear[{i}]")
@@ -797,6 +825,10 @@ class ObjectTools(DocumentTargetedTools):
                     raise ParameterError(f"sort: unknown keys {sorted(unknown)}.")
                 col_ref = sort["column"]
                 if isinstance(col_ref, str):
+                    if not re.fullmatch(r"[A-Za-z]{1,3}", col_ref.strip()):
+                        raise ParameterError(
+                            f"sort.column must be a column letter or number, got {col_ref!r}."
+                        )
                     _, sort_col = parse_cell(f"{col_ref.strip()}1", "sort.column")
                 else:
                     validate_index(col_ref, "sort.column")  # type: ignore[arg-type]
@@ -859,6 +891,8 @@ class ObjectTools(DocumentTargetedTools):
                             )
                         ops.append(f"set {prop} of {target} to {mapping[str(st[key])]}")
                 if st.get("wrap") is not None:
+                    if not isinstance(st["wrap"], bool):
+                        raise ParameterError(f"{where}.wrap must be true or false.")
                     ops.append(f"set text wrap of {target} to {'true' if st['wrap'] else 'false'}")
                 if not ops:
                     raise ParameterError(f"{where} sets nothing besides its range.")
@@ -885,8 +919,12 @@ class ObjectTools(DocumentTargetedTools):
                     steps.append((label, ops))
                     done.append(f"{label} set")
 
+            if not steps:
+                raise ParameterError("Nothing to edit: every change passed was empty.")
             body = []
+            n_ops = 0
             for label, ops in steps:
+                n_ops += len(ops)
                 # Labels are built from validated integers and literals only.
                 body.append(f'set stepName to "{label}"')
                 body += ops
@@ -903,8 +941,9 @@ class ObjectTools(DocumentTargetedTools):
                                 {chr(10).join(body)}
                             end tell
                         on error errMsg number errNum
-                            error "step '" & stepName & "' failed, earlier steps stayed " & ¬
-                                "applied: " & errMsg number errNum
+                            error "step '" & stepName & "' failed; the steps before it, " & ¬
+                                "and any part of it already done, stayed applied: " & ¬
+                                errMsg number errNum
                         end try
                         set p to position of targetTable
                         return ((row count of targetTable) as text) & "," & ¬
@@ -912,13 +951,28 @@ class ObjectTools(DocumentTargetedTools):
                             ((item 1 of p) as integer as text) & "," & ¬
                             ((item 2 of p) as integer as text) & "|" & ¬
                             ((width of targetTable) as integer as text) & "x" & ¬
-                            ((height of targetTable) as integer as text)
+                            ((height of targetTable) as integer as text) & "|" & ¬
+                            ((header row count of targetTable) as text) & "," & ¬
+                            ((header column count of targetTable) as text) & "," & ¬
+                            ((footer row count of targetTable) as text)
                     end tell
                 end run
                 """,
                 *argv.values,
+                # One Apple event per op, ~17 ms each on macOS 27; the default
+                # 30 s would cut a large values write off part-way.
+                timeout=min(_EDIT_TABLE_MAX_TIMEOUT, 30.0 + 0.05 * n_ops),
             )
-            dims, pos, size = result.split("|")
+            dims, pos, size, got_counts = result.split("|")
+            if counts:
+                got = dict(
+                    zip(
+                        ("header rows", "header columns", "footer rows"),
+                        got_counts.split(","),
+                        strict=True,
+                    )
+                )
+                done.append(", ".join(f"{k} {v}" for k, v in got.items()))
             return [
                 TextContent(
                     type="text",
