@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import math
 import os
 import re
@@ -41,6 +42,7 @@ from mcp.types import TextContent, Tool
 from ..utils import (
     SESSION,
     AppleScriptRunner,
+    AppleScriptTimeout,
     ParameterError,
     explain_unsupported,
     parse_color,
@@ -51,16 +53,25 @@ from ..utils.render import render_panel_png
 from ..utils.rendered_assets import decode_rendered_asset, panel_filename, stroke_filename
 from ..utils.stroke import render_stroke_png
 from ..utils.styles import DeckStyle, resolve_style
+from ..utils.theme_file import (
+    discard_staged_theme,
+    keynote_bundle_id,
+    resolve_theme_file,
+    stage_theme_file,
+)
 from .base import DocumentTargetedTools
 from .fragments import (
     _RUN_SEP,
     CHART_TYPES,
     RESOLVE_DOC,
+    TEXT_ITEM_CLASSIFY,
     TEXT_ITEM_FILTER,
+    TEXT_RUNS_COALESCE,
     TEXT_RUNS_FRAGMENT,
     TRANSITION_EFFECTS,
     Argv,
     chart_fragment,
+    finite_cell_number,
     image_fragment,
     line_fragment,
     notes_fragment,
@@ -98,8 +109,11 @@ _ELEMENT_TYPES = {
 # ASCII unit/record separators for structured readbacks (never appear in
 # normal slide text; a deck containing them would corrupt field splits).
 # Scripts build them with `character id` so no control bytes land in source.
+logger = logging.getLogger(__name__)
+
 _FS = "\x1f"
 _RS = "\x1e"
+_GS = "\x1d"
 _AS_FS = "(character id 31)"
 _AS_RS = "(character id 30)"
 
@@ -111,6 +125,13 @@ _SLIDES_PER_SESSION = 5
 # process + AppleEvent overhead (0.125 s x 36 calls). Batching removes that;
 # the remainder is per-property reads, which only filtering can avoid.
 _DESCRIBE_SLIDES_PER_SESSION = 10
+
+# The batched full read (_describe_slides) has a fixed cost per session of
+# about 25 reads, so it takes more slides per session: 35 slides in two
+# sessions instead of four. It falls back to the per-element path in sessions
+# of _DESCRIBE_SLIDES_PER_SESSION, which a slowed Keynote needs (~30 s per 10
+# slides there).
+_DESCRIBE_BATCH_SLIDES = 20
 
 # Beyond this, a full description is likely to blow a tool-output limit.
 _LARGE_DESCRIPTION_CHARS = 60_000
@@ -185,7 +206,17 @@ _UNREADABLE_NOTE: dict[str, str] = {
 #   UNKNOWN    - everything else. Hard error, nothing is created.
 
 _DECK_KEYS = frozenset(
-    {"title", "theme", "style", "width", "height", "save_path", "on_exists", "slides"}
+    {
+        "title",
+        "theme",
+        "theme_file",
+        "style",
+        "width",
+        "height",
+        "save_path",
+        "on_exists",
+        "slides",
+    }
 )
 # describe_deck's own envelope, so its output feeds straight back in.
 _DECK_TOLERATED = frozenset(
@@ -455,6 +486,588 @@ def _chunks(items: list[int], size: int) -> list[list[int]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+def _span_chunks(items: list[int], size: int) -> list[list[int]]:
+    """Chunks of sorted slide numbers whose SPAN is at most ``size`` slides.
+
+    The batched read covers `slides lo thru hi`, so a sparse range chunked by
+    count ("1-10,290-300") would read 290 slides in one session.
+    """
+    out: list[list[int]] = []
+    for n in items:
+        if out and n - out[-1][0] < size:
+            out[-1].append(n)
+        else:
+            out.append([n])
+    return out
+
+
+# --- describe_deck, read a class at a time ------------------------------------
+#
+# Every name interpolated below is a trusted literal from this module; the
+# only numbers are validated slide numbers.
+
+
+# Keynote 15.3.1 reads a line's start and end point as 0,0 unless that slide's
+# line geometry was read just before, and only the slide read last stays
+# readable. Reading the positions does it (~30 ms a slide); counting the lines
+# or getting the slide does not. Without this, a line-only describe of the
+# 35-slide profiling deck reported 204 of 210 lines at 0,0; the per-element
+# path got the first line of each slide wrong unless another class was read
+# on that slide first. Probed 2026-09-23.
+_LINE_WARM_UP = """
+                        set lnWarm to position of every line of slide n of targetDoc"""
+
+
+def _class_read(var: str, prop: str, cls: str, span: str) -> str:
+    """`prop` of every `cls` of the span, one event, as a list per slide.
+
+    For properties the per-element path reads outside a `try`: if this fails,
+    the whole batched read fails and the per-element path runs instead.
+    """
+    return f"""
+                    set {var} to {prop} of every {cls} of {span}"""
+
+
+def _soft_class_read(
+    var: str, prop: str, cls: str, span: str, lo: int, hi: int, per_slide: bool = True
+) -> str:
+    """Like `_class_read`, for properties the per-element path reads in a `try`.
+
+    One element that fails the read fails the whole list, so this degrades to
+    one read per slide, then one per element, where a failed element yields ""
+    as the per-element path's `try` does. `per_slide=False` skips the middle
+    step for a property that fails on most slides at once (`file` of an image
+    whose source is gone), where it would only add events.
+    """
+    per_element = f"""
+                            set perEl to {{}}
+                            repeat with i from 1 to (count of every {cls} of slide n of targetDoc)
+                                set x to ""
+                                try
+                                    set x to {prop} of {cls} i of slide n of targetDoc
+                                end try
+                                set end of perEl to x
+                            end repeat
+                            set end of {var} to perEl"""
+    if per_slide:
+        per_element = f"""
+                            try
+                                set end of {var} to ({prop} of every {cls} of slide n of targetDoc)
+                            on error{per_element}
+                            end try"""
+    return f"""
+                    try
+                        set {var} to {prop} of every {cls} of {span}
+                    on error
+                        set {var} to {{}}
+                        repeat with n from {lo} to {hi}{per_element}
+                        end repeat
+                    end try"""
+
+
+def _props_read(cls: str, span: str, fields: list[tuple[str, str]], fallback: list[str]) -> str:
+    """Several properties of every `cls` of the span from ONE `properties` read.
+
+    Keynote 15.3.1 charges every geometry read (position, width, height,
+    rotation) ~40-90 ms per slide however it is batched, so seven separate
+    reads cost seven times that; `properties` returns the same values for
+    the cost of one. Each (var, key) pair fills `var` with `key` of every
+    record, shaped like the matching `_class_read`. If the read fails (one
+    element whose record cannot be built fails the list), the per-property
+    `fallback` reads run instead. `properties of every image` always fails
+    (-10000, its `file`), so images keep per-property reads.
+    """
+    init = "".join(
+        f"""
+                        set {var} to {{}}"""
+        for var, _ in fields
+    )
+    init_one = "".join(
+        f"""
+                            set {var}One to {{}}"""
+        for var, _ in fields
+    )
+    append_one = "".join(
+        f"""
+                                set end of {var}One to {key} of rec"""
+        for var, key in fields
+    )
+    append = "".join(
+        f"""
+                            set end of {var} to {var}One"""
+        for var, _ in fields
+    )
+    return f"""
+                    try
+                        set propsAll to properties of every {cls} of {span}{init}
+                        repeat with slideProps in propsAll{init_one}
+                            repeat with recRef in slideProps
+                                set rec to contents of recRef{append_one}
+                            end repeat{append}
+                        end repeat
+                    on error{"".join(fallback)}
+                    end try"""
+
+
+def _soft_slide_read(var: str, prop: str, span: str, lo: int, hi: int) -> str:
+    """`prop` of each slide of the span, `missing value` where a slide fails.
+
+    A list read over several slides fails as a whole if one slide lacks the
+    item (a layout with no `default title item`), hence the per-slide retry.
+    """
+    return f"""
+                    try
+                        set {var} to {prop} of {span}
+                    on error
+                        set {var} to {{}}
+                        repeat with n from {lo} to {hi}
+                            set x to missing value
+                            try
+                                set x to {prop} of slide n of targetDoc
+                            end try
+                            set end of {var} to x
+                        end repeat
+                    end try"""
+
+
+def _describe_script_batched(
+    numbers: list[int], want: frozenset[str], include_text_runs: bool
+) -> str:
+    """The record stream of `_describe_slides_per_element`, read a class at a time.
+
+    Reads `slides lo thru hi` (lo/hi being the smallest and largest requested
+    slide) and emits records only for the requested slides, so the parser is
+    shared. Each read is one Apple event for the whole span; everything after
+    the reads is local list access.
+    """
+    lo, hi = min(numbers), max(numbers)
+    span = f"slides {lo} thru {hi} of targetDoc"
+    slide_list = ", ".join(str(n) for n in numbers)  # validated ints only
+    reads = [
+        f"""
+                    set allLayout to name of base layout of {span}
+                    set allSkipped to skipped of {span}
+                    set allTitleShown to title showing of {span}
+                    set allBodyShown to body showing of {span}
+                    set allGroups to every group of {span}""",
+        _soft_slide_read("allTrans", "transition properties", span, lo, hi),
+        _soft_slide_read("allNotes", "presenter notes", span, lo, hi),
+        _soft_slide_read("allDefT", "default title item", span, lo, hi),
+        _soft_slide_read("allDefB", "default body item", span, lo, hi),
+        _soft_slide_read("allDefTText", "object text of default title item", span, lo, hi),
+        _soft_slide_read("allDefBText", "object text of default body item", span, lo, hi),
+    ]
+    if "text" in want:
+        reads += [
+            f"""
+                    set txRefs to every text item of {span}""",
+            _props_read(
+                "text item",
+                span,
+                [
+                    ("txText", "object text"),
+                    ("txPos", "position"),
+                    ("txW", "width"),
+                    ("txH", "height"),
+                    ("txRot", "rotation"),
+                    ("txOpa", "opacity"),
+                    ("txFill", "background fill type"),
+                ],
+                [
+                    _class_read("txText", "object text", "text item", span),
+                    _class_read("txPos", "position", "text item", span),
+                    _class_read("txW", "width", "text item", span),
+                    _class_read("txH", "height", "text item", span),
+                    _soft_class_read("txRot", "rotation", "text item", span, lo, hi),
+                    _soft_class_read("txOpa", "opacity", "text item", span, lo, hi),
+                    _soft_class_read("txFill", "background fill type", "text item", span, lo, hi),
+                ],
+            ),
+            _soft_class_read("txFont", "font of object text", "text item", span, lo, hi),
+            _soft_class_read("txSize", "size of object text", "text item", span, lo, hi),
+            _soft_class_read("txColor", "color of object text", "text item", span, lo, hi),
+        ]
+        if include_text_runs:
+            reads += [
+                _soft_class_read(
+                    var, f"{prop} of every character of object text", "text item", span, lo, hi
+                )
+                for var, prop in (("rnCols", "color"), ("rnFnts", "font"), ("rnSzs", "size"))
+            ]
+    if "image" in want:
+        reads += [
+            _class_read("imPos", "position", "image", span),
+            _class_read("imW", "width", "image", span),
+            _class_read("imH", "height", "image", span),
+            _soft_class_read("imFile", "file", "image", span, lo, hi, per_slide=False),
+            _soft_class_read("imName", "file name", "image", span, lo, hi),
+            _soft_class_read("imRot", "rotation", "image", span, lo, hi),
+            _soft_class_read("imOpa", "opacity", "image", span, lo, hi),
+            _soft_class_read("imDesc", "description", "image", span, lo, hi),
+        ]
+    if "shape" in want:
+        reads += [
+            f"""
+                    set shRefs to every shape of {span}""",
+            _props_read(
+                "shape",
+                span,
+                [
+                    ("shPos", "position"),
+                    ("shW", "width"),
+                    ("shH", "height"),
+                    ("shOpa", "opacity"),
+                    ("shTxt", "object text"),
+                    ("shRot", "rotation"),
+                    ("shFill", "background fill type"),
+                    ("shRefl", "reflection showing"),
+                    ("shLock", "locked"),
+                ],
+                [
+                    _class_read("shPos", "position", "shape", span),
+                    _class_read("shW", "width", "shape", span),
+                    _class_read("shH", "height", "shape", span),
+                    _class_read("shOpa", "opacity", "shape", span),
+                    _soft_class_read("shTxt", "object text", "shape", span, lo, hi),
+                    _soft_class_read("shRot", "rotation", "shape", span, lo, hi),
+                    _soft_class_read("shFill", "background fill type", "shape", span, lo, hi),
+                    _soft_class_read("shRefl", "reflection showing", "shape", span, lo, hi),
+                    _soft_class_read("shLock", "locked", "shape", span, lo, hi),
+                ],
+            ),
+        ]
+    if "table" in want:
+        reads += [
+            _props_read(
+                "table",
+                span,
+                [
+                    ("tbPos", "position"),
+                    ("tbW", "width"),
+                    ("tbH", "height"),
+                    ("tbHR", "header row count"),
+                    ("tbHC", "header column count"),
+                    ("tbRows", "row count"),
+                    ("tbCols", "column count"),
+                ],
+                [
+                    _class_read("tbPos", "position", "table", span),
+                    _class_read("tbW", "width", "table", span),
+                    _class_read("tbH", "height", "table", span),
+                    _class_read("tbHR", "header row count", "table", span),
+                    _class_read("tbHC", "header column count", "table", span),
+                    _class_read("tbRows", "row count", "table", span),
+                    _class_read("tbCols", "column count", "table", span),
+                ],
+            ),
+            _class_read("tbVals", "value of every cell", "table", span),
+            _soft_class_read("tbFml", "formula of every cell", "table", span, lo, hi),
+        ]
+    if "chart" in want:
+        reads += [
+            _props_read(
+                "chart",
+                span,
+                [("chPos", "position"), ("chW", "width"), ("chH", "height")],
+                [
+                    _class_read("chPos", "position", "chart", span),
+                    _class_read("chW", "width", "chart", span),
+                    _class_read("chH", "height", "chart", span),
+                ],
+            ),
+        ]
+    if "line" in want:
+        reads += [
+            _soft_class_read("lnRot", "rotation", "line", span, lo, hi),
+        ]
+
+    runs_block = (
+        """
+                            try
+                                set cols to item i of item k of rnCols
+                                set fnts to item i of item k of rnFnts
+                                set szs to item i of item k of rnSzs"""
+        + TEXT_RUNS_COALESCE
+        + """
+                            end try"""
+        if include_text_runs
+        else ""
+    )
+    text_block = (
+        f"""
+                    set tRefs to item k of txRefs
+{TEXT_ITEM_CLASSIFY}
+                    repeat with m from 1 to (count of realIndices)
+                        set i to (item m of realIndices) as integer
+                        set role to item m of realRoles
+                        set p to item i of item k of txPos
+                        set f to ""
+                        set z to ""
+                        set c to ""
+                        try
+                            set f to (item i of item k of txFont) as text
+                        end try
+                        try
+                            set z to (item i of item k of txSize) as text
+                        end try
+                        try
+                            set rgb to item i of item k of txColor
+                            set c to (item 1 of rgb as text) & "," & ¬
+                                (item 2 of rgb as text) & "," & (item 3 of rgb as text)
+                        end try
+                        set rot to ""
+                        set opa to ""
+                        set fillT to ""
+                        try
+                            set rot to (item i of item k of txRot) as text
+                        end try
+                        try
+                            set opa to (item i of item k of txOpa) as text
+                        end try
+                        try
+                            set fillT to (item i of item k of txFill) as text
+                        end try
+                        set runsOut to ""{runs_block}
+                        set out to out & "T" & fs & ((item i of item k of txText) as text) & ¬
+                            fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
+                            fs & ((item i of item k of txW) as text) & ¬
+                            fs & ((item i of item k of txH) as text) & ¬
+                            fs & f & fs & z & fs & c & fs & (i as text) & fs & role & ¬
+                            fs & rot & fs & opa & fs & fillT & fs & runsOut & rs
+                    end repeat"""
+        if "text" in want
+        else ""
+    )
+    image_block = (
+        """
+                    repeat with i from 1 to (count of item k of imPos)
+                        set p to item i of item k of imPos
+                        set fn to ""
+                        try
+                            set srcFile to item i of item k of imFile
+                            if srcFile is not missing value and srcFile is not "" then
+                                set fn to POSIX path of srcFile
+                            end if
+                        end try
+                        if fn is "" then
+                            try
+                                set fn to (item i of item k of imName) as text
+                            end try
+                        end if
+                        set irot to ""
+                        set iopa to ""
+                        set idesc to ""
+                        try
+                            set irot to (item i of item k of imRot) as text
+                        end try
+                        try
+                            set iopa to (item i of item k of imOpa) as text
+                        end try
+                        try
+                            set idesc to (item i of item k of imDesc) as text
+                        end try
+                        set out to out & "I" & fs & fn & fs & (item 1 of p as text) & ¬
+                            fs & (item 2 of p as text) & ¬
+                            fs & ((item i of item k of imW) as text) & ¬
+                            fs & ((item i of item k of imH) as text) & fs & (i as text) & ¬
+                            fs & irot & fs & iopa & fs & idesc & rs
+                    end repeat"""
+        if "image" in want
+        else ""
+    )
+    shape_block = (
+        """
+                    set sRefs to item k of shRefs
+                    repeat with i from 1 to (count of sRefs)
+                        set sh to item i of sRefs
+                        set isPh to false
+                        if defT is not missing value and sh is defT then set isPh to true
+                        if defB is not missing value and sh is defB then set isPh to true
+                        if not isPh then
+                            set p to item i of item k of shPos
+                            set shT to ""
+                            try
+                                set shT to (item i of item k of shTxt) as text
+                            end try
+                            set srot to ""
+                            set sfill to ""
+                            set srefl to ""
+                            set slock to ""
+                            try
+                                set srot to (item i of item k of shRot) as text
+                            end try
+                            try
+                                set sfill to (item i of item k of shFill) as text
+                            end try
+                            try
+                                set srefl to (item i of item k of shRefl) as text
+                            end try
+                            try
+                                set slock to (item i of item k of shLock) as text
+                            end try
+                            set out to out & "S" & fs & shT & fs & (item 1 of p as text) & ¬
+                                fs & (item 2 of p as text) & ¬
+                                fs & ((item i of item k of shW) as text) & ¬
+                                fs & ((item i of item k of shH) as text) & ¬
+                                fs & ((item i of item k of shOpa) as text) & ¬
+                                fs & (i as text) & fs & srot & fs & sfill & fs & srefl & ¬
+                                fs & slock & rs
+                        end if
+                    end repeat"""
+        if "shape" in want
+        else ""
+    )
+    # Cells come back row-major (A1, B1, C1, A2, ...), probed on 15.3.1; a
+    # count that does not match rows x columns fails the batched read.
+    table_block = (
+        """
+                    repeat with i from 1 to (count of item k of tbPos)
+                        set p to item i of item k of tbPos
+                        set rc to (item i of item k of tbRows) as integer
+                        set cc to (item i of item k of tbCols) as integer
+                        set vals to item i of item k of tbVals
+                        if (count of vals) is not (rc * cc) then error "cell count"
+                        set fmls to item i of item k of tbFml
+                        if class of fmls is not list then
+                            set fmls to missing value
+                        else if (count of fmls) is not (rc * cc) then
+                            set fmls to missing value
+                        end if
+                        set rowsOut to ""
+                        repeat with r from 1 to rc
+                            set rowTxt to ""
+                            repeat with c from 1 to cc
+                                if c > 1 then set rowTxt to rowTxt & tab
+                                set cellOut to ""
+                                try
+                                    if fmls is missing value then
+                                        set fml to formula of cell c of row r of ¬
+                                            table i of slide n of targetDoc
+                                    else
+                                        set fml to item ((r - 1) * cc + c) of fmls
+                                    end if
+                                    if fml is not missing value then set cellOut to fml
+                                end try
+                                if cellOut is "" then
+                                    set v to item ((r - 1) * cc + c) of vals
+                                    if v is not missing value then set cellOut to (v as text)
+                                end if
+                                set rowTxt to rowTxt & cellOut
+                            end repeat
+                            if rowsOut is not "" then set rowsOut to rowsOut & linefeed
+                            set rowsOut to rowsOut & rowTxt
+                        end repeat
+                        set out to out & "B" & fs & ((item i of item k of tbHR) as text) & ¬
+                            fs & ((item i of item k of tbHC) as text) & ¬
+                            fs & (item 1 of p as text) & fs & (item 2 of p as text) & ¬
+                            fs & ((item i of item k of tbW) as text) & ¬
+                            fs & ((item i of item k of tbH) as text) & ¬
+                            fs & rowsOut & fs & (i as text) & rs
+                    end repeat"""
+        if "table" in want
+        else ""
+    )
+    chart_block = (
+        """
+                    repeat with i from 1 to (count of item k of chPos)
+                        set p to item i of item k of chPos
+                        set out to out & "C" & fs & (item 1 of p as text) & ¬
+                            fs & (item 2 of p as text) & ¬
+                            fs & ((item i of item k of chW) as text) & ¬
+                            fs & ((item i of item k of chH) as text) & fs & (i as text) & rs
+                    end repeat"""
+        if "chart" in want
+        else ""
+    )
+    # Endpoints are read slide by slide: see _LINE_WARM_UP.
+    line_block = (
+        f"""
+                    if (count of item k of lnRot) > 0 then{_LINE_WARM_UP}
+                        try
+                            set lnStart to {{}}
+                            set lnEnd to {{}}
+                            set lnProps to properties of every line of slide n of targetDoc
+                            repeat with recRef in lnProps
+                                set end of lnStart to start point of (contents of recRef)
+                                set end of lnEnd to end point of (contents of recRef)
+                            end repeat
+                        on error
+                            set lnStart to start point of every line of slide n of targetDoc
+                            set lnEnd to end point of every line of slide n of targetDoc
+                        end try
+                    end if
+                    repeat with i from 1 to (count of item k of lnRot)
+                        set sp to item i of lnStart
+                        set ep to item i of lnEnd
+                        set lrot to ""
+                        try
+                            set lrot to (item i of item k of lnRot) as text
+                        end try
+                        set out to out & "G" & fs & (item 1 of sp as text) & ¬
+                            fs & (item 2 of sp as text) & fs & (item 1 of ep as text) & ¬
+                            fs & (item 2 of ep as text) & fs & (i as text) & fs & lrot & rs
+                    end repeat"""
+        if "line" in want
+        else ""
+    )
+    return f"""
+            on run argv
+                set docName to item 1 of argv
+                set fs to character id 31
+                set rs to character id 30
+                set runsep to character id 29
+                set out to ""
+                tell application "Keynote"
+                    {RESOLVE_DOC}{"".join(reads)}
+                  repeat with slideRef in {{{slide_list}}}
+                    set n to contents of slideRef
+                    set k to n - {lo} + 1
+                    set out to out & "D" & fs & (n as text) & rs
+                    set out to out & "L" & fs & (item k of allLayout) & rs
+                    set out to out & "K" & fs & ((item k of allSkipped) as text) & rs
+                    set tp to item k of allTrans
+                    if tp is not missing value then
+                        try
+                            set out to out & "X" & fs & (transition effect of tp as text) & ¬
+                                fs & (transition duration of tp as text) & ¬
+                                fs & (transition delay of tp as text) & ¬
+                                fs & (automatic transition of tp as text) & rs
+                        end try
+                    end if
+                    set noteText to ""
+                    set x to item k of allNotes
+                    if x is not missing value then
+                        try
+                            set noteText to x as text
+                        end try
+                    end if
+                    if noteText is not "" then
+                        set out to out & "N" & fs & noteText & rs
+                    end if
+                    set defT to item k of allDefT
+                    set defB to item k of allDefB
+                    set titleShown to item k of allTitleShown
+                    set bodyShown to item k of allBodyShown
+                    -- The per-element path reads these outside a try, so an
+                    -- existing item whose text cannot be read fails there too.
+                    if titleShown and defT is not missing value then
+                        set x to item k of allDefTText
+                        if x is missing value then error "default title text"
+                        set out to out & "PT" & fs & (x as text) & rs
+                    end if
+                    if bodyShown and defB is not missing value then
+                        set x to item k of allDefBText
+                        if x is missing value then error "default body text"
+                        set out to out & "PB" & fs & (x as text) & rs
+                    end if{text_block}{image_block}{shape_block}{table_block}{chart_block}{line_block}
+                    set out to out & "GRP" & fs & ((count of item k of allGroups) as text) & rs
+                  end repeat
+                    return out
+                end tell
+            end run
+            """
+
+
 def _parse_element_types(requested: list[str] | None) -> frozenset[str]:
     """Validate an element_types filter, or return every class."""
     if not requested:
@@ -712,6 +1325,18 @@ def _validate_element(el: Any, path: str, errors: list[str], style: Any = None) 
                 errors.append(_err(path, "table rows must all have the same length"))
             elif widths.pop() < 2:
                 errors.append(_err(path, "table needs at least 2 columns (Keynote 2x2 minimum)"))
+            bad = [
+                f"[{r}][{c}]"
+                for r, row in enumerate(data)
+                for c, cell in enumerate(row)
+                if isinstance(cell, (int, float))
+                and not isinstance(cell, bool)
+                and not finite_cell_number(cell)
+            ]
+            if bad:
+                errors.append(
+                    _err(path, f"table cells {', '.join(bad[:5])} are not finite numbers")
+                )
     elif etype == "chart":
         if el.get("chart_type") not in CHART_TYPES:
             errors.append(
@@ -847,8 +1472,8 @@ def _parse_attrs(line: str) -> tuple[str, dict[str, Any]]:
 def markdown_to_spec(markdown: str) -> dict[str, Any]:
     """Compile the markdown dialect into a deck spec.
 
-    Dialect: optional ``---`` frontmatter (title/theme/style/width/height/
-    save_path); ``#`` = title slide; ``##`` = new slide; ``-``/``*`` bullets;
+    Dialect: optional ``---`` frontmatter (title/theme/theme_file/style/
+    width/height/save_path); ``#`` = title slide; ``##`` = new slide; ``-``/``*`` bullets;
     ``1.`` numbered; ``>`` quote; fenced code (``` ```chart``` fences take a
     JSON chart object); ``![alt](path)`` images; GitHub tables; a paragraph
     starting ``Notes:`` becomes speaker notes; ``<!-- transition: push 1.0 -->``
@@ -871,7 +1496,7 @@ def markdown_to_spec(markdown: str) -> dict[str, Any]:
                                 spec[key] = int(value)
                             except ValueError:
                                 pass
-                        elif key in ("title", "theme", "style", "save_path"):
+                        elif key in ("title", "theme", "theme_file", "style", "save_path"):
                             spec[key] = value
                 pos = end + 1
                 break
@@ -1470,6 +2095,201 @@ def _wrap_try(fragment: list[str], tag: str) -> list[str]:
     ]
 
 
+# Fields per describe record kind. The runner strips stdout, and str.strip()
+# treats \x1c-\x1f as whitespace, so a stream whose last record ends in empty
+# fields loses them; they are padded back by count.
+_DESCRIBE_FIELDS = {"X": 5, "T": 15, "I": 10, "S": 12, "B": 9, "C": 6, "G": 7}
+
+
+def _parse_description(raw: str) -> list[dict[str, Any]]:
+    """Parse the record stream both describe paths emit into slide dicts."""
+    slides: list[dict[str, Any]] = []
+    slide: dict[str, Any] = {"elements": []}
+    for record in raw.split(_RS):
+        if not record:
+            continue
+        fields = record.split(_FS)
+        kind = fields[0]
+        fields += [""] * (_DESCRIBE_FIELDS.get(kind, 2) - len(fields))
+        if kind == "D":
+            # Slide delimiter: one batched session returns every requested
+            # slide, in order.
+            slide = {"slide": int(fields[1]), "elements": []}
+            slides.append(slide)
+        elif kind == "L":
+            slide["layout"] = fields[1]
+        elif kind == "K":
+            if fields[1] == "true":
+                slide["skipped"] = True
+        elif kind == "X":
+            effect = fields[1].replace(" ", "_")
+            if effect != "no_transition_effect":
+                slide["transition"] = {
+                    "effect": effect,
+                    "duration": float(fields[2]),
+                    "delay": float(fields[3]),
+                    "automatic": fields[4] == "true",
+                }
+        elif kind == "N":
+            slide["notes"] = fields[1]
+        elif kind == "PT":
+            slide["title"] = fields[1]
+        elif kind == "PB":
+            slide["body"] = fields[1]
+        elif kind == "T":
+            el: dict[str, Any] = {
+                "type": "text",
+                "element_class": "text item",
+                "index": int(fields[9]),
+                "text": fields[1],
+                "x": float(fields[2]),
+                "y": float(fields[3]),
+                "width": float(fields[4]),
+                "height": float(fields[5]),
+            }
+            if fields[6]:
+                el.update(split_font_name(fields[6]))
+            if fields[7]:
+                el["font_size"] = float(fields[7])
+            if fields[8]:
+                _set_color(el, fields[8])
+            if len(fields) > 10 and fields[10]:
+                # A theme placeholder, emitted as an ordinary indexed
+                # element so this listing and get_slide_content agree on
+                # what "text item i" addresses. slide.title / slide.body
+                # carry the same text for round-trip rebuild.
+                el["placeholder"] = fields[10]
+            _set_optional(el, "rotation", fields, 11, float)
+            _set_optional(el, "opacity", fields, 12, float)
+            _set_optional(el, "fill_type", fields, 13, str)
+            if len(fields) > 14 and fields[14]:
+                runs = _parse_runs(fields[14])
+                # Only worth reporting when the box is NOT uniform - a
+                # single run says nothing the top-level font/size/color
+                # does not already say.
+                if len(runs) > 1:
+                    el["runs"] = runs
+            slide["elements"].append(el)
+        elif kind == "I":
+            slide["elements"].append(
+                {
+                    "type": "image",
+                    "element_class": "image",
+                    "index": int(fields[6]),
+                    "path": fields[1],
+                    "x": float(fields[2]),
+                    "y": float(fields[3]),
+                    "width": float(fields[4]),
+                    "height": float(fields[5]),
+                }
+            )
+            _set_optional(slide["elements"][-1], "rotation", fields, 7, float)
+            _set_optional(slide["elements"][-1], "opacity", fields, 8, float)
+            _set_optional(slide["elements"][-1], "description", fields, 9, str)
+            # A panel or styled stroke this server rendered carries its
+            # parameters in its filename, so report it as what it IS rather
+            # than as an anonymous image. build_deck re-renders from these,
+            # which is also what makes the round trip work at all - the
+            # original PNG lived in a temp directory that is long gone.
+            decoded = decode_rendered_asset(os.path.basename(fields[1]))
+            if decoded:
+                el_img = slide["elements"][-1]
+                offsets = decoded.pop("_endpoint_offsets", None)
+                el_img.update(decoded)
+                el_img.pop("path", None)
+                if offsets and len(offsets) == 4:
+                    # The rendered box is padded by half a stroke width plus
+                    # the arrowhead, so the image's x/y is NOT the line's
+                    # start point. Recover the real endpoints from the box.
+                    ox_, oy_ = el_img["x"], el_img["y"]
+                    el_img["x1"] = ox_ + offsets[0]
+                    el_img["y1"] = oy_ + offsets[1]
+                    el_img["x2"] = ox_ + offsets[2]
+                    el_img["y2"] = oy_ + offsets[3]
+                    for key in ("x", "y", "width", "height"):
+                        el_img.pop(key, None)
+        elif kind == "S":
+            el = {
+                "type": "shape",
+                "element_class": "shape",
+                "index": int(fields[7]),
+                "x": float(fields[2]),
+                "y": float(fields[3]),
+                "width": float(fields[4]),
+                "height": float(fields[5]),
+                "opacity": float(fields[6]),
+            }
+            if fields[1]:
+                el["text"] = fields[1]
+            _set_optional(el, "rotation", fields, 8, float)
+            # Keynote reports the KIND of fill but never its colour, so a
+            # caller can tell "no fill" from "fill not reported".
+            _set_optional(el, "fill_type", fields, 9, str)
+            _set_optional(el, "reflection_showing", fields, 10, _as_bool)
+            _set_optional(el, "locked", fields, 11, _as_bool)
+            slide["elements"].append(el)
+        elif kind == "B":
+            data = (
+                [[_parse_cell(c) for c in row.split("\t")] for row in fields[7].split("\n")]
+                if fields[7]
+                else []
+            )
+            slide["elements"].append(
+                {
+                    "type": "table",
+                    "element_class": "table",
+                    "index": int(fields[8]),
+                    "header_row": int(fields[1]) > 0,
+                    "header_column": int(fields[2]) > 0,
+                    "x": float(fields[3]),
+                    "y": float(fields[4]),
+                    "width": float(fields[5]),
+                    "height": float(fields[6]),
+                    "data": data,
+                }
+            )
+        elif kind == "C":
+            slide["elements"].append(
+                {
+                    "type": "chart",
+                    "element_class": "chart",
+                    "index": int(fields[5]),
+                    "chart_type": None,
+                    "note": ("chart data is not readable via AppleScript; geometry only"),
+                    "x": float(fields[1]),
+                    "y": float(fields[2]),
+                    "width": float(fields[3]),
+                    "height": float(fields[4]),
+                }
+            )
+        elif kind == "G":
+            slide["elements"].append(
+                {
+                    "type": "line",
+                    "element_class": "line",
+                    "index": int(fields[5]),
+                    "x1": float(fields[1]),
+                    "y1": float(fields[2]),
+                    "x2": float(fields[3]),
+                    "y2": float(fields[4]),
+                }
+            )
+            _set_optional(slide["elements"][-1], "rotation", fields, 6, float)
+        elif kind == "GRP":
+            count = int(fields[1])
+            if count:
+                slide["groups"] = {
+                    "count": count,
+                    "note": (
+                        "This slide contains groups the user made by hand. "
+                        "AppleScript cannot report which elements belong to "
+                        "which group, and cannot create groups at all, so "
+                        "the elements above are listed flat."
+                    ),
+                }
+    return slides
+
+
 class DeckTools(DocumentTargetedTools):
     """build_deck / describe_deck."""
 
@@ -1495,15 +2315,17 @@ class DeckTools(DocumentTargetedTools):
                     "To revise a deck you built: describe_deck to get its spec "
                     "back, edit the spec, build_deck again. Pass either "
                     "`spec` (JSON) or `markdown` (dialect: --- frontmatter with "
-                    "title/theme/style/width/height/save_path; # title slide; "
+                    "title/theme/theme_file/style/width/height/save_path; # title slide; "
                     "## new slide; bullets/numbered/quotes/code fences/images/"
                     "GitHub tables; ```chart fences with a JSON chart object; "
                     "'Notes:' paragraphs become speaker notes; "
                     "<!-- transition: push 1.0 --> and <!-- skip --> per slide; "
                     "any block may end with <!-- x=.. y=.. width=.. "
                     "font_size=.. column=left/right --> for explicit placement "
-                    "or two-column flow). Spec shape: {title?, theme?, style?, "
-                    "width?, height?, save_path?, on_exists?, slides: [{layout?, "
+                    "or two-column flow). Spec shape: {title?, theme?, "
+                    "theme_file? (a .kth path, for a theme that is not installed; "
+                    "keeps the theme's slide size unless width/height are given), "
+                    "style?, width?, height?, save_path?, on_exists?, slides: [{layout?, "
                     "title?/body? (theme placeholders), notes?, skipped?, "
                     "transition? {effect, duration?, delay?, automatic?}, "
                     "elements?: [{type: <one of the types below>, ...}]}]}. "
@@ -1774,9 +2596,19 @@ class DeckTools(DocumentTargetedTools):
                     )
                 ]
 
-            theme = str(spec.get("theme", "") or deck_style.keynote_theme)
-            width = int(spec.get("width") or deck_style.width)
-            height = int(spec.get("height") or deck_style.height)
+            theme_file = str(spec.get("theme_file", "") or "")
+            if theme_file and spec.get("theme"):
+                raise ParameterError("Pass theme or theme_file in the spec, not both.")
+            source_theme = resolve_theme_file(theme_file) if theme_file else ""
+            theme = (
+                os.path.basename(source_theme)
+                if source_theme
+                else str(spec.get("theme", "") or deck_style.keynote_theme)
+            )
+            # A theme file brings its own slide size; the style's default would
+            # rescale every layout in it. Only an explicit spec size overrides.
+            width = int(spec.get("width") or (0 if source_theme else deck_style.width))
+            height = int(spec.get("height") or (0 if source_theme else deck_style.height))
             title = str(spec.get("title", "") or "deck")
             on_exists = str(spec.get("on_exists", "replace"))
             if on_exists not in ("replace", "error", "unique"):
@@ -1808,11 +2640,18 @@ class DeckTools(DocumentTargetedTools):
 
             # Session 1: replace any open doc at this path, create + save the
             # new document, and fetch the theme's layout names for validation.
-            setup = self.runner.run(
-                f"""
+            staged = (
+                stage_theme_file(source_theme, keynote_bundle_id(self.runner))
+                if source_theme
+                else ""
+            )
+            try:
+                setup = self.runner.run(
+                    f"""
                 on run argv
                     set themeName to item 1 of argv
                     set savePath to item 2 of argv
+                    set themeFile to item 3 of argv
                     tell application "Keynote"
                         activate
                         repeat with d in documents
@@ -1827,28 +2666,46 @@ class DeckTools(DocumentTargetedTools):
                             end try
                         end repeat
                         set themeNote to "theme: " & themeName
-                        try
-                            set newDoc to make new document with properties ¬
-                                {{document theme:theme themeName, ¬
-                                width:{width}, height:{height}}}
-                        on error
-                            set newDoc to make new document with properties ¬
-                                {{width:{width}, height:{height}}}
-                            set themeNote to "theme '" & themeName & "' not found, used default"
-                        end try
+                        if themeFile is not "" then
+                            set newDoc to make new document with data (POSIX file themeFile)
+                            set themeNote to "theme file: " & themeName
+                            if {width} > 0 then set width of newDoc to {width}
+                            if {height} > 0 then set height of newDoc to {height}
+                        else
+                            try
+                                set newDoc to make new document with properties ¬
+                                    {{document theme:theme themeName, ¬
+                                    width:{width}, height:{height}}}
+                            on error
+                                set newDoc to make new document with properties ¬
+                                    {{width:{width}, height:{height}}}
+                                set themeNote to "theme '" & themeName & "' not found, used default"
+                            end try
+                        end if
                         save newDoc in POSIX file savePath
                         set layoutNames to name of every slide layout of newDoc
                         set AppleScript's text item delimiters to "|||"
                         set joined to layoutNames as text
                         set AppleScript's text item delimiters to ""
-                        return (name of newDoc) & {_AS_FS} & themeNote & {_AS_FS} & joined
+                        set docSize to ((width of newDoc) as integer as text) & "x" & ¬
+                            ((height of newDoc) as integer as text)
+                        return (name of newDoc) & {_AS_FS} & themeNote & {_AS_FS} & ¬
+                            docSize & {_AS_FS} & joined
                     end tell
                 end run
                 """,
-                theme,
-                resolved_path,
-            )
-            doc_name, theme_note, layouts_joined = setup.split(_FS)
+                    theme,
+                    resolved_path,
+                    staged,
+                )
+            finally:
+                # Saved inside the setup session, so the copy is no longer needed.
+                if staged:
+                    discard_staged_theme(staged)
+            doc_name, theme_note, doc_size, layouts_joined = setup.split(_FS)
+            # Layout flow needs the size the document really has, which for a
+            # theme file is the theme's own.
+            width, height = (int(v) for v in doc_size.split("x"))
             layouts = {name.strip() for name in layouts_joined.split("|||")}
             # The deck a caller just built is what the next call means, exactly
             # as for create_presentation/open_presentation.
@@ -1856,14 +2713,33 @@ class DeckTools(DocumentTargetedTools):
 
             # Validate every slide's layout against the live theme; a miss
             # deletes the fresh document so nothing half-built remains.
+            # A slide without a layout gets "Blank", which every built-in
+            # theme has but a theme FILE need not; check that default too,
+            # or each such slide's whole session fails mid-build.
+            theme_label = (
+                f"theme file {os.path.basename(source_theme)!r}"
+                if source_theme
+                else f"theme {theme!r}"
+                if theme
+                else "default theme"
+            )
             layout_errors = []
+            unlaid: list[int] = []
             for i, slide in enumerate(spec["slides"]):
                 wanted = slide.get("layout")
                 if wanted and wanted not in layouts:
                     layout_errors.append(
-                        f"slides[{i}].layout: {wanted!r} not in theme '{theme}' "
+                        f"slides[{i}].layout: {wanted!r} not in the {theme_label} "
                         f"(available: {sorted(layouts)})"
                     )
+                elif not wanted and "Blank" not in layouts:
+                    unlaid.append(i)
+            if unlaid:
+                layout_errors.append(
+                    f"slides {unlaid} give no layout, and the {theme_label} has no "
+                    f"'Blank' layout to default to; set layout on each to one of "
+                    f"{sorted(layouts)}"
+                )
             if layout_errors:
                 self.runner.run(
                     'on run argv\ntell application "Keynote" to close document '
@@ -2156,7 +3032,7 @@ class DeckTools(DocumentTargetedTools):
                 )
             else:
                 slides: list[dict[str, Any]] = []
-                for chunk in _chunks(numbers, _DESCRIBE_SLIDES_PER_SESSION):
+                for chunk in _span_chunks(numbers, _DESCRIBE_BATCH_SLIDES):
                     slides.extend(self._describe_slides(doc_name, chunk, want, include_text_runs))
                 if round_coordinates:
                     for sl in slides:
@@ -2180,6 +3056,162 @@ class DeckTools(DocumentTargetedTools):
             return [TextContent(type="text", text=f"Failed to describe deck: {e}")]
 
     def _summarize_slides(self, doc_name: str, numbers: list[int]) -> list[dict[str, Any]]:
+        """Per-slide counts and titles, read a class at a time.
+
+        Each Apple event has a fixed cost, measured at ~17 ms on macOS 27
+        against ~0.35 ms on macOS 26, so the per-slide loop in
+        ``_summarize_slides_per_slide`` (about 20 events per slide) took 12 s
+        on the 35-slide profiling deck. Here every read is ``<property> of
+        every <class> of every slide``: about ten events for any deck size.
+
+        Phantom placeholders are subtracted by count, not by identity: a
+        default title/body item is counted once while hidden and twice while
+        showing, and real items come first, so each existing default item
+        adds exactly one phantom, trailing. Falls back to the per-slide path
+        if any list read fails.
+        """
+        try:
+            return self._summarize_slides_batched(doc_name, numbers)
+        except AppleScriptTimeout:
+            raise  # retrying slide by slide would only double the wait
+        except Exception:
+            logger.debug("Batched summary failed; reading slide by slide", exc_info=True)
+            return self._summarize_slides_per_slide(doc_name, numbers)
+
+    def _summarize_slides_batched(self, doc_name: str, numbers: list[int]) -> list[dict[str, Any]]:
+        raw = self.runner.run(
+            f"""
+            on run argv
+                set docName to item 1 of argv
+                set fs to character id 31
+                set rs to character id 30
+                set gs to character id 29
+                tell application "Keynote"
+                    {RESOLVE_DOC}
+                    set slideCount to count of slides of targetDoc
+                    set allTexts to object text of every text item of every slide of targetDoc
+                    set allImages to every image of every slide of targetDoc
+                    set allShapes to every shape of every slide of targetDoc
+                    set allTables to every table of every slide of targetDoc
+                    set allCharts to every chart of every slide of targetDoc
+                    set allLines to every line of every slide of targetDoc
+                    set allSkipped to skipped of every slide of targetDoc
+                    set allTitleShown to title showing of every slide of targetDoc
+                    -- One event each while every slide has the item; if one
+                    -- lacks it the list read fails, so ask slide by slide.
+                    -- hasTitles is its own list: a marker value in defTitles
+                    -- would collide with a title that is literally that text.
+                    try
+                        set defTitles to object text of default title item of ¬
+                            every slide of targetDoc
+                        set hasTitles to {{}}
+                        repeat slideCount times
+                            set end of hasTitles to true
+                        end repeat
+                    on error
+                        set defTitles to {{}}
+                        set hasTitles to {{}}
+                        repeat with n from 1 to slideCount
+                            set t to ""
+                            set h to false
+                            try
+                                set t to (object text of default title item of ¬
+                                    slide n of targetDoc) as text
+                                set h to true
+                            end try
+                            set end of defTitles to t
+                            set end of hasTitles to h
+                        end repeat
+                    end try
+                    try
+                        get default body item of every slide of targetDoc
+                        set defBodies to {{}}
+                        repeat slideCount times
+                            set end of defBodies to true
+                        end repeat
+                    on error
+                        set defBodies to {{}}
+                        repeat with n from 1 to slideCount
+                            set b to false
+                            try
+                                get default body item of slide n of targetDoc
+                                set b to true
+                            end try
+                            set end of defBodies to b
+                        end repeat
+                    end try
+                end tell
+                set out to ""
+                repeat with n from 1 to slideCount
+                    set slideTexts to item n of allTexts
+                    set textOut to ""
+                    repeat with tx in slideTexts
+                        set textOut to textOut & (tx as text) & gs
+                    end repeat
+                    set out to out & (n as text) & fs & ¬
+                        ((count of slideTexts) as text) & fs & ¬
+                        ((count of item n of allImages) as text) & fs & ¬
+                        ((count of item n of allShapes) as text) & fs & ¬
+                        ((count of item n of allTables) as text) & fs & ¬
+                        ((count of item n of allCharts) as text) & fs & ¬
+                        ((count of item n of allLines) as text) & fs & ¬
+                        ((item n of allSkipped) as text) & fs & ¬
+                        ((item n of allTitleShown) as text) & fs & ¬
+                        ((item n of defTitles) as text) & fs & ¬
+                        ((item n of defBodies) as text) & fs & ¬
+                        ((item n of hasTitles) as text) & fs & ¬
+                        textOut & rs
+                end repeat
+                return out
+            end run
+            """,
+            doc_name,
+            timeout=_SLIDE_SESSION_TIMEOUT,
+        )
+        wanted = set(numbers)
+        by_slide: dict[int, dict[str, Any]] = {}
+        for record in raw.split(_RS):
+            if not record:
+                continue
+            f = record.split(_FS)
+            slide = int(f[0])
+            if slide not in wanted:
+                continue
+            has_title = f[11] == "true"
+            has_body = f[10] == "true"
+            total = int(f[1])
+            # The runner strips the output, and str.strip() treats \x1d-\x1f
+            # as whitespace, so the last slide loses its trailing empty texts.
+            texts = (f[12].split(_GS) + [""] * total)[:total] if len(f) > 12 else [""] * total
+            real = total - int(has_title) - int(has_body)
+            if real < 0:
+                raise RuntimeError(f"slide {slide}: fewer text items than default items")
+            counts = {
+                "text": real,
+                "image": int(f[2]),
+                "shape": int(f[3]),
+                "table": int(f[4]),
+                "chart": int(f[5]),
+                "line": int(f[6]),
+            }
+            title = f[9] if has_title and f[8] == "true" else ""
+            if not title:
+                title = next((t for t in texts[:real] if t), "")
+            entry: dict[str, Any] = {
+                "slide": slide,
+                "elements": sum(counts.values()),
+                "counts": {k: v for k, v in counts.items() if v},
+            }
+            if f[7] == "true":
+                entry["skipped"] = True
+            if title:
+                entry["title"] = title
+            by_slide[slide] = entry
+        return [by_slide[n] for n in numbers]
+
+    def _summarize_slides_per_slide(
+        self, doc_name: str, numbers: list[int]
+    ) -> list[dict[str, Any]]:
         """Per-slide counts and titles for the whole deck in ONE call.
 
         Measured on the 35-slide/735-element profiling deck: 0.3 s, against
@@ -2267,7 +3299,57 @@ class DeckTools(DocumentTargetedTools):
         element_types: frozenset[str] | None = None,
         include_text_runs: bool = True,
     ) -> list[dict[str, Any]]:
-        """Describe several slides in ONE osascript session.
+        """Describe several slides in one osascript session, a class at a time.
+
+        The per-element path sends about 200 Apple events per slide, and on
+        macOS 27 each costs ~17 ms (~0.35 ms on macOS 26): 17.3 s for five
+        slides of the profiling deck, ~120 s for all 35. Here each property is
+        one ``<property> of every <class> of slides lo thru hi`` event, and
+        placeholders are recognised by comparing references locally (Keynote
+        returns a placeholder's reference as ``default title item of slide
+        N``), so the event count no longer grows with the element count. What
+        remains is Keynote's own cost: every geometry read (position, width,
+        height, rotation) takes it ~40-90 ms per slide however it is batched,
+        hence one ``properties`` read per class where it works (not images),
+        plus one event per image whose source file is gone and three per
+        slide with lines (see ``_LINE_WARM_UP``). Output is the same record
+        stream as the per-element path, which stays as the fallback, in
+        sessions of ``_DESCRIBE_SLIDES_PER_SESSION``, when a batched read fails.
+        """
+        want = element_types or _ALL_ELEMENT_CLASSES
+        try:
+            raw = self.runner.run(
+                _describe_script_batched(numbers, want, include_text_runs),
+                doc_name,
+                timeout=_SLIDE_SESSION_TIMEOUT,
+            )
+            slides = _parse_description(raw)
+            if [sl["slide"] for sl in slides] != numbers:
+                raise RuntimeError("batched describe returned the wrong slides")
+            return slides
+        except AppleScriptTimeout:
+            raise  # retrying element by element would only double the wait
+        except Exception:
+            logger.debug("Batched describe failed; reading element by element", exc_info=True)
+            slides = []
+            for chunk in _chunks(numbers, _DESCRIBE_SLIDES_PER_SESSION):
+                slides.extend(
+                    self._describe_slides_per_element(
+                        doc_name, chunk, element_types, include_text_runs
+                    )
+                )
+            return slides
+
+    def _describe_slides_per_element(
+        self,
+        doc_name: str,
+        numbers: list[int],
+        element_types: frozenset[str] | None = None,
+        include_text_runs: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Describe several slides in ONE osascript session, element by element.
+
+        The fallback for ``_describe_slides``: about 200 Apple events per slide.
 
         Profiled on a 35-slide/735-element deck: the old one-call-per-slide
         shape spent 31.2 s, of which ~4.5 s was pure process/AppleEvent
@@ -2467,6 +3549,10 @@ class DeckTools(DocumentTargetedTools):
                                 fs & (item 2 of p as text) & fs & (width of ch as text) & ¬
                                 fs & (height of ch as text) & fs & (i as text) & rs
                         end repeat
+                        -- See _LINE_WARM_UP.
+                        if {"(count of lines)" if "line" in want else "0"} > 0 then
+                            set lnWarm to position of every line
+                        end if
                         repeat with i from 1 to {"(count of lines)" if "line" in want else "0"}
                             set ln to line i
                             set sp to start point of ln
@@ -2493,187 +3579,4 @@ class DeckTools(DocumentTargetedTools):
             doc_name,
             timeout=_SLIDE_SESSION_TIMEOUT,
         )
-        slides: list[dict[str, Any]] = []
-        slide: dict[str, Any] = {"elements": []}
-        for record in raw.split(_RS):
-            if not record:
-                continue
-            fields = record.split(_FS)
-            kind = fields[0]
-            if kind == "D":
-                # Slide delimiter: one batched session returns every requested
-                # slide, in order.
-                slide = {"slide": int(fields[1]), "elements": []}
-                slides.append(slide)
-            elif kind == "L":
-                slide["layout"] = fields[1]
-            elif kind == "K":
-                if fields[1] == "true":
-                    slide["skipped"] = True
-            elif kind == "X":
-                effect = fields[1].replace(" ", "_")
-                if effect != "no_transition_effect":
-                    slide["transition"] = {
-                        "effect": effect,
-                        "duration": float(fields[2]),
-                        "delay": float(fields[3]),
-                        "automatic": fields[4] == "true",
-                    }
-            elif kind == "N":
-                slide["notes"] = fields[1]
-            elif kind == "PT":
-                slide["title"] = fields[1]
-            elif kind == "PB":
-                slide["body"] = fields[1]
-            elif kind == "T":
-                el: dict[str, Any] = {
-                    "type": "text",
-                    "element_class": "text item",
-                    "index": int(fields[9]),
-                    "text": fields[1],
-                    "x": float(fields[2]),
-                    "y": float(fields[3]),
-                    "width": float(fields[4]),
-                    "height": float(fields[5]),
-                }
-                if fields[6]:
-                    el.update(split_font_name(fields[6]))
-                if fields[7]:
-                    el["font_size"] = float(fields[7])
-                if fields[8]:
-                    _set_color(el, fields[8])
-                if len(fields) > 10 and fields[10]:
-                    # A theme placeholder, emitted as an ordinary indexed
-                    # element so this listing and get_slide_content agree on
-                    # what "text item i" addresses. slide.title / slide.body
-                    # carry the same text for round-trip rebuild.
-                    el["placeholder"] = fields[10]
-                _set_optional(el, "rotation", fields, 11, float)
-                _set_optional(el, "opacity", fields, 12, float)
-                _set_optional(el, "fill_type", fields, 13, str)
-                if len(fields) > 14 and fields[14]:
-                    runs = _parse_runs(fields[14])
-                    # Only worth reporting when the box is NOT uniform - a
-                    # single run says nothing the top-level font/size/color
-                    # does not already say.
-                    if len(runs) > 1:
-                        el["runs"] = runs
-                slide["elements"].append(el)
-            elif kind == "I":
-                slide["elements"].append(
-                    {
-                        "type": "image",
-                        "element_class": "image",
-                        "index": int(fields[6]),
-                        "path": fields[1],
-                        "x": float(fields[2]),
-                        "y": float(fields[3]),
-                        "width": float(fields[4]),
-                        "height": float(fields[5]),
-                    }
-                )
-                _set_optional(slide["elements"][-1], "rotation", fields, 7, float)
-                _set_optional(slide["elements"][-1], "opacity", fields, 8, float)
-                _set_optional(slide["elements"][-1], "description", fields, 9, str)
-                # A panel or styled stroke this server rendered carries its
-                # parameters in its filename, so report it as what it IS rather
-                # than as an anonymous image. build_deck re-renders from these,
-                # which is also what makes the round trip work at all - the
-                # original PNG lived in a temp directory that is long gone.
-                decoded = decode_rendered_asset(os.path.basename(fields[1]))
-                if decoded:
-                    el_img = slide["elements"][-1]
-                    offsets = decoded.pop("_endpoint_offsets", None)
-                    el_img.update(decoded)
-                    el_img.pop("path", None)
-                    if offsets and len(offsets) == 4:
-                        # The rendered box is padded by half a stroke width plus
-                        # the arrowhead, so the image's x/y is NOT the line's
-                        # start point. Recover the real endpoints from the box.
-                        ox_, oy_ = el_img["x"], el_img["y"]
-                        el_img["x1"] = ox_ + offsets[0]
-                        el_img["y1"] = oy_ + offsets[1]
-                        el_img["x2"] = ox_ + offsets[2]
-                        el_img["y2"] = oy_ + offsets[3]
-                        for key in ("x", "y", "width", "height"):
-                            el_img.pop(key, None)
-            elif kind == "S":
-                el = {
-                    "type": "shape",
-                    "element_class": "shape",
-                    "index": int(fields[7]),
-                    "x": float(fields[2]),
-                    "y": float(fields[3]),
-                    "width": float(fields[4]),
-                    "height": float(fields[5]),
-                    "opacity": float(fields[6]),
-                }
-                if fields[1]:
-                    el["text"] = fields[1]
-                _set_optional(el, "rotation", fields, 8, float)
-                # Keynote reports the KIND of fill but never its colour, so a
-                # caller can tell "no fill" from "fill not reported".
-                _set_optional(el, "fill_type", fields, 9, str)
-                _set_optional(el, "reflection_showing", fields, 10, _as_bool)
-                _set_optional(el, "locked", fields, 11, _as_bool)
-                slide["elements"].append(el)
-            elif kind == "B":
-                data = (
-                    [[_parse_cell(c) for c in row.split("\t")] for row in fields[7].split("\n")]
-                    if fields[7]
-                    else []
-                )
-                slide["elements"].append(
-                    {
-                        "type": "table",
-                        "element_class": "table",
-                        "index": int(fields[8]),
-                        "header_row": int(fields[1]) > 0,
-                        "header_column": int(fields[2]) > 0,
-                        "x": float(fields[3]),
-                        "y": float(fields[4]),
-                        "width": float(fields[5]),
-                        "height": float(fields[6]),
-                        "data": data,
-                    }
-                )
-            elif kind == "C":
-                slide["elements"].append(
-                    {
-                        "type": "chart",
-                        "element_class": "chart",
-                        "index": int(fields[5]),
-                        "chart_type": None,
-                        "note": ("chart data is not readable via AppleScript; geometry only"),
-                        "x": float(fields[1]),
-                        "y": float(fields[2]),
-                        "width": float(fields[3]),
-                        "height": float(fields[4]),
-                    }
-                )
-            elif kind == "G":
-                slide["elements"].append(
-                    {
-                        "type": "line",
-                        "element_class": "line",
-                        "index": int(fields[5]),
-                        "x1": float(fields[1]),
-                        "y1": float(fields[2]),
-                        "x2": float(fields[3]),
-                        "y2": float(fields[4]),
-                    }
-                )
-                _set_optional(slide["elements"][-1], "rotation", fields, 6, float)
-            elif kind == "GRP":
-                count = int(fields[1])
-                if count:
-                    slide["groups"] = {
-                        "count": count,
-                        "note": (
-                            "This slide contains groups the user made by hand. "
-                            "AppleScript cannot report which elements belong to "
-                            "which group, and cannot create groups at all, so "
-                            "the elements above are listed flat."
-                        ),
-                    }
-        return slides
+        return _parse_description(raw)

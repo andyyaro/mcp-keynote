@@ -3,7 +3,7 @@
 ## What this is
 
 An MCP (Model Context Protocol) server that controls Apple Keynote via
-AppleScript. It exposes 59 tools: whole-deck declarative building
+AppleScript. It exposes 62 tools: whole-deck declarative building
 (`build_deck`/`describe_deck`), presentations, slides, content (text,
 images, lists, code blocks, theme placeholders), NATIVE tables and charts,
 rendered color panels, per-range text styling, transitions, styles
@@ -48,7 +48,7 @@ src/keynote_mcp/
     fragments.py         — SINGLE SOURCE of element-creation AppleScript
                            (argv-safe fragment builders + trusted literal
                            maps) consumed by content/objects/deck alike
-    objects.py           — native add_table/add_chart, add_line, rendered
+    objects.py           — native add_table/edit_table/add_chart, add_line, rendered
                            add_colored_panel, style_text_range,
                            replace_image, set_element_style
     deck.py              — build_deck (JSON spec + markdown dialect,
@@ -125,6 +125,16 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
 - Invalid indices surface as error **-1719** ("Invalid index"), not -1728.
 - Window titles don't reliably match document names — UI scripting targets
   `window 1` of the Keynote process.
+- Keynote 15.x ("Keynote Creator Studio", probed on 15.3.1) moved the
+  Animate inspector's controls (Build In/Action/Build Out tabs, "Add an
+  Effect"/"Change", the delivery scroll area) off the window and into
+  `splitter group 1` of it. The Format pane has a radio group in the same
+  place, so `_FIND_INSPECTOR` recognizes the Animate pane by its "Build In"
+  tab, and it polls because 15.x draws the pane late. View > Inspector >
+  Animate stops switching panes after its first use, so
+  `_show_inspector_pane` clicks the toolbar's Format/Animate button and
+  keeps the menu only as a fallback. System Events calls AXSplitGroup
+  `splitter group`; "split group" is only its accessibility description.
 - The legacy ">48pt tiny-box clipping" does NOT reproduce on Keynote 14.5 in
   the server's single-osascript-call flow (probed at 96/150/300/500pt with
   long/multiline/CJK text): auto-fit tracks the text at every size, Keynote
@@ -259,6 +269,54 @@ skills/keynote-presentation/ — Claude Skill (install: cp -r to ~/.claude/skill
 - New presentations default slide 1 to the **Blank layout** (documented
   policy, matching `add_slide`); `set_slide_content` opts back into theme
   placeholders by setting `title/body showing` before filling.
+
+### Theme files and table edits (probed 2026-09, Keynote 15.3.1)
+
+- `make new document with data (POSIX file x.kth)` builds a document from an
+  uninstalled theme. The server copies the `.kth` into
+  `~/Library/Containers/com.apple.Keynote/Data/tmp` first
+  (`utils/theme_file.py`; 14.x used `com.apple.iWork.Keynote`), because a
+  path outside the sandbox risks the `open` wedge. The theme name reads back
+  as "Custom Theme", and the saved document does not need the copy. Installed
+  themes (the user's "My Themes") already work by name through `theme`.
+- `build_deck` with a `theme_file` keeps the theme's slide size; its setup
+  session returns the real size, and layout flow uses it.
+- `sort` leaves header rows in place, setting `row count` lower drops rows
+  from the end, `clear range` wipes contents and formatting, and
+  `set value … to missing value` empties a cell. The sdef's `format` enum
+  includes Numbers-only entries (checkbox, slider, …); `edit_table` exposes
+  only the ones that make sense in Keynote.
+
+### Keynote 15.3.1 / macOS 27 read-cost facts (probed 2026-09)
+
+- **Every Apple event costs ~17 ms on macOS 27** (Finder and System Events
+  too), against ~0.35 ms on macOS 26. Batch reads:
+  `<property> of every <class> of slides lo thru hi` is one event.
+- **Keynote charges each geometry read (position, width, height, rotation)
+  ~40-90 ms per slide, however it is batched.** `properties of every <class>`
+  returns all of them for the cost of one, for text items, shapes, tables,
+  charts and lines. It fails with -10000 for images (their `file` property),
+  so images keep per-property list reads. `_props_read` in `deck.py` and
+  `get_slide_content` rely on this, with the per-property reads as fallback.
+- **A line's `start point` / `end point` read as 0,0** unless that slide's
+  line positions were read just before, and only the slide read last stays
+  readable. `position of every line of slide n` fixes it (~30 ms a slide,
+  `_LINE_WARM_UP`); counting the lines, getting the slide or getting the line
+  reference does not. Position and width read correctly without it. Only
+  `describe_deck` reads endpoints, and a unit test keeps it that way; a new
+  endpoint reader needs the warm-up.
+- **`every text item` returns placeholders as `default title item of slide
+  N` / `default body item of slide N`**, so `ti is defT` on fetched references
+  compares locally, with no Apple event, and agrees with the app-side
+  comparison (70 of 70 on the scale deck, 0.13 s against 5.4 s).
+  `TEXT_ITEM_CLASSIFY` does this; `TEXT_ITEM_FILTER` sends one event per item
+  and stays for the per-element fallbacks.
+- **`repeat with x in (<app expression>)` re-queries Keynote on every
+  iteration.** Fetch the list into a variable first.
+- **Timings drift.** The same full describe took 12 s in one session and
+  120 s later with no code change, and once Keynote sat at 98% CPU and 2.8 GB
+  until restarted. Compare old and new code in the same Keynote session, and
+  restart Keynote (ask the user first) before taking numbers for docs.
 
 ## Development
 

@@ -10,7 +10,12 @@ import logging
 import os
 import subprocess
 
-from .error_handler import AppleScriptError, FileOperationError, handle_applescript_error
+from .error_handler import (
+    AppleScriptError,
+    AppleScriptTimeout,
+    FileOperationError,
+    handle_applescript_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +111,10 @@ class AppleScriptRunner:
         except subprocess.TimeoutExpired:
             if not self._probe_queue_ok():
                 AppleScriptRunner._queue_wedged = True
-                raise AppleScriptError(
+                raise AppleScriptTimeout(
                     f"osascript timed out after {effective_timeout:.0f}s. {_WEDGE_RECOVERY}"
                 ) from None
-            raise AppleScriptError(
+            raise AppleScriptTimeout(
                 f"osascript timed out after {effective_timeout:.0f}s. A modal dialog in "
                 "Keynote (save sheet, 'What's New' window, missing-font alert) may be "
                 "blocking automation - switch to Keynote and dismiss any open dialog."

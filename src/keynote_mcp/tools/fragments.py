@@ -19,6 +19,8 @@ per-element tools in ``content.py``/``objects.py`` and the batched
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any
 
 from ..utils import AppleScriptRunner, ParameterError, validate_number, validate_slide_number
@@ -58,23 +60,10 @@ RESOLVE_DOC = """
 # phantom and surfaced the text as slide.title instead. Same slide, two
 # numberings, and the offset changed with the layout - so an index taken from
 # one tool addressed a different element in the other. See docs/INDEX_CONTRACT.md.
-TEXT_ITEM_FILTER = """
-                    set defT to missing value
-                    set defB to missing value
-                    try
-                        set defT to default title item
-                    end try
-                    try
-                        set defB to default body item
-                    end try
-                    set titleShown to title showing
-                    set bodyShown to body showing
-                    set seenTitle to false
-                    set seenBody to false
-                    set realIndices to {}
-                    set realRoles to {}
-                    repeat with i from 1 to (count of text items)
-                        set ti to text item i
+# The predicate, shared by both ways of walking the text items below. `ti` is
+# the item being classified; defT/defB, titleShown/bodyShown and the seen flags
+# must already be set.
+_TEXT_ITEM_PREDICATE = """
                         set phantom to false
                         set role to ""
                         if defT is not missing value and ti is defT then
@@ -95,8 +84,49 @@ TEXT_ITEM_FILTER = """
                         if not phantom then
                             set end of realIndices to i
                             set end of realRoles to role
-                        end if
+                        end if"""
+
+TEXT_ITEM_FILTER = (
+    """
+                    set defT to missing value
+                    set defB to missing value
+                    try
+                        set defT to default title item
+                    end try
+                    try
+                        set defB to default body item
+                    end try
+                    set titleShown to title showing
+                    set bodyShown to body showing
+                    set seenTitle to false
+                    set seenBody to false
+                    set realIndices to {}
+                    set realRoles to {}
+                    repeat with i from 1 to (count of text items)
+                        set ti to text item i"""
+    + _TEXT_ITEM_PREDICATE
+    + """
                     end repeat"""
+)
+
+# The same filter over a list of text-item references fetched in one event
+# (`every text item of ...`), for readers that batch. Keynote returns a
+# placeholder's reference as `default title item of slide N`, so `ti is defT`
+# compares two local references with no Apple event; the app-side comparison
+# above costs one event per item. Needs tRefs, defT/defB and
+# titleShown/bodyShown set.
+TEXT_ITEM_CLASSIFY = (
+    """
+                    set seenTitle to false
+                    set seenBody to false
+                    set realIndices to {}
+                    set realRoles to {}
+                    repeat with i from 1 to (count of tRefs)
+                        set ti to item i of tRefs"""
+    + _TEXT_ITEM_PREDICATE
+    + """
+                    end repeat"""
+)
 
 
 # --- per-run text styling, read cheaply --------------------------------------
@@ -116,12 +146,9 @@ TEXT_ITEM_FILTER = """
 #
 # Emits: RUNSTART|end|font|size|r,g,b  per run, joined by RUNSEP.
 _RUN_SEP = "\x1d"
-TEXT_RUNS_FRAGMENT = """
-                            set runsOut to ""
-                            try
-                                set cols to color of every character of object text of ti
-                                set fnts to font of every character of object text of ti
-                                set szs to size of every character of object text of ti
+# Coalesces cols/fnts/szs (per-character lists already fetched) into runsOut.
+# Batched readers fetch the lists for every text item at once and run only this.
+TEXT_RUNS_COALESCE = """
                                 set charCount to count of cols
                                 if charCount > 0 then
                                     set runStart to 1
@@ -155,8 +182,19 @@ TEXT_RUNS_FRAGMENT = """
                                             end if
                                         end if
                                     end repeat
-                                end if
+                                end if"""
+
+TEXT_RUNS_FRAGMENT = (
+    """
+                            set runsOut to ""
+                            try
+                                set cols to color of every character of object text of ti
+                                set fnts to font of every character of object text of ti
+                                set szs to size of every character of object text of ti"""
+    + TEXT_RUNS_COALESCE
+    + """
                             end try"""
+)
 
 
 def exists_guard(as_type: str, index: int, slide_number: int) -> str:
@@ -511,6 +549,58 @@ def range_name(row1: int, col1: int, row2: int, col2: int) -> str:
     return f"{_column_letter(col1)}{row1}:{_column_letter(col2)}{row2}"
 
 
+_CELL_REF = re.compile(r"^([A-Z]{1,3})([1-9][0-9]{0,4})$")
+
+
+def parse_cell(ref: object, what: str = "cell") -> tuple[int, int]:
+    """A1-notation cell -> (row, column), 1-based. Case-insensitive."""
+    match = _CELL_REF.match(str(ref).strip().upper()) if isinstance(ref, str) else None
+    if not match:
+        raise ParameterError(f"{what}: {ref!r} is not a cell reference like 'B2'.")
+    col = 0
+    for letter in match.group(1):
+        col = col * 26 + (ord(letter) - ord("A") + 1)
+    return int(match.group(2)), col
+
+
+def parse_range(ref: object, what: str = "range") -> tuple[int, int, int, int]:
+    """'A1:C3' (or a single cell 'B2') -> (row1, col1, row2, col2), normalized
+    so row1 <= row2 and col1 <= col2."""
+    if not isinstance(ref, str):
+        raise ParameterError(f"{what}: {ref!r} is not a range like 'A1:C3'.")
+    first, sep, second = ref.partition(":")
+    r1, c1 = parse_cell(first, what)
+    r2, c2 = parse_cell(second, what) if sep else (r1, c1)
+    return min(r1, r2), min(c1, c2), max(r1, r2), max(c1, c2)
+
+
+def finite_cell_number(cell: object) -> bool:
+    """True for a number cell AppleScript can take as a literal.
+
+    NaN and infinity would interpolate as the bare identifiers ``nan``/``inf``
+    (an undefined-variable runtime error), and an int too large for a float
+    has no real form. Magnitude is otherwise unbounded: add_table never capped
+    it, and a cap here would make a spec that built before fail mid-batch.
+    """
+    try:
+        return math.isfinite(float(cell))  # type: ignore[arg-type]
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def cell_value_expr(argv: Argv, cell: object) -> str:
+    """AppleScript expression for a cell value. Numbers and booleans are
+    interpolated (so they stay numeric in Keynote); strings go through argv,
+    and a leading '=' makes them live formulas."""
+    if isinstance(cell, bool):
+        return "true" if cell else "false"
+    if isinstance(cell, (int, float)):
+        if not finite_cell_number(cell):
+            raise ParameterError(f"Invalid cell value: {cell!r}. Must be a finite number.")
+        return _fmt_num(cell)
+    return argv.ref(str(cell))
+
+
 def table_fragment(
     argv: Argv,
     tag: str,
@@ -564,13 +654,7 @@ def table_fragment(
         for c, cell in enumerate(row, start=1):
             if cell is None or cell == "":
                 continue
-            if isinstance(cell, bool):
-                value_expr = "true" if cell else "false"
-            elif isinstance(cell, (int, float)):
-                value_expr = _fmt_num(cell)
-            else:
-                value_expr = argv.ref(str(cell))
-            cell_sets.append(f"set value of cell {c} of row {r} to {value_expr}")
+            cell_sets.append(f"set value of cell {c} of row {r} to {cell_value_expr(argv, cell)}")
     if cell_sets:
         lines.append("tell newTable")
         lines += cell_sets

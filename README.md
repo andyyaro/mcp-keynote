@@ -130,15 +130,15 @@ coordinates.
 | Unsplash tools missing from tools/list | `UNSPLASH_KEY` not set | Set it in the MCP client config (opt-in feature) |
 | Build animations fail intermittently | Keynote must be frontmost; UI scripting is timing-sensitive | Retry once; keep Keynote visible and the screen unlocked while builds run |
 
-## Available Tools (59)
+## Available Tools (62)
 
 | Category | Tools |
 |----------|-------|
 | **Deck building** (2) | `build_deck` — an entire deck from one JSON spec or a markdown dialect (validated up front, per-element error isolation, one AppleScript session per ~5 slides, settled geometry reported, two-column auto-flow, styles); `describe_deck` — read a deck back into the same spec (diffable in git) |
-| **Presentation** (11) | create, open, save, close, list, set/get theme, info, slide size (get + live resize), document settings (slide numbers, autoplay/loop/restart) |
+| **Presentation** (11) | create (from an installed theme or any `.kth` file), open, save, close, list, set/get theme, info, slide size (get + live resize), document settings (slide numbers, autoplay/loop/restart) |
 | **Slides** (11) | add, delete, duplicate, move, select, count, layouts, slide info, transitions (all 43 effects), skip/unskip |
 | **Content** (22) | text boxes / titles / subtitles (font, color, size — exact placement, server-side centering), bullet & numbered lists, code blocks, quotes, theme placeholders (`set_slide_content`), images (with size + alt text), shapes with opacity, edit/move/resize/delete elements, speaker notes, clear slide, build-in animations |
-| **Native objects** (7) | tables (data, live `=SUM(…)` formulas, styled headers, column widths), charts (17 native types — bar/line/area/pie/scatter/stacked/3-D), lines, colored panels (rendered PNG — see below), per-range text styling (bold/color a word inside a box), replace image in place, rotation/reflection/lock |
+| **Native objects** (9) | tables (data, live `=SUM(…)` formulas, styled headers, column widths) and in-place table edits (values, resize, sort, merge, range styles, number formats), charts (17 native types — bar/line/area/pie/scatter/stacked/3-D), lines and styled connectors (colour, width, dash, arrowheads), colored panels (rendered PNG — see below), per-range text styling (bold/color a word inside a box), replace image in place, rotation/reflection/lock |
 | **Export** (4) | screenshot slide, PDF (slides / with-notes / handouts + quality), PPTX / QuickTime movie / HTML / per-slide images / Keynote 09 |
 | **Unsplash** (3, opt-in) | search, add to slide, random image (requires `UNSPLASH_KEY`) |
 

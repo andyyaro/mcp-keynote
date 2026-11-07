@@ -9,6 +9,7 @@ Everything here was probed live against Keynote 14.5 before being built
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 from mcp.types import TextContent, Tool
@@ -31,10 +32,15 @@ from .base import DocumentTargetedTools
 from .fragments import (
     RESOLVE_DOC,
     Argv,
+    _fmt_num,
+    cell_value_expr,
     chart_fragment,
     exists_guard,
     image_fragment,
     line_fragment,
+    parse_cell,
+    parse_range,
+    range_name,
     run_single_fragment,
     table_fragment,
 )
@@ -52,6 +58,46 @@ _STYLE_ELEMENT_MAP = {
     "shape": "shape",
     "line": "line",
 }
+
+# Table range enums: trusted literals, the only values interpolated.
+_TABLE_ALIGN_MAP = {
+    "left": "left",
+    "center": "center",
+    "right": "right",
+    "justify": "justify",
+    "auto": "auto align",
+}
+_TABLE_VALIGN_MAP = {"top": "top", "center": "center", "bottom": "bottom"}
+_TABLE_FORMAT_MAP = {
+    "automatic": "automatic",
+    "number": "number",
+    "currency": "currency",
+    "percent": "percent",
+    "scientific": "scientific",
+    "fraction": "fraction",
+    "text": "text",
+    "date_and_time": "date and time",
+    "duration": "duration",
+}
+# Keynote keeps at least one body row/column beside the header/footer counts.
+_MIN_BODY_ROWS = 1
+_MIN_BODY_COLUMNS = 1
+# Upper bound for one edit_table session, however many cells it writes.
+_EDIT_TABLE_MAX_TIMEOUT = 300.0
+
+_TABLE_STYLE_KEYS = frozenset(
+    {
+        "range",
+        "font_name",
+        "font_size",
+        "text_color",
+        "background_color",
+        "alignment",
+        "vertical_alignment",
+        "wrap",
+        "format",
+    }
+)
 
 _RANGE_UNIT_MAP = {
     "characters": "character",
@@ -134,6 +180,117 @@ class ObjectTools(DocumentTargetedTools):
                         "doc_name": _DOC_ARG,
                     },
                     "required": ["slide_number", "data"],
+                },
+            ),
+            Tool(
+                name="edit_table",
+                description=(
+                    "Edit an EXISTING native table in place: write cell values, "
+                    "grow or shrink it, change header/footer row counts, clear, "
+                    "sort, merge/unmerge, style ranges (font, size, text and "
+                    "background color, horizontal/vertical alignment, wrap, "
+                    "number format) and set column widths/row heights. Pass only "
+                    "what should change. Steps run in this order: size, header "
+                    "counts, clear, values, sort, unmerge, merge, styles, "
+                    "widths/heights; if one fails, the earlier ones stay applied "
+                    "and the reply names the failed step. Ranges use A1 notation "
+                    "('A1:C1', or 'B2' for one cell) and are checked against the "
+                    "table's size after resizing. Shrinking deletes rows/columns "
+                    "from the end, contents included. Columns added later do not "
+                    "pick up add_table's header colors: style them explicitly. "
+                    "table_index is the table's position among the slide's "
+                    "tables (see get_slide_content)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "slide_number": {"type": "integer", "description": "Slide number"},
+                        "table_index": {
+                            "type": "integer",
+                            "description": "1-based index among the slide's tables",
+                        },
+                        "values": {
+                            "type": "array",
+                            "items": {"type": "array"},
+                            "description": (
+                                "Rows of cell values written from start_cell. null "
+                                "leaves a cell unchanged, '' empties it, a string "
+                                "starting '=' is a formula. Rows may differ in length."
+                            ),
+                        },
+                        "start_cell": {
+                            "type": "string",
+                            "description": "Top-left cell for values (default 'A1')",
+                        },
+                        "row_count": {
+                            "type": "integer",
+                            "description": "New total row count, min 2 (optional)",
+                        },
+                        "column_count": {
+                            "type": "integer",
+                            "description": "New total column count, min 2 (optional)",
+                        },
+                        "header_rows": {
+                            "type": "integer",
+                            "description": "Number of header rows (optional)",
+                        },
+                        "header_columns": {
+                            "type": "integer",
+                            "description": "Number of header columns (optional)",
+                        },
+                        "footer_rows": {
+                            "type": "integer",
+                            "description": "Number of footer rows (optional)",
+                        },
+                        "clear": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ranges to clear, contents AND formatting",
+                        },
+                        "sort": {
+                            "type": "object",
+                            "description": (
+                                "Sort body rows: {column: 'B' or 2, direction: "
+                                "'ascending'|'descending' (default ascending), rows?: "
+                                "'A2:C9' to limit the sort}. Header rows stay in place."
+                            ),
+                        },
+                        "unmerge": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ranges whose merged cells are split",
+                        },
+                        "merge": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ranges to merge, e.g. ['A1:C1']",
+                        },
+                        "styles": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": (
+                                "Range styles: [{range: 'A1:C1', font_name?, "
+                                "font_size?, text_color?, background_color? (#RRGGBB "
+                                "or r,g,b), alignment? (left/center/right/justify/"
+                                "auto), vertical_alignment? (top/center/bottom), "
+                                "wrap? (bool), format? (automatic/number/currency/"
+                                "percent/scientific/fraction/text/date_and_time/"
+                                "duration)}]"
+                            ),
+                        },
+                        "column_widths": {
+                            "type": "array",
+                            "items": {"type": ["number", "null"]},
+                            "description": "Per-column widths in points; null skips",
+                        },
+                        "row_heights": {
+                            "type": "array",
+                            "items": {"type": ["number", "null"]},
+                            "description": "Per-row heights in points; null skips",
+                        },
+                        "doc_name": _DOC_ARG,
+                    },
+                    "required": ["slide_number", "table_index"],
                 },
             ),
             Tool(
@@ -503,6 +660,331 @@ class ObjectTools(DocumentTargetedTools):
             ]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to add table: {e}")]
+
+    async def edit_table(
+        self,
+        slide_number: int,
+        table_index: int,
+        values: list[list[object]] | None = None,
+        start_cell: str = "A1",
+        row_count: int | None = None,
+        column_count: int | None = None,
+        header_rows: int | None = None,
+        header_columns: int | None = None,
+        footer_rows: int | None = None,
+        clear: list[str] | None = None,
+        sort: dict[str, object] | None = None,
+        unmerge: list[str] | None = None,
+        merge: list[str] | None = None,
+        styles: list[dict[str, object]] | None = None,
+        column_widths: list[float | None] | None = None,
+        row_heights: list[float | None] | None = None,
+        doc_name: str = "",
+    ) -> list[TextContent]:
+        try:
+            validate_slide_number(slide_number)
+            validate_index(table_index, "table_index")
+            for name, count in (("row_count", row_count), ("column_count", column_count)):
+                if count is not None:
+                    validate_number(count, name, minimum=2, maximum=10000)
+            for name, count in (
+                ("header_rows", header_rows),
+                ("header_columns", header_columns),
+                ("footer_rows", footer_rows),
+            ):
+                if count is not None:
+                    validate_number(count, name, minimum=0, maximum=10000)
+            if not any(
+                v is not None
+                for v in (
+                    values,
+                    row_count,
+                    column_count,
+                    header_rows,
+                    header_columns,
+                    footer_rows,
+                    clear,
+                    sort,
+                    unmerge,
+                    merge,
+                    styles,
+                    column_widths,
+                    row_heights,
+                )
+            ):
+                raise ParameterError("Nothing to edit: pass at least one change.")
+
+            doc_name = self._doc(doc_name)
+            # Ranges are checked against the size the table will have, which
+            # needs its current size first.
+            current = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {RESOLVE_DOC}
+                        {exists_guard("table", table_index, slide_number)}
+                        tell table {table_index} of slide {slide_number} of targetDoc
+                            return (row count as text) & "," & (column count as text) & ¬
+                                "," & (header row count as text) & "," & ¬
+                                (header column count as text) & "," & ¬
+                                (footer row count as text)
+                        end tell
+                    end tell
+                end run
+                """,
+                doc_name,
+            )
+            cur_rows, cur_cols, cur_hr, cur_hc, cur_fr = (int(v) for v in current.split(","))
+            rows = int(row_count) if row_count is not None else cur_rows
+            cols = int(column_count) if column_count is not None else cur_cols
+            # Header/footer counts are checked against the size the table will
+            # have, like every range: Keynote either refuses or clamps a count
+            # the table cannot hold, and the reply must not claim a count the
+            # document does not have.
+            new_hr = int(header_rows) if header_rows is not None else cur_hr
+            new_hc = int(header_columns) if header_columns is not None else cur_hc
+            new_fr = int(footer_rows) if footer_rows is not None else cur_fr
+            if new_hr + new_fr > rows - _MIN_BODY_ROWS:
+                raise ParameterError(
+                    f"{new_hr} header row(s) + {new_fr} footer row(s) leave fewer than "
+                    f"{_MIN_BODY_ROWS} body row(s) in a {rows}-row table."
+                )
+            if new_hc > cols - _MIN_BODY_COLUMNS:
+                raise ParameterError(
+                    f"{new_hc} header column(s) leave fewer than {_MIN_BODY_COLUMNS} body "
+                    f"column(s) in a {cols}-column table."
+                )
+
+            def in_bounds(ref: object, what: str) -> str:
+                r1, c1, r2, c2 = parse_range(ref, what)
+                if r2 > rows or c2 > cols:
+                    raise ParameterError(f"{what}: {ref!r} is outside the {rows}x{cols} table.")
+                return range_name(r1, c1, r2, c2)
+
+            argv = Argv()
+            argv.ref(doc_name)
+            steps: list[tuple[str, list[str]]] = []
+            done: list[str] = []
+
+            size_ops = []
+            if row_count is not None:
+                size_ops.append(f"set row count to {rows}")
+            if column_count is not None:
+                size_ops.append(f"set column count to {cols}")
+            counts = [
+                f"set {prop} to {int(val)}"
+                for prop, val in (
+                    ("header row count", header_rows),
+                    ("header column count", header_columns),
+                    ("footer row count", footer_rows),
+                )
+                if val is not None
+            ]
+            shrinking = rows < cur_rows or cols < cur_cols
+            for kind in ("counts", "size") if shrinking else ("size", "counts"):
+                if kind == "size" and size_ops:
+                    steps.append(("size", size_ops))
+                    done.append(f"size {cur_rows}x{cur_cols} -> {rows}x{cols}")
+                elif kind == "counts" and counts:
+                    steps.append(("header counts", counts))
+
+            for i, ref in enumerate(clear or []):
+                name = in_bounds(ref, f"clear[{i}]")
+                steps.append((f"clear {name}", [f'clear range "{name}"']))
+                done.append(f"cleared {name}")
+
+            if values is not None:
+                if not isinstance(values, list) or not all(isinstance(r, list) for r in values):
+                    raise ParameterError("values must be a list of rows (lists).")
+                r0, c0 = parse_cell(start_cell or "A1", "start_cell")
+                ops, written = [], 0
+                for dr, row in enumerate(values):
+                    for dc, cell in enumerate(row):
+                        if cell is None:
+                            continue
+                        r, c = r0 + dr, c0 + dc
+                        if r > rows or c > cols:
+                            raise ParameterError(
+                                f"values[{dr}][{dc}] lands on "
+                                f"{range_name(r, c, r, c).partition(':')[0]} outside the {rows}x{cols} table; grow it with "
+                                "row_count/column_count."
+                            )
+                        expr = "missing value" if cell == "" else cell_value_expr(argv, cell)
+                        ops.append(f"set value of cell {c} of row {r} to {expr}")
+                        written += 1
+                if ops:
+                    steps.append(("values", ops))
+                done.append(f"{written} cell(s) written")
+
+            if sort is not None:
+                if not isinstance(sort, dict) or "column" not in sort:
+                    raise ParameterError("sort needs {column: 'B' or 2, direction?, rows?}.")
+                unknown = set(sort) - {"column", "direction", "rows"}
+                if unknown:
+                    raise ParameterError(f"sort: unknown keys {sorted(unknown)}.")
+                col_ref = sort["column"]
+                if isinstance(col_ref, str):
+                    if not re.fullmatch(r"[A-Za-z]{1,3}", col_ref.strip()):
+                        raise ParameterError(
+                            f"sort.column must be a column letter or number, got {col_ref!r}."
+                        )
+                    _, sort_col = parse_cell(f"{col_ref.strip()}1", "sort.column")
+                else:
+                    validate_index(col_ref, "sort.column")  # type: ignore[arg-type]
+                    sort_col = int(col_ref)  # type: ignore[call-overload]
+                if sort_col > cols:
+                    raise ParameterError(f"sort.column {col_ref!r} is outside the table.")
+                direction = str(sort.get("direction", "ascending"))
+                if direction not in ("ascending", "descending"):
+                    raise ParameterError("sort.direction must be 'ascending' or 'descending'.")
+                clause = f"sort by column {sort_col} direction {direction}"
+                if sort.get("rows"):
+                    clause += f' in rows (range "{in_bounds(sort["rows"], "sort.rows")}")'
+                steps.append(("sort", [clause]))
+                done.append(f"sorted by column {sort_col} {direction}")
+
+            for label, refs, verb in (("unmerge", unmerge, "unmerge"), ("merge", merge, "merge")):
+                for i, ref in enumerate(refs or []):
+                    name = in_bounds(ref, f"{label}[{i}]")
+                    steps.append((f"{verb} {name}", [f'{verb} range "{name}"']))
+                    done.append(f"{verb}d {name}")
+
+            for i, st in enumerate(styles or []):
+                where = f"styles[{i}]"
+                if not isinstance(st, dict) or "range" not in st:
+                    raise ParameterError(f"{where} needs a 'range'.")
+                unknown = set(st) - _TABLE_STYLE_KEYS
+                if unknown:
+                    raise ParameterError(
+                        f"{where}: unknown keys {sorted(unknown)}; accepted: "
+                        f"{sorted(_TABLE_STYLE_KEYS)}."
+                    )
+                name = in_bounds(st["range"], f"{where}.range")
+                target = f'range "{name}"'
+                ops = []
+                if st.get("font_name"):
+                    ops.append(f"set font name of {target} to {argv.ref(str(st['font_name']))}")
+                if st.get("font_size") is not None:
+                    size = st["font_size"]
+                    validate_number(size, f"{where}.font_size", minimum=1, maximum=200)  # type: ignore[arg-type]
+                    ops.append(f"set font size of {target} to {_fmt_num(float(size))}")  # type: ignore[arg-type]
+                for key, prop in (
+                    ("text_color", "text color"),
+                    ("background_color", "background color"),
+                ):
+                    if st.get(key):
+                        rgb = parse_color(str(st[key]))
+                        if rgb:
+                            ops.append(
+                                f"set {prop} of {target} to {{{rgb[0]}, {rgb[1]}, {rgb[2]}}}"
+                            )
+                for key, prop, mapping in (
+                    ("alignment", "alignment", _TABLE_ALIGN_MAP),
+                    ("vertical_alignment", "vertical alignment", _TABLE_VALIGN_MAP),
+                    ("format", "format", _TABLE_FORMAT_MAP),
+                ):
+                    if st.get(key) is not None:
+                        if st[key] not in mapping:
+                            raise ParameterError(
+                                f"{where}.{key}: {st[key]!r}; valid: {sorted(mapping)}."
+                            )
+                        ops.append(f"set {prop} of {target} to {mapping[str(st[key])]}")
+                if st.get("wrap") is not None:
+                    if not isinstance(st["wrap"], bool):
+                        raise ParameterError(f"{where}.wrap must be true or false.")
+                    ops.append(f"set text wrap of {target} to {'true' if st['wrap'] else 'false'}")
+                if not ops:
+                    raise ParameterError(f"{where} sets nothing besides its range.")
+                steps.append((f"style {name}", ops))
+                done.append(f"styled {name}")
+
+            for label, sizes, limit, element in (
+                ("column_widths", column_widths, cols, "column"),
+                ("row_heights", row_heights, rows, "row"),
+            ):
+                if not sizes:
+                    continue
+                if len(sizes) > limit:
+                    raise ParameterError(
+                        f"{label} has {len(sizes)} entries for {limit} {element}s."
+                    )
+                prop = "width" if element == "column" else "height"
+                ops = []
+                for n, size in enumerate(sizes, start=1):
+                    if size is not None:
+                        validate_number(size, f"{label}[{n - 1}]", minimum=1)
+                        ops.append(f"set {prop} of {element} {n} to {_fmt_num(size)}")
+                if ops:
+                    steps.append((label, ops))
+                    done.append(f"{label} set")
+
+            if not steps:
+                raise ParameterError("Nothing to edit: every change passed was empty.")
+            body = []
+            n_ops = 0
+            for label, ops in steps:
+                n_ops += len(ops)
+                # Labels are built from validated integers and literals only.
+                body.append(f'set stepName to "{label}"')
+                body += ops
+            result = self.runner.run(
+                f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {RESOLVE_DOC}
+                        set targetTable to table {table_index} of slide {slide_number} of targetDoc
+                        set stepName to ""
+                        try
+                            tell targetTable
+                                {chr(10).join(body)}
+                            end tell
+                        on error errMsg number errNum
+                            error "step '" & stepName & "' failed; the steps before it, " & ¬
+                                "and any part of it already done, stayed applied: " & ¬
+                                errMsg number errNum
+                        end try
+                        set p to position of targetTable
+                        return ((row count of targetTable) as text) & "," & ¬
+                            ((column count of targetTable) as text) & "|" & ¬
+                            ((item 1 of p) as integer as text) & "," & ¬
+                            ((item 2 of p) as integer as text) & "|" & ¬
+                            ((width of targetTable) as integer as text) & "x" & ¬
+                            ((height of targetTable) as integer as text) & "|" & ¬
+                            ((header row count of targetTable) as text) & "," & ¬
+                            ((header column count of targetTable) as text) & "," & ¬
+                            ((footer row count of targetTable) as text)
+                    end tell
+                end run
+                """,
+                *argv.values,
+                # One Apple event per op, ~17 ms each on macOS 27; the default
+                # 30 s would cut a large values write off part-way.
+                timeout=min(_EDIT_TABLE_MAX_TIMEOUT, 30.0 + 0.05 * n_ops),
+            )
+            dims, pos, size, got_counts = result.split("|")
+            if counts:
+                got = dict(
+                    zip(
+                        ("header rows", "header columns", "footer rows"),
+                        got_counts.split(","),
+                        strict=True,
+                    )
+                )
+                done.append(", ".join(f"{k} {v}" for k, v in got.items()))
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Edited table {table_index} on slide {slide_number}: "
+                        f"{'; '.join(done)}. Now {dims.replace(',', 'x')} at "
+                        f"({pos.replace(',', ', ')}), size {size}"
+                    ),
+                )
+            ]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Failed to edit table: {e}")]
 
     async def add_chart(
         self,

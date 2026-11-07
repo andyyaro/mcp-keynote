@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`edit_table`** edits a native table in place: cell values (null leaves a
+  cell alone, '' empties it, a leading '=' makes a formula), row and column
+  count, header/footer counts, clear, sort, merge/unmerge, range styles (font,
+  size, text and background colour, horizontal/vertical alignment, wrap,
+  number format), column widths and row heights. Ranges, and the header/footer
+  counts (at least one body row and column must remain), are checked against
+  the table's post-resize size before any edit reaches Keynote, and the reply
+  reports the counts read back from the table, not the ones requested. Steps run in a
+  fixed order, and a failing step is named in the reply along with the fact
+  that earlier steps stayed applied. Probed on Keynote 15.3.1. The live check
+  renders a merged, recoloured, centred header and measures that its text
+  sits over the table's centre; an unmerged A1 would put it over column A.
+- **`theme_file`** on `create_presentation`, and as a `build_deck` spec and
+  frontmatter key, builds a document from a `.kth` that is not installed, at
+  any path, a shared Google Drive folder included. The server copies the file
+  into Keynote's sandbox container first (Keynote reading a file outside it
+  risks the same AppleEvent wedge as `open`) and deletes the copy once the
+  document is saved. The copy goes into the container of the Keynote that
+  `tell application "Keynote"` actually drives (14.x and 15.x have different
+  bundle ids, and both containers can exist on one Mac), and a copy that fails
+  part-way is removed too. `build_deck` keeps the theme's own slide size unless the
+  spec sets one; the style's default size would otherwise rescale every
+  layout.
 - **The launch film.** A 67-second film of one call building a whole deck: the spec checked
   before anything is created, text passed to AppleScript as arguments, native tables, charts and
   exports, and `describe_deck` reading the deck back. It credits easychen's original keynote-mcp
@@ -16,6 +39,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   [watch page](https://andyyaro.github.io/mcp-keynote/film.html), with captions and a transcript.
   Its source is in [media/launch-film/](media/launch-film/); the MP4 is a release asset, not in
   git, and [film.yml](.github/workflows/film.yml) publishes the page to GitHub Pages.
+
+### Changed
+
+- `build_deck`'s setup session reads the document size back, and layout flow
+  uses that size instead of the requested one.
+- `describe_deck` and `get_slide_content` read a class at a time (one Apple
+  event per property for a span of slides) instead of element by element. On
+  macOS 27, where an Apple event costs ~17 ms, a full 35-slide describe went
+  from 117-129 s to 11.9 s. The element-by-element reads stay as fallbacks for
+  a batched script that errors, but not for one that times out: Keynote is
+  then wedged or still busy, and a second long read only doubles the wait.
+  A sparse `slide_range` is read in spans of at most 20 slides, never the
+  whole stretch between its ends.
+- The build-animation tools find the Animate inspector by its "Build In" tab,
+  which Keynote 15 moved into a splitter group, and open the Animate pane with
+  the toolbar button, falling back to the View menu. They leave it through the
+  View menu first and use the toolbar only if Animate is still selected: on
+  Keynote 14.5, leaving by the toolbar put the next `add_table` at (960, 100),
+  29x38 points, whatever it asked for, every time. The harness's rendered
+  table-header check caught it.
+
+### Fixed
+
+- `add_table` and `build_deck` tables accept any finite number again; a cap at
+  ±1e15 had come in with `edit_table`'s shared cell code. NaN and infinity,
+  which would reach AppleScript as undefined identifiers, are refused, and in
+  `build_deck` by the spec validator, before anything is built.
+- `build_deck` checks the default layout too. A slide that gives no layout
+  gets "Blank", which a theme file need not have; such a spec is now refused
+  before anything is built, naming the slides and the theme's layouts, instead
+  of failing those slides' sessions mid-build. Layout errors name a theme file
+  by its file name rather than as theme ''.
 
 ## [4.1.0] - 2026-07-26
 

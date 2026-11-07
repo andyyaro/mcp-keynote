@@ -8,6 +8,7 @@ from mcp.types import TextContent, Tool
 from ..utils import (
     ELEMENT_TYPE_MAP,
     AppleScriptRunner,
+    AppleScriptTimeout,
     ParameterError,
     parse_color,
     validate_coordinates,
@@ -20,6 +21,7 @@ from ..utils import (
 )
 from .base import DocumentTargetedTools
 from .fragments import (
+    TEXT_ITEM_CLASSIFY,
     TEXT_ITEM_FILTER,
     Argv,
     exists_guard,
@@ -47,6 +49,85 @@ _RESOLVE_DOC = """
 # deliberate delays, so they need more headroom than plain AppleScript.
 _UI_SCRIPT_TIMEOUT = 60.0
 
+# Resolves `insp`, the element that holds the Animate inspector's controls,
+# found by its "Build In" tab. Keynote 14.x puts them directly on the window;
+# 15.x nests them in splitter group 1, where the Format pane also has a radio
+# group, so the tab name is what tells the panes apart. 15.x also draws the
+# pane late, so poll for up to 3 s. Must run inside
+# `tell application process "Keynote"`.
+_FIND_INSPECTOR = """
+                            set targetWin to window 1
+                            set insp to missing value
+                            repeat 30 times
+                                try
+                                    if exists (first radio button of radio group 1 of ¬
+                                        splitter group 1 of targetWin ¬
+                                        whose description is "Build In") then ¬
+                                        set insp to splitter group 1 of targetWin
+                                end try
+                                if insp is missing value then
+                                    try
+                                        if exists radio group 1 of targetWin then set insp to targetWin
+                                    end try
+                                end if
+                                if insp is not missing value then exit repeat
+                                delay 0.1
+                            end repeat
+                            if insp is missing value then error "Could not find the Animate inspector"
+"""
+
+
+def _show_inspector_pane(pane: str) -> str:
+    """AppleScript that switches the inspector to ``pane`` ("Format"/"Animate").
+
+    Clicks the toolbar's pane button: on 15.x the View > Inspector menu item
+    stops switching panes after the first use. The menu is the fallback for
+    toolbars without the button. ``pane`` is a trusted literal, never user text.
+    """
+    return f"""
+                    tell application "System Events"
+                        tell application process "Keynote"
+                            try
+                                click (first radio button of group 1 of toolbar 1 of window 1 ¬
+                                    whose description is "{pane}")
+                            on error
+                                click menu item "{pane}" of menu 1 of menu item "Inspector" of ¬
+                                    menu 1 of menu bar item "View" of menu bar 1
+                            end try
+                        end tell
+                    end tell"""
+
+
+# Leaves the Animate pane: View menu first, toolbar if Animate is still the
+# selected pane half a second later. See ContentTools._restore_format_pane.
+_RESTORE_FORMAT_PANE = """
+                    tell application "System Events"
+                        tell application process "Keynote"
+                            try
+                                click menu item "Format" of menu 1 of menu item "Inspector" of ¬
+                                    menu 1 of menu bar item "View" of menu bar 1
+                            end try
+                            set stillAnimate to false
+                            repeat 5 times
+                                set stillAnimate to false
+                                try
+                                    if (value of (first radio button of group 1 of toolbar 1 of ¬
+                                        window 1 whose description is "Animate")) as integer is 1 ¬
+                                        then set stillAnimate to true
+                                end try
+                                if not stillAnimate then exit repeat
+                                delay 0.1
+                            end repeat
+                            if stillAnimate then
+                                click (first radio button of group 1 of toolbar 1 of window 1 ¬
+                                    whose description is "Format")
+                                -- The click returns before Keynote has settled;
+                                -- on 14.5 a 0.8 s pause was enough.
+                                delay 1
+                            end if
+                        end tell
+                    end tell"""
+
 
 # One consistent routing signal on every element-creating primitive: with 59
 # tools on the surface, a model asked for a 15-slide deck will otherwise chain
@@ -67,6 +148,160 @@ _INDEX_TAG = (
     "is merely STALE still addresses a real - and different - element, so re-read "
     "the slide after anything that deletes or adds elements."
 )
+
+
+def _slide_content_script(slide_number: int) -> str:
+    """get_slide_content element by element: the fallback for the batched read.
+
+    Sends one app-side identity comparison per text item and three or four
+    property reads per element.
+    """
+    filter_block = TEXT_ITEM_FILTER
+    return f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        tell slide {slide_number} of targetDoc
+                            set rawTextCount to count of text items
+                            set imageCount to count of images
+                            set shapeCount to count of shapes
+                            set tableCount to count of tables
+
+                            -- Placeholder filtering is defined ONCE, in
+                            -- fragments.TEXT_ITEM_FILTER, so this reader and
+                            -- describe_deck cannot disagree about which text
+                            -- item is number i. See docs/INDEX_CONTRACT.md.
+{filter_block}
+
+                            set output to "text_items:" & (count of realIndices) & ¬
+                                "|images:" & imageCount ¬
+                                & "|shapes:" & shapeCount & "|tables:" & tableCount
+
+                            repeat with n from 1 to (count of realIndices)
+                                set i to (item n of realIndices) as integer
+                                set role to item n of realRoles
+                                set ti to text item i
+                                set pos to position of ti
+                                set output to output & "|||TEXT:" & i & ":::" & ¬
+                                    (object text of ti) & ":::" & (item 1 of pos) & "," & ¬
+                                    (item 2 of pos) & ":::" & (width of ti) & "," & ¬
+                                    (height of ti) & ":::role:" & role
+                            end repeat
+
+                            repeat with i from 1 to imageCount
+                                set img to image i
+                                set pos to position of img
+                                set output to output & "|||IMAGE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of img) & "," & (height of img)
+                            end repeat
+
+                            repeat with i from 1 to shapeCount
+                                set sh to shape i
+                                set pos to position of sh
+                                set output to output & "|||SHAPE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of sh) & "," & (height of sh) & ":::opacity:" & ¬
+                                    (opacity of sh)
+                            end repeat
+
+                            repeat with i from 1 to tableCount
+                                set tb to table i
+                                set pos to position of tb
+                                set output to output & "|||TABLE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of tb) & "," & (height of tb)
+                            end repeat
+
+                            return output
+                        end tell
+                    end tell
+                end run
+    """
+
+
+def _slide_content_script_batched(slide_number: int) -> str:
+    """get_slide_content in a fixed number of Apple events, same output bytes.
+
+    Probed on Keynote 15.3.1 (slide with 5 text items, 4 images, 1 table):
+    1.3 s element by element. Keynote charges each geometry read per call,
+    so `properties of every <class>` replaces the per-element reads (images
+    fail it with -10000 and keep three list reads), and placeholders are
+    found by comparing the references `every text item` returns, locally,
+    with TEXT_ITEM_CLASSIFY. A failed read or a list whose length disagrees
+    fails the script, and the caller falls back to _slide_content_script.
+    """
+    return f"""
+                on run argv
+                    set docName to item 1 of argv
+                    tell application "Keynote"
+                        {_RESOLVE_DOC}
+                        tell slide {slide_number} of targetDoc
+                            set defT to missing value
+                            set defB to missing value
+                            try
+                                set defT to default title item
+                            end try
+                            try
+                                set defB to default body item
+                            end try
+                            set titleShown to title showing
+                            set bodyShown to body showing
+                            set tRefs to every text item
+                            set txProps to properties of every text item
+                            if (count of txProps) is not (count of tRefs) then error "text item count"
+                            set imPos to position of every image
+                            set imW to width of every image
+                            set imH to height of every image
+                            set shProps to properties of every shape
+                            set tbProps to properties of every table
+{TEXT_ITEM_CLASSIFY}
+
+                            set output to "text_items:" & (count of realIndices) & ¬
+                                "|images:" & (count of imPos) ¬
+                                & "|shapes:" & (count of shProps) & "|tables:" & (count of tbProps)
+
+                            repeat with n from 1 to (count of realIndices)
+                                set i to (item n of realIndices) as integer
+                                set role to item n of realRoles
+                                set rec to item i of txProps
+                                set pos to position of rec
+                                set output to output & "|||TEXT:" & i & ":::" & ¬
+                                    (object text of rec) & ":::" & (item 1 of pos) & "," & ¬
+                                    (item 2 of pos) & ":::" & (width of rec) & "," & ¬
+                                    (height of rec) & ":::role:" & role
+                            end repeat
+
+                            repeat with i from 1 to (count of imPos)
+                                set pos to item i of imPos
+                                set output to output & "|||IMAGE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (item i of imW) & "," & (item i of imH)
+                            end repeat
+
+                            repeat with i from 1 to (count of shProps)
+                                set rec to item i of shProps
+                                set pos to position of rec
+                                set output to output & "|||SHAPE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of rec) & "," & (height of rec) & ":::opacity:" & ¬
+                                    (opacity of rec)
+                            end repeat
+
+                            repeat with i from 1 to (count of tbProps)
+                                set rec to item i of tbProps
+                                set pos to position of rec
+                                set output to output & "|||TABLE:" & i & ":::" & ¬
+                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
+                                    (width of rec) & "," & (height of rec)
+                            end repeat
+
+                            return output
+                        end tell
+                    end tell
+                end run
+                """
 
 
 class ContentTools(DocumentTargetedTools):
@@ -1138,76 +1373,21 @@ class ContentTools(DocumentTargetedTools):
     # --- Read / Edit / Delete tools ---
 
     async def get_slide_content(self, slide_number: int, doc_name: str = "") -> list[TextContent]:
-        """Get all elements on a slide."""
+        """Get all elements on a slide.
+
+        The batched read runs first; if it fails, the element-by-element read
+        it replaces runs instead and supplies the reply or the error.
+        """
         try:
             validate_slide_number(slide_number)
             doc_name = self._doc(doc_name)
-            filter_block = TEXT_ITEM_FILTER
-            result = self.runner.run(
-                f"""
-                on run argv
-                    set docName to item 1 of argv
-                    tell application "Keynote"
-                        {_RESOLVE_DOC}
-                        tell slide {slide_number} of targetDoc
-                            set rawTextCount to count of text items
-                            set imageCount to count of images
-                            set shapeCount to count of shapes
-                            set tableCount to count of tables
-
-                            -- Placeholder filtering is defined ONCE, in
-                            -- fragments.TEXT_ITEM_FILTER, so this reader and
-                            -- describe_deck cannot disagree about which text
-                            -- item is number i. See docs/INDEX_CONTRACT.md.
-{filter_block}
-
-                            set output to "text_items:" & (count of realIndices) & ¬
-                                "|images:" & imageCount ¬
-                                & "|shapes:" & shapeCount & "|tables:" & tableCount
-
-                            repeat with n from 1 to (count of realIndices)
-                                set i to (item n of realIndices) as integer
-                                set role to item n of realRoles
-                                set ti to text item i
-                                set pos to position of ti
-                                set output to output & "|||TEXT:" & i & ":::" & ¬
-                                    (object text of ti) & ":::" & (item 1 of pos) & "," & ¬
-                                    (item 2 of pos) & ":::" & (width of ti) & "," & ¬
-                                    (height of ti) & ":::role:" & role
-                            end repeat
-
-                            repeat with i from 1 to imageCount
-                                set img to image i
-                                set pos to position of img
-                                set output to output & "|||IMAGE:" & i & ":::" & ¬
-                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
-                                    (width of img) & "," & (height of img)
-                            end repeat
-
-                            repeat with i from 1 to shapeCount
-                                set sh to shape i
-                                set pos to position of sh
-                                set output to output & "|||SHAPE:" & i & ":::" & ¬
-                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
-                                    (width of sh) & "," & (height of sh) & ":::opacity:" & ¬
-                                    (opacity of sh)
-                            end repeat
-
-                            repeat with i from 1 to tableCount
-                                set tb to table i
-                                set pos to position of tb
-                                set output to output & "|||TABLE:" & i & ":::" & ¬
-                                    (item 1 of pos) & "," & (item 2 of pos) & ":::" & ¬
-                                    (width of tb) & "," & (height of tb)
-                            end repeat
-
-                            return output
-                        end tell
-                    end tell
-                end run
-                """,
-                doc_name,
-            )
+            try:
+                result = self.runner.run(_slide_content_script_batched(slide_number), doc_name)
+            except AppleScriptTimeout:
+                raise  # retrying element by element would only double the wait
+            except Exception:
+                logger.debug("Batched get_slide_content failed; reading per element", exc_info=True)
+                result = self.runner.run(_slide_content_script(slide_number), doc_name)
             return [TextContent(type="text", text=result)]
         except Exception as e:
             return [TextContent(type="text", text=f"Failed to get slide content: {e}")]
@@ -1636,19 +1816,18 @@ class ContentTools(DocumentTargetedTools):
         ``make new line`` fails DETERMINISTICALLY with -10000 "AppleEvent
         handler failed" (verified live; other make-new classes still work).
         Best-effort: UI state must never fail the build call itself.
+
+        The View menu goes first and the toolbar only if the Animate pane is
+        still up afterwards. After add_build_in or add_builds_to_slide on
+        Keynote 14.5, leaving Animate by a toolbar click put the next table at
+        (960, 100), 29x38 points, whatever its properties asked for, every
+        time; the menu click (and a pause of 0.8 s) leaves it right. On 15.x
+        the menu stops switching panes after the first use, which is what the
+        toolbar fallback is for; it waits a second after its click. The same
+        symptom is what made the rendered table-header check flaky on 15.3.1.
         """
         try:
-            self.runner.run(
-                """
-                tell application "System Events"
-                    tell application process "Keynote"
-                        click menu item "Format" of menu 1 of menu item "Inspector" of ¬
-                            menu 1 of menu bar item "View" of menu bar 1
-                    end tell
-                end tell
-                """,
-                timeout=10.0,
-            )
+            self.runner.run(_RESTORE_FORMAT_PANE, timeout=10.0)
         except Exception:
             logger.debug("Could not restore the Format inspector pane", exc_info=True)
 
@@ -1696,19 +1875,13 @@ class ContentTools(DocumentTargetedTools):
                     delay 0.5
 
                     -- Step 2: Open Animate inspector
-                    tell application "System Events"
-                        tell application process "Keynote"
-                            click menu item "Animate" of menu 1 of menu item "Inspector" of ¬
-                                menu 1 of menu bar item "View" of menu bar 1
-                        end tell
-                    end tell
+{_show_inspector_pane("Animate")}
                     delay 0.5
 
                     -- Step 3: Click Build In tab (radio button 1 = Build In)
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            click radio button 1 of radio group 1 of targetWin
+{_FIND_INSPECTOR}                            click radio button 1 of radio group 1 of insp
                         end tell
                     end tell
                     delay 0.3
@@ -1716,22 +1889,21 @@ class ContentTools(DocumentTargetedTools):
                     -- Step 4: Click "Add an Effect" or "Change" button
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            set btnName to ""
+{_FIND_INSPECTOR}                            set btnName to ""
                             try
-                                get button "Add an Effect" of targetWin
+                                get button "Add an Effect" of insp
                                 set btnName to "Add an Effect"
                             end try
                             if btnName is "" then
                                 try
-                                    get button "Change" of targetWin
+                                    get button "Change" of insp
                                     set btnName to "Change"
                                 end try
                             end if
                             if btnName is "" then
                                 error "Could not find Add an Effect or Change button"
                             end if
-                            click button btnName of targetWin
+                            click button btnName of insp
                         end tell
                     end tell
                     -- MUST break out of tell block to let Keynote show the popover
@@ -1740,14 +1912,18 @@ class ContentTools(DocumentTargetedTools):
                     -- Select effect from popover
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            set po to missing value
+{_FIND_INSPECTOR}                            set po to missing value
                             try
-                                set po to pop over 1 of button "Add an Effect" of targetWin
+                                set po to pop over 1 of button "Add an Effect" of insp
                             end try
                             if po is missing value then
                                 try
-                                    set po to pop over 1 of button "Change" of targetWin
+                                    set po to pop over 1 of button "Change" of insp
+                                end try
+                            end if
+                            if po is missing value then
+                                try
+                                    set po to pop over 1 of insp
                                 end try
                             end if
                             if po is missing value then
@@ -1767,9 +1943,8 @@ class ContentTools(DocumentTargetedTools):
                     if deliveryName is not "All at Once" then
                         tell application "System Events"
                             tell application process "Keynote"
-                                set targetWin to window 1
-                                set deliveryPopup to pop up button 3 of ¬
-                                    scroll area 1 of targetWin
+{_FIND_INSPECTOR}                                set deliveryPopup to pop up button 3 of ¬
+                                    scroll area 1 of insp
                                 click deliveryPopup
                                 delay 0.3
                                 click menu item deliveryName of menu 1 of deliveryPopup
@@ -1827,28 +2002,22 @@ class ContentTools(DocumentTargetedTools):
                     delay 0.5
 
                     -- Open Animate inspector, Build In tab
-                    tell application "System Events"
-                        tell application process "Keynote"
-                            click menu item "Animate" of menu 1 of menu item "Inspector" of ¬
-                                menu 1 of menu bar item "View" of menu bar 1
-                        end tell
-                    end tell
+{_show_inspector_pane("Animate")}
                     delay 0.5
 
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            click radio button 1 of radio group 1 of targetWin
+{_FIND_INSPECTOR}                            click radio button 1 of radio group 1 of insp
                             delay 0.3
 
                             -- "Change" button means a build exists
                             try
-                                get button "Change" of targetWin
+                                get button "Change" of insp
                             on error
                                 return "no_build"
                             end try
 
-                            click button "Change" of targetWin
+                            click button "Change" of insp
                         end tell
                     end tell
                     -- MUST break out of tell block to let Keynote show the popover
@@ -1857,14 +2026,18 @@ class ContentTools(DocumentTargetedTools):
                     -- Select "None" from the popover
                     tell application "System Events"
                         tell application process "Keynote"
-                            set targetWin to window 1
-                            set po to missing value
+{_FIND_INSPECTOR}                            set po to missing value
                             try
-                                set po to pop over 1 of targetWin
+                                set po to pop over 1 of insp
                             end try
                             if po is missing value then
                                 try
-                                    set po to pop over 1 of button "Change" of targetWin
+                                    set po to pop over 1 of button "Change" of insp
+                                end try
+                            end if
+                            if po is missing value then
+                                try
+                                    set po to pop over 1 of targetWin
                                 end try
                             end if
                             if po is missing value then

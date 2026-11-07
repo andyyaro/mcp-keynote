@@ -4,6 +4,7 @@ from .applescript_runner import AppleScriptRunner
 from .error_handler import (
     ELEMENT_TYPE_MAP,
     AppleScriptError,
+    AppleScriptTimeout,
     FileOperationError,
     KeynoteError,
     ParameterError,
@@ -31,6 +32,7 @@ __all__ = [
     "SESSION",
     "AppleScriptError",
     "AppleScriptRunner",
+    "AppleScriptTimeout",
     "DocumentSession",
     "FileOperationError",
     "KeynoteError",

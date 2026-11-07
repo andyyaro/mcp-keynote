@@ -16,6 +16,35 @@ newer Keynote with the command below).
 | uv | 0.11.29 | `uv --version` |
 | mcp (resolved) | 1.28.1 | `.venv/bin/python -c "import importlib.metadata; print(importlib.metadata.version('mcp'))"` |
 
+### Re-verified host (2026-09-23)
+
+The live suites were re-run on a second machine. Keynote 15 installs as
+`/Applications/Keynote Creator Studio.app` (bundle id still
+`com.apple.Keynote`), so the version command needs the new path.
+
+| Item | Value | How captured |
+|------|-------|--------------|
+| macOS | 27.0 | `sw_vers -productVersion` |
+| Keynote | 15.3.1 | `defaults read "/Applications/Keynote Creator Studio.app/Contents/Info" CFBundleShortVersionString` |
+| Python (project venv) | 3.13.15 (uv-managed CPython) | `.venv/bin/python --version` |
+| uv | 0.12.7 | `uv --version` |
+| mcp (resolved) | 1.30.0 | as above |
+
+Results: `make check` green, `pytest -m keynote` 8/9, and
+`scripts/verify_tools.py` 289 checks with 2 failures: the flaky `add_table`
+header check (see `docs/TOOL_MATRIX.md`) and `add_build_in(text 2)`. That
+failure and the failing pytest (`test_build_animation_by_paragraph_delivery`
+this run, `test_build_animation_add_and_remove` in earlier ones) are the same
+"Could not find effect popover" UI-scripting flake: both build tests then
+passed twice in a row on a rerun. Measured after the `get_slide_content`
+batching, on a freshly restarted Keynote: one slide of the scale deck takes
+0.43-0.45 s, against 1.27-1.45 s element by element.
+Every Apple event takes ~17 ms on this host, for Finder and System Events as
+well as Keynote; batch reads accordingly. On top of that, Keynote charges
+each geometry read (position, width, height, rotation) ~40-90 ms per slide
+however it is batched. The sdef was not regenerated for 15.3.1, so
+`docs/keynote-14.5.sdef` is still the spec on file.
+
 ## MCP SDK versions on PyPI (verified 2026-07-25)
 
 `uv pip index versions` does not exist in uv 0.11.29, so versions were

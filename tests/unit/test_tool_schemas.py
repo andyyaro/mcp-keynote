@@ -76,8 +76,9 @@ def test_schema_properties_match_method_signature(tools_with_owners):
 
 
 def test_expected_tool_count(tools):
-    # 59 at v3.0.0; +export_assets (Task 4) +styled_line (Task 5) = 61.
-    assert len(tools) == 61
+    # 59 at v3.0.0; +export_assets (Task 4) +styled_line (Task 5) = 61;
+    # +edit_table = 62.
+    assert len(tools) == 62
 
 
 def test_tool_names_unique(tools):

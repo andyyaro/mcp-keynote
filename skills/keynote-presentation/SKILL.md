@@ -28,7 +28,7 @@ Keynote serializes either way). Pass `style` (`plain`/`boardroom`/`midnight`/`ed
 Two-column layouts: give elements `"column": "left"` / `"right"`.
 Element order in the spec is z-order (put `panel` elements before the text
 that sits on them). `describe_deck` reads any open deck back as the same
-JSON. Native `add_table` (live `=SUM(…)` formulas, min 2×2) and `add_chart`
+JSON. Native `add_table` (live `=SUM(…)` formulas, min 2×2; change an existing table with `edit_table`) and `add_chart`
 (17 native types; data is write-once — delete and re-add to change it) beat
 drawing tables/charts out of text boxes. Colored panels are RENDERED
 IMAGES (fill color is not scriptable, re-probed at 4.0.0) — not recolorable
@@ -81,6 +81,8 @@ with a screenshot as usual.
 get_slide_size()
 get_available_themes()
 create_presentation(title="...", theme="Slate")
+# company theme not installed? pass its file instead:
+# create_presentation(title="...", theme_file="/path/to/Brand.kth")
 set_slide_layout(slide_number=1, layout="Blank")
 ```
 - Use **Slate** theme by default (dark gradient, works on Blank layout)

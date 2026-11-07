@@ -57,6 +57,7 @@ from keynote_mcp.tools.export import ExportTools  # noqa: E402
 from keynote_mcp.tools.objects import ObjectTools  # noqa: E402
 from keynote_mcp.tools.presentation import PresentationTools  # noqa: E402
 from keynote_mcp.tools.slide import SlideTools  # noqa: E402
+from keynote_mcp.utils.theme_file import keynote_bundle_id, keynote_container_data  # noqa: E402
 
 # Test bitmaps are generated, opaque and visibly sized. The base64 blobs
 # they replace were a 1x1 half-transparent red and a 1x1 BROKEN PNG ("broken
@@ -1307,6 +1308,278 @@ async def check_text_runs_author(pres, export, deck):
             await pres.close_presentation(doc_name="phase10-runs-rt.key", should_save=False)
         ),
     )
+
+
+def _doc_facts(runner, doc_name):
+    """(width, height, layout names) of an open document, read directly."""
+    raw = runner.run(
+        """
+        on run argv
+            tell application "Keynote"
+                set d to document (item 1 of argv)
+                set AppleScript's text item delimiters to "|||"
+                set names to (name of every slide layout of d) as text
+                set AppleScript's text item delimiters to ""
+                return ((width of d) as integer as text) & "x" & ¬
+                    ((height of d) as integer as text) & "@@" & names
+            end tell
+        end run
+        """,
+        doc_name,
+    )
+    size, _, names = raw.partition("@@")
+    w, h = (int(v) for v in size.split("x"))
+    return w, h, names.split("|||")
+
+
+async def check_edit_table(pres, objects, export):
+    """edit_table, RENDERED: a merged, centred, recoloured header row.
+
+    Read-backs can confirm values moved and the row count grew; only pixels
+    show that a merge happened. A header written into A1 of an UNMERGED row
+    centres its text over column A, so the ink centre sits a third of the way
+    across; merged, it sits over the table's centre. The background is sampled
+    in all three column positions for the same reason.
+    """
+    key = SCRATCH / "edit-table.key"
+    shutil.rmtree(key, ignore_errors=True)
+    key.unlink(missing_ok=True)
+    check(
+        "edit_table: create doc",
+        await pres.create_presentation("edit-table", save_path=str(key)),
+        "Created presentation",
+    )
+    doc = "edit-table.key"
+    slide_w, _, _ = _doc_facts(pres.runner, doc)
+    box = (100, 100, 600, 240)
+    check(
+        "edit_table: add 4x3 table",
+        await objects.add_table(
+            1,
+            [["Team", "Now", "Plan"], ["Eng", 24, 30], ["Sales", 11, 14], ["Ops", 18, 9]],
+            x=box[0],
+            y=box[1],
+            width=box[2],
+            height=box[3],
+            doc_name=doc,
+        ),
+        "table index 1",
+    )
+    red = (200, 40, 40)
+    check(
+        "edit_table: grow, write, sort, merge, style",
+        await objects.edit_table(
+            1,
+            1,
+            row_count=5,
+            values=[["Headcount", "", ""]],
+            sort={"column": "B", "direction": "descending"},
+            merge=["A1:C1"],
+            styles=[
+                {
+                    "range": "A1:C1",
+                    "background_color": "#C82828",
+                    "text_color": "#FFFFFF",
+                    "alignment": "center",
+                },
+                {"range": "C2:C5", "format": "percent"},
+            ],
+            doc_name=doc,
+        ),
+        "Now 5x3",
+    )
+    # The fifth row arrives empty; fill it after the sort so it stays last.
+    check(
+        "edit_table: fill the added row",
+        await objects.edit_table(1, 1, values=[["Support", 7, 0.5]], start_cell="A5", doc_name=doc),
+        "3 cell(s) written",
+    )
+    facts = pres.runner.run(
+        """
+        on run argv
+            tell application "Keynote"
+                tell table 1 of slide 1 of document (item 1 of argv)
+                    set names to {}
+                    repeat with r from 2 to row count
+                        set end of names to (value of cell 1 of row r) as text
+                    end repeat
+                    set AppleScript's text item delimiters to ","
+                    set joined to names as text
+                    set AppleScript's text item delimiters to ""
+                    return joined & "|" & (formatted value of cell 3 of row 5) & "|" & ¬
+                        ((height of row 1) as integer as text) & "|" & ¬
+                        ((item 1 of (get position)) as integer as text) & "," & ¬
+                        ((item 2 of (get position)) as integer as text) & "," & ¬
+                        ((width) as integer as text)
+                end tell
+            end tell
+        end run
+        """,
+        doc,
+    )
+    order, formatted, row1_h, geom = facts.split("|")
+    record(
+        "edit_table sort kept the header and ordered the body by column B",
+        order == "Eng,Ops,Sales,Support",
+        f"body column A: {order}",
+    )
+    record("edit_table number format applied", "%" in formatted, f"C5 shows {formatted!r}")
+    tx, ty, tw = (int(v) for v in geom.split(","))
+    row_h = int(row1_h)
+
+    image, scale = await render_slide(export, 1, "edit-table", slide_w, doc_name=doc)
+    if image is not None:
+        mid_y = ty + row_h / 2
+        samples = [at(image, scale, tx + tw * f, mid_y + row_h * 0.3) for f in (0.08, 0.5, 0.92)]
+        body = at(image, scale, tx + tw * 0.08, ty + row_h * 1.5)
+        record(
+            "edit_table header background is RENDERED across all three columns",
+            all(near(s, red, 45) for s in samples) and not near(body, red, 45),
+            f"header samples {samples}, body {body}, asked {red}",
+        )
+        ink = ink_bbox(image, scale, box=(tx + 4, ty + 2, tw - 8, row_h - 4))
+        centre = (ink[0] + ink[2]) / 2 if ink else None
+        record(
+            "edit_table merge+center is RENDERED: header text sits over the table centre",
+            centre is not None and abs(centre - (tx + tw / 2)) < 25,
+            f"ink centre x={centre}, table centre x={tx + tw / 2} "
+            f"(unmerged would be ~{tx + tw / 6:.0f})",
+        )
+
+    bad = text_of(await objects.edit_table(1, 1, merge=["A1:D9"], doc_name=doc))
+    record("edit_table out-of-range merge refused", "outside the 5x3 table" in bad, bad[:120])
+    check("edit_table: close", await pres.close_presentation(doc_name=doc, should_save=False))
+
+
+def _changed_share(a, b):
+    """Share of pixels that differ visibly between two renders."""
+    if a.size != b.size:
+        b = b.resize(a.size)
+    diff = ImageChops.difference(a, b).convert("L").point(lambda v: 255 if v > 40 else 0)
+    return diff.histogram()[-1] / (a.width * a.height)
+
+
+async def check_theme_file(pres, slides, export, deck):
+    """theme_file, from a path OUTSIDE Keynote's sandbox, RENDERED.
+
+    The source is $KEYNOTE_MCP_VERIFY_THEME_FILE or, failing that, a theme the
+    user installed (Keynote keeps those in its container as UUID-named .kth
+    files), copied under .scratch with a space and '&' in its name the way a
+    shared-drive path has them. The rendered claims: the themed slide does not
+    look like the default theme's, and it still looks the same after the
+    staged copy is gone and the saved file is reopened.
+    """
+    # The container of the Keynote actually being driven: 14.x and 15.x use
+    # different bundle ids, and a hardcoded one made this check skip on 14.x
+    # and its staged-copy check look in the wrong folder (always passing).
+    container = Path(keynote_container_data(keynote_bundle_id(pres.runner)))
+    source = os.environ.get("KEYNOTE_MCP_VERIFY_THEME_FILE", "")
+    if not source:
+        installed = sorted(
+            container.glob("Library/Application Support/User Templates/*.kth")
+        )
+        source = str(installed[0]) if installed else ""
+    if not source:
+        print("SKIP  theme_file: no .kth available (set KEYNOTE_MCP_VERIFY_THEME_FILE)")
+        return
+    theme_dir = SCRATCH / "theme file & co"
+    theme_dir.mkdir(parents=True, exist_ok=True)
+    kth = theme_dir / "Brand Theme & Co.kth"
+    if Path(source).is_dir():
+        shutil.rmtree(kth, ignore_errors=True)
+        shutil.copytree(source, kth)
+    else:
+        shutil.copyfile(source, kth)
+
+    key = SCRATCH / "theme-file.key"
+    plain_key = SCRATCH / "theme-file-plain.key"
+    for path in (key, plain_key):
+        shutil.rmtree(path, ignore_errors=True)
+        path.unlink(missing_ok=True)
+
+    check(
+        "theme_file: create_presentation from a .kth outside the sandbox",
+        await pres.create_presentation("theme-file", theme_file=str(kth), save_path=str(key)),
+        "theme file: Brand Theme & Co.kth",
+    )
+    doc = "theme-file.key"
+    staged_left = list(container.glob("tmp/keynote-mcp-theme-*"))
+    record("theme_file staged copy was removed", not staged_left, str(staged_left)[:120])
+    w, h, layouts = _doc_facts(pres.runner, doc)
+
+    check(
+        "theme_file: default-theme doc for comparison",
+        await pres.create_presentation("theme-file-plain", save_path=str(plain_key)),
+        "Created presentation",
+    )
+    plain = "theme-file-plain.key"
+    pw, _, plain_layouts = _doc_facts(pres.runner, plain)
+    record(
+        "theme_file brings the theme's own layouts",
+        set(layouts) != set(plain_layouts),
+        f"{len(layouts)} layouts, first {layouts[:3]}",
+    )
+    check(
+        "theme_file: slide 1 on the theme's first layout",
+        await slides.set_slide_layout(1, layouts[0], doc_name=doc),
+    )
+    check(
+        "theme_file: plain slide 1 on its first layout",
+        await slides.set_slide_layout(1, plain_layouts[0], doc_name=plain),
+    )
+    themed, t_scale = await render_slide(export, 1, "theme-file", w, doc_name=doc)
+    default, d_scale = await render_slide(export, 1, "theme-file-plain", pw, doc_name=plain)
+    if themed is not None and default is not None:
+        # A theme shows in one of two ways. A white theme differs from the
+        # default only in DETAIL: its logo, rules and footer text on the
+        # master (an export omits unfilled placeholders), so a changed-pixel
+        # share is tiny. A theme that paints its own backdrop, such as
+        # Keynote's Gradient, has no detail at all, since the ink mask ignores
+        # gradients by design, but changes most of the slide's pixels. Had
+        # the theme not been applied, both would read ~0.
+        themed_ink, default_ink = ink_fraction(themed, t_scale), ink_fraction(default, d_scale)
+        backdrop_share = _changed_share(themed, default)
+        record(
+            "theme_file slide is RENDERED in the theme, not the default",
+            (themed_ink > 0.002 and themed_ink > 3 * default_ink) or backdrop_share > 0.25,
+            f"ink {themed_ink * 100:.2f}% vs default theme {default_ink * 100:.2f}%, "
+            f"themed ink box {ink_bbox(themed, t_scale)}; "
+            f"{backdrop_share * 100:.1f}% of pixels differ from the default theme's",
+        )
+    check("theme_file: save", await pres.save_presentation(doc_name=doc), "Saved")
+    check("theme_file: close", await pres.close_presentation(doc_name=doc, should_save=False))
+    check("theme_file: reopen", await pres.open_presentation(str(key)), "Opened")
+    again, _ = await render_slide(export, 1, "theme-file-reopened", w, doc_name=doc)
+    if themed is not None and again is not None:
+        share = _changed_share(themed, again)
+        record(
+            "theme_file doc RENDERS the same after reopen (copy gone, file self-contained)",
+            share < 0.02,
+            f"{share * 100:.2f}% of pixels changed",
+        )
+    check(
+        "theme_file: close reopened", await pres.close_presentation(doc_name=doc, should_save=False)
+    )
+    check(
+        "theme_file: close plain", await pres.close_presentation(doc_name=plain, should_save=False)
+    )
+
+    md_key = SCRATCH / "theme-file-deck.key"
+    reply = check(
+        "theme_file: build_deck via markdown frontmatter",
+        await deck.build_deck(
+            markdown=f"---\ntheme_file: {kth}\nsave_path: {md_key}\n---\n# Hello\n\n## Two\n\n- a\n- b\n"
+        ),
+        "theme file: Brand Theme & Co.kth",
+    )
+    record(
+        "build_deck keeps the theme's own slide size",
+        f'"size": "{w}x{h}"' in reply,
+        f"theme is {w}x{h}; reply: {reply[:120]}",
+    )
+    doc_line = re.search(r'"document": "([^"]+)"', reply)
+    if doc_line:
+        await pres.close_presentation(doc_name=doc_line.group(1), should_save=False)
 
 
 async def main():
@@ -2574,6 +2847,8 @@ async def main():
     await check_document_resolution(pres, slides, content, export, objects)
     await check_fill_is_unwritable(pres, slides, content, export, objects)
     await check_text_runs_author(pres, export, deck)
+    await check_edit_table(pres, objects, export)
+    await check_theme_file(pres, slides, export, deck)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS)} checks, {len(failed)} failed")

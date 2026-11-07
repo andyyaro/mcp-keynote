@@ -186,3 +186,14 @@ async def test_build_animation_add_and_remove(keynote_doc, content, slides):
     removed = await content.remove_build_in(2, "text", 1)
     assert "Removed Build In" in removed[0].text, removed[0].text
     await slides.delete_slide(2, doc_name=keynote_doc)
+
+
+async def test_build_animation_by_paragraph_delivery(keynote_doc, content, slides):
+    """The default delivery goes through the delivery popup, which All at Once skips."""
+    await slides.add_slide(doc_name=keynote_doc)
+    await content.add_text_box(2, "first\nsecond", x=100, y=100, doc_name=keynote_doc)
+    added = await content.add_build_in(2, "text", 1, effect="Appear", delivery="By Paragraph")
+    assert "Added Build In" in added[0].text, added[0].text
+    removed = await content.remove_build_in(2, "text", 1)
+    assert "Removed Build In" in removed[0].text, removed[0].text
+    await slides.delete_slide(2, doc_name=keynote_doc)

@@ -318,6 +318,42 @@ class TestContentTools:
         assert '"text_items:" & rawTextCount' not in script
         assert '"text_items:" & textCount' not in script
 
+    async def test_get_slide_content_reads_a_class_at_a_time(
+        self, content_tools, mock_subprocess_run
+    ):
+        # Element by element this took 1.3 s on a 10-element slide (Keynote
+        # 15.3.1), mostly per-element geometry reads and one app-side identity
+        # comparison per text item.
+        mock_subprocess_run.return_value.stdout = "text_items:0|images:0|shapes:0|tables:0"
+        await content_tools.get_slide_content(2)
+        scripts = [c.kwargs["input"] for c in mock_subprocess_run.call_args_list]
+        assert not any("set ti to text item i" in s for s in scripts)
+        script = last_script(mock_subprocess_run)
+        assert "set tRefs to every text item" in script
+        assert "set ti to item i of tRefs" in script
+        for cls in ("text item", "shape", "table"):
+            assert f"properties of every {cls}" in script
+        # `properties of every image` fails with -10000 (its `file`)
+        assert "properties of every image" not in script
+        assert "position of every image" in script
+
+    async def test_get_slide_content_falls_back_to_the_per_element_read(
+        self, content_tools, mock_subprocess_run
+    ):
+        def fake_run(*args, **kwargs):
+            if "set tRefs to every text item" in kwargs["input"]:
+                return subprocess.CompletedProcess(
+                    args=["osascript", "-"], returncode=1, stdout="", stderr="error (-10000)"
+                )
+            return subprocess.CompletedProcess(
+                args=["osascript", "-"], returncode=0, stdout="text_items:1|images:0", stderr=""
+            )
+
+        mock_subprocess_run.side_effect = fake_run
+        result = await content_tools.get_slide_content(2)
+        assert result[0].text == "text_items:1|images:0"
+        assert "set ti to text item i" in last_script(mock_subprocess_run)
+
     async def test_build_in_selects_slide_first(self, content_tools, mock_subprocess_run):
         # The focus step reads back the front document's name and must see the
         # requested one, so the mock answers with it.
@@ -341,7 +377,9 @@ class TestContentTools:
         assert "Failed to add build in" in result[0].text
         assert "could not be brought forward" in result[0].text
         scripts = [c.kwargs["input"] for c in mock_subprocess_run.call_args_list]
-        assert not any("System Events" in s and "Animate" in s for s in scripts)
+        # The Format restore still runs (and names the Animate button it
+        # checks), but the Animate pane was never opened.
+        assert not any('click menu item "Animate"' in s for s in scripts)
 
     async def test_build_in_ui_timeout_is_extended(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "Deck.key"
@@ -350,6 +388,20 @@ class TestContentTools:
         # scripting call itself gets the extended 60s timeout
         timeouts = [c.kwargs.get("timeout") for c in mock_subprocess_run.call_args_list]
         assert 60.0 in timeouts
+
+    async def test_format_restore_tries_the_menu_before_the_toolbar(
+        self, content_tools, mock_subprocess_run
+    ):
+        """On Keynote 14.5, leaving Animate by a toolbar click put the next
+        table at (960, 100), 29x38, whatever it asked for. The View menu goes
+        first; the toolbar is only the fallback while Animate stays selected."""
+        mock_subprocess_run.return_value.stdout = "Deck.key"
+        await content_tools.add_build_in(2, "text", 3, doc_name="Deck.key")
+        restore = last_script(mock_subprocess_run)
+        menu = restore.index('click menu item "Format"')
+        toolbar = restore.index('whose description is "Format"')
+        assert menu < toolbar
+        assert "if stillAnimate then" in restore[menu:toolbar]
 
     async def test_builds_batch_rejects_garbage_indices(self, content_tools, mock_subprocess_run):
         result = await content_tools.add_builds_to_slide(1, "1,-2")

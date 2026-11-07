@@ -23,7 +23,7 @@ def _deck_side_effect(batch_stdout="", layouts="Blank|||Title & Bullets", calls=
         if "System Events" in script:
             return _cp(cmd, "true")
         if "make new document" in script:
-            return _cp(cmd, f"deck.key{_FS}theme: White{_FS}{layouts}")
+            return _cp(cmd, f"deck.key{_FS}theme: White{_FS}1920x1080{_FS}{layouts}")
         if "close document" in script:
             return _cp(cmd, "")
         if "save document docName" in script:
@@ -178,6 +178,33 @@ class TestBuildDeckErrorIsolation:
         # no slide batch and no save ran after the failed validation
         assert not any("save document docName" in s for _, s in calls)
 
+    async def test_default_blank_layout_is_checked_against_the_theme(
+        self, deck_tools, mock_subprocess_run, tmp_path
+    ):
+        """A theme file need not have 'Blank'. A slide that gives no layout
+        defaults to it, so its absence is refused up front instead of failing
+        the slide's whole session mid-build."""
+        calls = []
+        mock_subprocess_run.side_effect = _deck_side_effect(
+            layouts="Title|||Title & Bullets", calls=calls
+        )
+        spec = _spec(tmp_path, theme="White")
+        spec["slides"].append({"layout": "Title", "elements": []})
+        result = await deck_tools.build_deck(spec=spec)
+        text = result[0].text
+        assert "Layout validation failed" in text
+        assert "slides [0] give no layout" in text
+        assert "'Blank'" in text
+        assert "the theme 'White'" in text
+        assert not any("save document docName" in s for _, s in calls)
+
+    async def test_explicit_layouts_need_no_blank(self, deck_tools, mock_subprocess_run, tmp_path):
+        mock_subprocess_run.side_effect = _deck_side_effect(layouts="Title|||Title & Bullets")
+        spec = _spec(tmp_path)
+        spec["slides"][0]["layout"] = "Title"
+        result = await deck_tools.build_deck(spec=spec)
+        assert "Layout validation failed" not in result[0].text
+
     async def test_runner_exception_in_batch_is_reported_per_slide(
         self, deck_tools, mock_subprocess_run, tmp_path
     ):
@@ -186,7 +213,7 @@ class TestBuildDeckErrorIsolation:
             if "System Events" in script:
                 return _cp(cmd, "true")
             if "make new document" in script:
-                return _cp(cmd, f"deck.key{_FS}theme: White{_FS}Blank")
+                return _cp(cmd, f"deck.key{_FS}theme: White{_FS}1920x1080{_FS}Blank")
             if "save document docName" in script:
                 return _cp(cmd, "1")
             return subprocess.CompletedProcess(

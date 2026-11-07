@@ -235,9 +235,7 @@ Judged low-value for a model building decks; the sdef surface is probed and
 documented in CAPABILITY_MATRIX.md if someone later disagrees:
 playback control (`start`/`stop`/slide switcher), document passwords
 (`set password`/`remove password` — probed working), `make image slides`
-(bulk photo decks; probed, adds surprising extra slides), `.kth` custom
-themes via `make new document with data` (unprobed — no `.kth` can be
-created by script), `print`.
+(bulk photo decks; probed, adds surprising extra slides), `print`.
 
 ## UI state affects scripting
 

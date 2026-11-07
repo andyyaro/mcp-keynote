@@ -53,8 +53,13 @@ anyway.
 
 ## The canonical filter
 
-Defined once, in `fragments.TEXT_ITEM_FILTER`, and consumed by every reader so
-they cannot drift apart:
+Defined once, in `fragments._TEXT_ITEM_PREDICATE`, and consumed by every
+reader so they cannot drift apart. It is walked two ways: `TEXT_ITEM_FILTER`
+fetches `text item i` and compares it app-side (one Apple event per item), and
+`TEXT_ITEM_CLASSIFY` runs over the list `every text item` returns, comparing
+references locally (Keynote returns a placeholder as `default title item of
+slide N`). `describe_deck` and `get_slide_content` use `TEXT_ITEM_CLASSIFY`
+and fall back to per-element reads built on `TEXT_ITEM_FILTER`:
 
 | Occurrence | Verdict |
 |---|---|
@@ -133,7 +138,8 @@ raises -1719 otherwise (`fragments.exists_guard`). Before Phase 9 only
 
 1. A new tool that emits an index reports the **per-class AppleScript index**,
    located by identity, and says which class it belongs to.
-2. A new reader uses `fragments.TEXT_ITEM_FILTER`. Do not hand-roll the
+2. A new reader uses `fragments.TEXT_ITEM_CLASSIFY` (or `TEXT_ITEM_FILTER`
+   when it reads element by element). Do not hand-roll the
    placeholder predicate — two hand-rolled copies is exactly how this broke.
 3. A new tool that consumes an index guards with `fragments.exists_guard`.
 4. Add the emit→consume pair to the round-trip checks in

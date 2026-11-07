@@ -11,6 +11,16 @@ class AppleScriptError(KeynoteError):
     """AppleScript execution error"""
 
 
+class AppleScriptTimeout(AppleScriptError):
+    """osascript was killed at its timeout.
+
+    Distinct from a script error so a batched read does not retry element by
+    element after one: Keynote is either wedged or still busy with the event
+    the batched script sent, and a second long read would only double the wait
+    (or land on the wedge).
+    """
+
+
 class FileOperationError(KeynoteError):
     """File operation error"""
 
