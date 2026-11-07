@@ -69,10 +69,10 @@ does essentially the whole table object model:
 | `merge`/`unmerge range` | works | spanning header cells |
 | `sort by column N direction ascending/descending` | works | data manipulation |
 | `row count`/`column count` growable after creation | works (4×3 → 6×4; shrinking drops rows/columns from the end, re-probed 15.3.1) | resize existing tables |
-
-*2026-09:* everything in this table after creation is exposed as `edit_table`, re-probed on Keynote 15.3.1.
 | Bulk readback `value of every cell of row N` | works | cheap `describe_deck`/read tools |
 | **Constraint:** row count and column count must each be ≥ 2 | 1×N and N×1 both raise `Invalid row/column count (-10000)` | validator must enforce |
+
+*2026-09:* everything in this table after creation is exposed as `edit_table`, re-probed on Keynote 15.3.1.
 
 ### Native charts — via the Compatibility Suite `add chart` command
 `add chart row names {…} column names {…} data {{…}} type X group by Y`
