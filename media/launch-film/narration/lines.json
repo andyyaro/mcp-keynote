@@ -1,0 +1,16 @@
+{
+  "v01": "Twenty Keynote slides, built one element at a time: 81 tool calls.",
+  "v02": "mcp-keynote builds the whole deck from one spec, in one call.",
+  "v03": "Claude writes one spec: slides, tables, charts, notes and transitions.",
+  "v04": "The server checks all of it before anything is created.",
+  "v05": "A typo or an invented key comes back named, with what to use instead.",
+  "v06": "Your text reaches AppleScript as arguments, never pasted into the script,",
+  "v07": "so a title full of quotes can't break it, or take it over.",
+  "v08": "Then Keynote builds native tables with live formulas, 17 chart types and styled connectors,",
+  "v09": "and exports to PDF, PowerPoint, a movie or HTML.",
+  "v10": "describe_deck reads an open deck back into the same spec, ready to diff in git.",
+  "v11": "757 unit tests pass.",
+  "v12": "On a real Keynote, 289 live checks ran: none failed.",
+  "v13": "It rebuilds ByAxe's keynote-mcp, a fork of easychen's original.",
+  "v14": "mcp-keynote. Keynote decks, built from one declarative spec."
+}

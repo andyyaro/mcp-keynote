@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Keynote launch film</title>
+<meta name="description" content="67 seconds on MCP Keynote: an MCP server that builds a whole Keynote deck from one declarative spec, in one call.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="MCP Keynote launch film">
+<meta property="og:description" content="Keynote decks, built from one declarative spec.">
+<meta property="og:image" content="https://andyyaro.github.io/mcp-keynote/film/poster.jpg">
+<meta property="og:type" content="video.other">
+<link rel="icon" href="film/icon.svg" type="image/svg+xml">
+<style>
+  :root { --bg: #0b1e3f; --card: #12294f; --ink: #ffffff; --ink2: rgba(255, 255, 255, 0.74); --hair: rgba(255, 255, 255, 0.14); --sky: #8ec9ff; --sky-press: #b3dbff; }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); color: var(--ink); -webkit-text-size-adjust: 100%; }
+  body { margin: 0; font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  a { color: var(--sky); }
+  a:focus-visible, video:focus-visible, summary:focus-visible { outline: 3px solid var(--sky); outline-offset: 3px; border-radius: 6px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 24px 16px 56px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+  header img { display: block; height: 32px; width: auto; }
+  header a.back { font-size: 15px; text-decoration: none; }
+  h1 { font-size: clamp(28px, 4.4vw, 44px); line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 10px; font-weight: 700; }
+  .lede { color: var(--ink2); font-size: clamp(17px, 2vw, 20px); margin: 0 0 24px; max-width: 760px; }
+  .player { border-radius: 18px; overflow: hidden; background: #000; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--hair); }
+  video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #000; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 8px; }
+  .btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0 22px; border-radius: 22px; font-weight: 600; font-size: 17px; text-decoration: none; }
+  .btn.primary { background: var(--sky); color: var(--bg); }
+  .btn.primary:hover { background: var(--sky-press); }
+  .btn.secondary { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+  .meta { color: var(--ink2); font-size: 15px; margin: 8px 0 0; }
+  details { margin-top: 32px; background: var(--card); border-radius: 14px; padding: 4px 20px; border: 1px solid var(--hair); }
+  summary { cursor: pointer; font-weight: 600; padding: 14px 0; min-height: 44px; }
+  details p { margin: 0 0 12px; }
+  .credits { margin-top: 32px; color: var(--ink2); font-size: 14px; line-height: 1.6; border-top: 1px solid var(--hair); padding-top: 20px; }
+  .credits p { margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a href="https://github.com/andyyaro/mcp-keynote" aria-label="MCP Keynote on GitHub"><img src="film/logo.svg" alt="mcp-keynote" width="108" height="32"></a>
+    <a class="back" href="https://github.com/andyyaro/mcp-keynote">On GitHub</a>
+  </header>
+  <main>
+    <h1>MCP Keynote, in 67 seconds</h1>
+    <p class="lede">An MCP server that builds a whole Keynote deck from one spec, in one call. It checks the spec before anything is created, passes your text to AppleScript as data, draws native tables and charts, and reads a deck back into the same spec.</p>
+    <div class="player">
+      <video controls playsinline preload="metadata" poster="film/poster.jpg" width="1920" height="1080" aria-label="MCP Keynote launch film, 67 seconds, with narration">
+        <source src="film/mcp-keynote-launch.mp4" type="video/mp4">
+        Your browser cannot play this video. <a href="film/mcp-keynote-launch.mp4">Download the MP4</a>.
+      </video>
+    </div>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/andyyaro/mcp-keynote#quick-start">Set it up</a>
+      <a class="btn secondary" href="https://github.com/andyyaro/mcp-keynote#use-it">Build a whole deck</a>
+    </div>
+    <p class="meta">67 seconds, 1920 × 1080, captions in the picture. <a href="film/mcp-keynote-launch.mp4" download>Download the MP4 (18.9 MB)</a> · <a href="film/mcp-keynote-launch.vtt" download>Captions file (WebVTT)</a></p>
+
+    <details>
+      <summary>Transcript</summary>
+      <p>Twenty Keynote slides, built one element at a time: 81 tool calls.</p>
+      <p>mcp-keynote builds the whole deck from one spec, in one call.</p>
+      <p>Claude writes one spec: slides, tables, charts, notes and transitions. The server checks all of it before anything is created. A typo or an invented key comes back named, with what to use instead.</p>
+      <p>Your text reaches AppleScript as arguments, never pasted into the script, so a title full of quotes can't break it, or take it over.</p>
+      <p>Then Keynote builds native tables with live formulas, 17 chart types and styled connectors, and exports to PDF, PowerPoint, a movie or HTML. describe_deck reads an open deck back into the same spec, ready to diff in git.</p>
+      <p>757 unit tests pass. On a real Keynote, 289 live checks ran: none failed.</p>
+      <p>It rebuilds ByAxe's keynote-mcp, a fork of easychen's original.</p>
+      <p>mcp-keynote. Keynote decks, built from one declarative spec.</p>
+    </details>
+
+    <div class="credits">
+      <p>MCP Keynote began as <a href="https://github.com/easychen/keynote-mcp">keynote-mcp</a> by easychen (2025). <a href="https://github.com/ByAxe/keynote-mcp">ByAxe's fork</a> translated it into English, packaged it for PyPI and added the keynote-presentation skill and the build-animation tools. This repository is Andy Yaro's rebuild on top of ByAxe's fork, 49 commits on.</p>
+      <p>The validation reply and the AppleScript lines in the film are real outputs, captured from the code with osascript mocked. The slide thumbnails are redrawn from specs in the repository, which holds no slide screenshots; Keynote was not driven for the film. The 289 live checks are quoted from the 4.1.0 changelog.</p>
+      <p>Narration: Kokoro-82M, voice af_heart. Music: "Angel Watching Me" by Arulo (Mixkit). Sound effects: Mixkit. <a href="https://github.com/andyyaro/mcp-keynote/tree/master/media/launch-film">How the film was made</a>.</p>
+    </div>
+  </main>
+</div>
+</body>
+</html>

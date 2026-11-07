@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   document is saved. `build_deck` keeps the theme's own slide size unless the
   spec sets one; the style's default size would otherwise rescale every
   layout.
+- **The launch film.** A 67-second film of one call building a whole deck: the spec checked
+  before anything is created, text passed to AppleScript as arguments, native tables, charts and
+  exports, and `describe_deck` reading the deck back. It credits easychen's original keynote-mcp
+  and ByAxe's fork. It plays at the top of the README and on its
+  [watch page](https://andyyaro.github.io/mcp-keynote/film.html), with captions and a transcript.
+  Its source is in [media/launch-film/](media/launch-film/); the MP4 is a release asset, not in
+  git, and [film.yml](.github/workflows/film.yml) publishes the page to GitHub Pages.
 
 ### Changed
 

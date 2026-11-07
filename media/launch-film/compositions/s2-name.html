@@ -1,0 +1,53 @@
+<template>
+  <!--
+    The name, on the music's drop (TM.drop = this scene's start): the mark (assets/brand/icons/icon-rounded.svg, Andy's
+    2026-11-01 logo, unchanged) pops where the 20 slides gathered, the wordmark (assets/brand/wordmark-navy.svg) rises,
+    and one chip: build_deck, 1 call, not 81 (README.md:108).
+  -->
+  <style>
+    #root { position: absolute; inset: 0; }
+    #n-mark { position: absolute; left: 850px; top: 196px; width: 220px; height: 220px; }
+    #n-word { position: absolute; left: 520px; top: 470px; width: 880px; height: 113px; }
+    #n-chipw { position: absolute; left: 0; right: 0; top: 646px; display: flex; justify-content: center; }
+    #n-chip { display: flex; align-items: center; gap: 12px; padding: 12px 28px 12px 20px; border-radius: var(--radius-capsule);
+              background: var(--fill-tertiary); font-size: 32px; line-height: 38px; font-weight: 500; color: var(--label-primary); white-space: nowrap; }
+    #n-chip .ic { font-size: 30px; color: var(--brand-blue); }
+    #n-chip .code { font-weight: 700; }
+    #n-one { border-radius: 8px; padding: 0 4px; }
+  </style>
+  <div id="root" data-composition-id="s2-name" data-width="1920" data-height="1080">
+    <svg id="n-mark" viewBox="0 0 120 120" aria-label="mcp-keynote"><rect width="120" height="120" rx="26.4" fill="#8EC9FF" /><g transform="translate(60 60) scale(0.68) translate(-60 -60)"><rect x="14" y="22" width="64" height="36" rx="6" fill="#2F64B0" /><rect x="14" y="22" width="64" height="36" rx="6" fill="none" stroke="#8EC9FF" stroke-width="5" /><rect x="28" y="42" width="64" height="36" rx="6" fill="#FFFFFF" /><rect x="28" y="42" width="64" height="36" rx="6" fill="none" stroke="#8EC9FF" stroke-width="5" /><rect x="42" y="62" width="64" height="36" rx="6" fill="#0B1E3F" /><rect x="42" y="62" width="64" height="36" rx="6" fill="none" stroke="#8EC9FF" stroke-width="5" /><rect x="51" y="71" width="27" height="6.5" rx="3.25" fill="#FFFFFF" /><rect x="51" y="82" width="17" height="5" rx="2.5" fill="#FFFFFF" fill-opacity="0.702" /></g></svg>
+    <img id="n-word" src="assets/brand/wordmark-navy.svg" alt="mcp-keynote" />
+    <div id="n-chipw">
+      <div id="n-chip"><svg class="ic"><use href="#ic-doc" /></svg><span class="code">build_deck</span><span>·</span><span id="n-one">1 call, not 81</span></div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const TM = window.TM, VO = window.VO;
+      const S0 = TM.s2[0], S1 = TM.s2[1];
+      const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const W = (k, w, nth = 0) => {
+        const alts = w.split("|");
+        for (const exact of [true, false]) {
+          let c = 0;
+          for (const x of VO[k].words) {
+            const t = norm(x.w);
+            if (alts.some((a) => (exact ? t === a : t.startsWith(a)))) { if (c === nth) return x.t0 - S0; c++; }
+          }
+        }
+        return VO[k].start - S0;
+      };
+      const tl = gsap.timeline({ paused: true });
+      tl.set({}, {}, S1 - S0 - 0.001);
+      // the mark lands ON the drop (this scene starts on it), out of the gathered slides
+      tl.fromTo("#n-mark", { opacity: 0, scale: 0.86 }, { opacity: 1, scale: 1, duration: 0.7, ease: "back.out(1.5)" }, 0);
+      tl.fromTo("#n-word", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, W("v02", "mcp") + 0.12);
+      tl.fromTo("#n-chipw", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" }, W("v02", "builds") - 0.05);
+      tl.fromTo("#n-one", { backgroundColor: "rgba(47,100,176,0)", color: "#000000" },
+        { backgroundColor: "rgba(47,100,176,0.14)", color: "#2F64B0", duration: 0.35, ease: "power1.out" }, W("v02", "one", 1) - 0.05);
+      tl.to("#root", { opacity: 0, duration: 0.4, ease: "power1.in" }, S1 - S0 - 0.4);
+      window.__timelines["s2-name"] = tl;
+    })();
+  </script>
+</template>

@@ -1,0 +1,16 @@
+{
+ "v01": "Twenty Keynote slides, built one element at a time: eighty-one tool calls.",
+ "v02": "M.C.P. Keynote builds the whole deck from one spec, in one call.",
+ "v03": "Claude writes one spec: slides, tables, charts, notes and transitions.",
+ "v04": "The server checks all of it before anything is created.",
+ "v05": "A typo or an invented key comes back named, with what to use instead.",
+ "v06": "Your text reaches Applescript as arguments, never pasted into the script,",
+ "v07": "so a title full of quotes can't break it, or take it over.",
+ "v08": "Then Keynote builds native tables with live formulas, seventeen chart types and styled connectors,",
+ "v09": "and exports to P.D.F., PowerPoint, a movie or H.T.M.L.",
+ "v10": "Describe deck reads an open deck back into the same spec, ready to diff in git.",
+ "v11": "Seven hundred fifty-seven unit tests pass.",
+ "v12": "On a real Keynote, two hundred eighty-nine live checks ran: none failed.",
+ "v13": "It rebuilds By Axe's Keynote M.C.P., a fork of Easy Chen's original.",
+ "v14": "M.C.P. Keynote. Keynote decks, built from one declarative spec."
+}

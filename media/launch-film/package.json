@@ -1,0 +1,10 @@
+{
+  "name": "mcp-keynote-launch-film",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "icons": "node scripts/build-icons.mjs",
+    "check": "npx --yes hyperframes@0.8.173 check",
+    "render": "npx --yes hyperframes@0.8.173 render -o renders/raw.mp4 --fps 30"
+  }
+}

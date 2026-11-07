@@ -1,0 +1,386 @@
+<template>
+  <!--
+    The board (beats b1-b7): ONE persistent composition, like the CERFODES arch-diagram, so the architecture stays on
+    screen and grows. World coordinates: a 1920 x 1080 map moved by the camera (#b-cam); the overview is the identity.
+    #b-fade masks the board to y < ~930, so nothing is ever drawn in the caption band, even while the camera moves.
+    Every entrance is keyed to a word of the voice (W() over window.VO); beat starts come from window.TM.
+    Real artifacts only (FACTS.md): the spec is scripts/verify_tools.py's own build_deck spec, trimmed; the validation
+    reply and the osascript lines are real outputs captured from the code with osascript mocked; the slides on the
+    canvas are REDRAWN from the repo's specs (the repo has no slide screenshots and Keynote is not driven here).
+    No monospace anywhere: code words and JSON are the system sans.
+  -->
+  <style>
+    #root { position: absolute; inset: 0; overflow: hidden; }
+    /* the board is masked twice: under the section title (top, lifted for the overview) and above the captions */
+    #b-fade { position: absolute; inset: 0; --t0: 104px; --t1: 116px;
+              -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent var(--t0), #000 var(--t1), #000 916px, transparent 936px);
+              mask-image: linear-gradient(to bottom, transparent 0, transparent var(--t0), #000 var(--t1), #000 916px, transparent 936px); }
+    #b-cam { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+    .zone { position: absolute; border-radius: var(--radius-group); background: var(--fill-quaternary); }
+    .zl { position: absolute; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+    .zl b { font-size: 23px; line-height: 28px; font-weight: 600; color: var(--label-primary); }
+    .zl span { font-size: 20px; line-height: 24px; color: var(--label-secondary); }
+    .b-chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .b-chips .chip { font-size: 17px; line-height: 21px; padding: 3px 10px; }
+    /* wires */
+    #b-wires { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: visible; }
+    #b-wires .w { fill: none; stroke: var(--system-gray); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    #b-wires .w.dash { stroke-dasharray: 7 7; stroke-linecap: butt; }
+    #b-wires .h { fill: var(--system-gray); stroke: none; }
+    #b-wires .mk { fill: none; stroke: #fff; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; }
+    .wl { position: absolute; font-size: 17px; line-height: 21px; font-weight: 500; color: var(--label-secondary); white-space: nowrap; }
+    .tok { position: absolute; left: 0; top: 0; width: 30px; height: 30px; border-radius: 50%; background: var(--background-primary);
+           border: 2px solid var(--system-indigo); display: flex; align-items: center; justify-content: center; font-size: 17px; color: var(--system-indigo); }
+    /* windows: white, radius 20, no shadow */
+    .win { position: absolute; border-radius: 20px; background: var(--background-primary); }
+    .win-h { display: flex; align-items: center; gap: 14px; padding: 16px 16px 0; }
+    .win-h .tx { flex: 1; }
+    /* the spec window's JSON, in the system sans */
+    .jb { position: absolute; left: 0; right: 0; top: 80px; padding: 0 12px; }
+    .j { font-size: 22px; line-height: 29px; font-weight: 500; color: var(--label-primary); white-space: nowrap; border-radius: 8px; padding: 0 6px; }
+    .j .k { color: var(--brand-blue); font-weight: 600; }
+    .j .p { color: var(--label-secondary); font-weight: 400; }
+    .j .sw { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 8px; vertical-align: -1px; }
+    #b-git { position: absolute; left: 20px; bottom: 16px; font-size: 22px; line-height: 26px; padding: 4px 12px; }
+    /* the validation reply */
+    #b-val { left: 500px; top: 298px; width: 790px; } /* 12 px under the Spec check card, never over its edge */
+    #b-val .vh { padding: 14px 24px 0; font-size: 22px; line-height: 28px; font-weight: 600; }
+    .vr { display: flex; gap: 12px; padding: 0 24px; margin-top: 10px; font-size: 20px; line-height: 27px; color: var(--label-primary); }
+    .vr .vi { flex: none; width: 26px; height: 27px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: var(--system-red); }
+    .vr .vi i { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--system-gray-3); }
+    .vr.dim { color: var(--label-secondary); }
+    .vr .bad { font-weight: 600; color: #d70015; }
+    .vr .fix { font-weight: 400; border-radius: 6px; }
+    #b-val .st, #b-osa .st { padding: 0 24px 20px; margin-top: 16px; }
+    #b-val .st { padding-bottom: 18px; margin-top: 14px; }
+    /* the osascript window */
+    #b-osa { left: 56px; top: 382px; width: 780px; }
+    .ol { padding: 0 24px; margin-top: 14px; font-size: 18px; line-height: 22px; font-weight: 500; color: var(--label-secondary); }
+    .oc { padding: 0 24px; font-size: 21px; line-height: 29px; font-weight: 600; color: var(--label-primary); white-space: nowrap; }
+    .oc .in { padding-left: 26px; }
+    .oc .ref { border-radius: 6px; padding: 0 3px; }
+    #b-pay { display: inline-block; margin: 6px 24px 0; padding: 5px 16px; border-radius: var(--radius-capsule); background: var(--fill-tertiary);
+             font-size: 22px; line-height: 28px; font-weight: 600; color: var(--label-primary); white-space: pre; }
+    /* the slides card and its canvas (a redrawn Keynote slide) */
+    #b-slides { flex-direction: column; align-items: stretch; gap: 0; padding: 16px; }
+    #b-slides .sh { display: flex; align-items: center; justify-content: space-between; height: 30px; }
+    #b-17 { font-size: 22px; line-height: 26px; padding: 2px 12px; }
+    #b-canvas { position: relative; margin-top: 12px; width: 498px; height: 280px; border-radius: 6px; background: var(--fill-quaternary); overflow: hidden; }
+    .cv { position: absolute; inset: 0; background: #fff; border: 1.5px solid var(--separator); border-radius: 6px; }
+    #b-exp { margin-top: 12px; display: flex; gap: 7px; }
+    #b-exp .chip { font-size: 22px; line-height: 26px; padding: 2px 11px; }
+    /* proof row */
+    .num { font-size: 36px; line-height: 38px; font-weight: 700; color: var(--brand-navy); letter-spacing: -0.5px; }
+    #b-up { flex-direction: column; align-items: flex-start; justify-content: center; gap: 12px; padding: 14px 18px; }
+    #b-up .uh { display: flex; align-items: center; gap: 10px; font-size: 23px; line-height: 27px; font-weight: 600; }
+    #b-up .uh .ic { font-size: 24px; color: var(--label-secondary); }
+    #b-up .uc { display: flex; align-items: center; gap: 6px; }
+    #b-up .chip { font-size: 22px; line-height: 26px; padding: 4px 11px; font-weight: 500; }
+    #b-up .uc .ic { font-size: 20px; color: var(--system-gray); }
+    #b-up .chip.me { background: rgba(47, 100, 176, 0.12); color: var(--brand-blue); font-weight: 600; }
+    /* the overview header (world coordinates) */
+    #b-head { position: absolute; left: 40px; top: 36px; width: 1840px; display: flex; align-items: center; justify-content: space-between; }
+    #b-title { font-size: 30px; line-height: 36px; font-weight: 700; }
+    #b-legend { display: flex; gap: 28px; }
+    .lg { display: flex; align-items: center; gap: 9px; font-size: 22px; line-height: 28px; white-space: nowrap; }
+    /* the redrawn native table (verify_tools.py:1806-1809) */
+    .tb { position: absolute; left: 39px; top: 40px; width: 420px; font-size: 21px; line-height: 26px; color: #000; }
+    .tr { display: grid; grid-template-columns: 116px 152px 152px; height: 50px; align-items: center; border-bottom: 1px solid var(--system-gray-3); }
+    .tr > span { padding: 0 16px; text-align: right; white-space: nowrap; }
+    .tr > span:first-child { padding-left: 20px; text-align: left; }
+    .tr.th { background: #2f4b7c; color: #fff; font-weight: 600; border-bottom: 0; }
+    .tr.alt { background: #f2f4f8; }
+    .tr.tt { font-weight: 600; }
+    .tr .f { position: relative; height: 50px; }
+    #cv-hl { position: absolute; left: 4px; right: 4px; top: 6px; bottom: 6px; border-radius: 6px; background: rgba(47, 100, 176, 0.14); }
+    #cv-f, #cv-35 { position: absolute; right: 16px; top: 12px; font-weight: 600; }
+    #cv-f, .tr .fx { color: var(--brand-blue); }
+    #cv-35 { font-weight: 700; }
+  </style>
+  <div id="root" data-composition-id="s3-board" data-width="1920" data-height="1080">
+    <div id="b-all">
+      <div id="b-fade">
+        <div id="b-cam" data-layout-allow-overflow>
+          <div id="b-head">
+            <div id="b-title">mcp-keynote architecture</div>
+            <div id="b-legend">
+              <div class="lg"><i class="dot live"></i>verified against Keynote 14.5</div>
+              <div class="lg"><i class="dot ci"></i>tested in CI, no Keynote</div>
+            </div>
+          </div>
+
+          <div id="z-srv" class="zone" style="left:474px; top:110px; width:810px; height:640px"></div>
+          <div id="z-srv-l" class="zl" style="left:496px; top:124px"><b>keynote-mcp server</b><span>Python · MCP stdio</span></div>
+          <div id="z-mac" class="zone" style="left:1310px; top:110px; width:570px; height:640px"></div>
+          <div id="z-mac-l" class="zl" style="left:1332px; top:124px"><b>On the Mac</b><span>Keynote 14.5 · macOS 26.5.1</span></div>
+
+          <!-- the token travels the argv wire UNDER the cards: it shows only in the gap -->
+          <div id="b-tok" class="tok"><svg class="ic"><use href="#ic-text-alignleft" /></svg></div>
+          <svg id="b-wires" viewBox="0 0 1920 1080"></svg>
+
+          <div id="b-wls"></div>
+
+          <!-- the deck spec window: scripts/verify_tools.py's build_deck spec (lines 2240-2278), trimmed with … -->
+          <div id="b-spec" class="win" style="left:40px; top:306px; width:380px; height:560px">
+            <div class="win-h">
+              <div class="tile" style="background:var(--brand-blue)"><svg class="ic"><use href="#ic-doc" /></svg></div>
+              <div class="tx"><div class="t">Deck spec</div><div class="s">verify_tools.py, trimmed</div></div>
+            </div>
+            <span id="b-git" class="chip">diffable in git</span>
+            <div id="b-j1" class="jb"></div>
+            <div id="b-j2" class="jb"></div>
+          </div>
+
+          <!-- the slides card: Keynote's slide, redrawn from the repo's specs, and the export formats -->
+          <div id="b-slides" class="card" style="left:1330px; top:162px; width:530px; height:395px">
+            <div class="sh"><div class="t">Slides and exports</div><span id="b-17" class="chip">17 chart types</span></div>
+            <div id="b-canvas">
+            </div>
+            <div id="b-exp">
+              <span class="chip">PDF</span><span class="chip">PowerPoint</span><span class="chip">movie</span><span class="chip">HTML</span><span class="chip">images</span>
+            </div>
+          </div>
+
+          <!-- the upstream card (lit in the overview) -->
+          <div id="b-up" class="card" style="left:1174px; top:772px; width:706px; height:124px">
+            <div class="uh"><svg class="ic"><use href="#ic-arrow-uturn-forward" /></svg>Upstream</div>
+            <div class="uc">
+              <span class="chip" id="up-1">easychen/keynote-mcp</span><svg class="ic"><use href="#ic-chevron-right" /></svg>
+              <span class="chip" id="up-2">ByAxe/keynote-mcp</span><svg class="ic"><use href="#ic-chevron-right" /></svg>
+              <span class="chip me" id="up-3">this rebuild</span>
+            </div>
+          </div>
+
+          <div id="b-val" class="win"></div>
+          <div id="b-osa" class="win"></div>
+        </div>
+      </div>
+
+      <!-- screen space, above the camera -->
+      <div id="sec-b1" class="sec" data-layout-allow-overlap><b>One spec, one call</b><span>the client sends the whole deck to build_deck</span></div>
+      <div id="sec-b2" class="sec" data-layout-allow-overlap><b>Checked first</b><span>nothing is created when the spec is wrong</span></div>
+      <div id="sec-b3" class="sec" data-layout-allow-overlap><b>Text as data</b><span>osascript gets your text as argv, never as code</span></div>
+      <div id="sec-b4" class="sec" data-layout-allow-overlap><b>Native Keynote objects</b><span>tables, charts and connectors, then exports</span></div>
+      <div id="sec-b5" class="sec" data-layout-allow-overlap><b>Round trip</b><span>describe_deck reads a deck back into its spec</span></div>
+      <div id="sec-b6" class="sec" data-layout-allow-overlap><b>Proof</b><span>unit tests in CI, live checks on a real Keynote</span></div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const TM = window.TM, VO = window.VO;
+      const S0 = TM.s3[0], S1 = TM.s3[1];
+      const F = (t) => t - S0; // film seconds -> scene-local seconds
+      const B = (k, i = 0) => F(TM[k][i]);
+      const W = window.BOARD.W(S0);
+      const cam = document.getElementById("b-cam");
+
+      const { CARDS, WIRES } = window.BOARD.build();
+
+      // ---- camera: frame world point (cx, cy) at zoom s in the area between the title band and the captions
+      const C = (cx, cy, s) => ({ x: 960 - cx * s, y: 523 - cy * s, scale: s });
+      const tl = gsap.timeline({ paused: true });
+      const go = (at, cx, cy, s, d = 1.3) => tl.to(cam, { ...C(cx, cy, s), duration: d, ease: "power2.inOut" }, at);
+      const { pop, fade, out, dot, ph, light, quiet, wire, hl, unhl, count } = window.BOARD.helpers(tl, WIRES);
+      // a window opens: opaque quickly (never a see-through overlay on text), then settles
+      const win = (sel, at) => {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.18, ease: "power1.out" }, at);
+        tl.fromTo(sel, { y: 14, scale: 0.97 }, { y: 0, scale: 1, duration: 0.55, ease: "back.out(1.4)" }, at);
+      };
+      // section titles: one per beat, crossfading at the beat start
+      const SECS = ["b1", "b2", "b3", "b4", "b5", "b6"];
+      gsap.set(SECS.map((b) => `#sec-${b}`), { opacity: 0 });
+      SECS.forEach((b, i) => {
+        const a = i === 0 ? 0.25 : B(b) - 0.05;
+        tl.fromTo(`#sec-${b}`, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, a);
+        tl.to(`#sec-${b}`, { opacity: 0, duration: 0.3, ease: "power1.in" }, B(b, 1) - 0.4);
+      });
+
+      // initial state: nothing on the board yet
+      const ALLCARDS = CARDS.map((c) => `#c-${c.id}`).concat(["#b-spec", "#b-slides", "#b-up"]);
+      gsap.set(ALLCARDS.concat([".zone", ".zl", ".wl", "#b-head", "#b-val", "#b-osa", "#b-tok", "#b-j2", ".cv", "#b-git", "#b-17", ".st"]), { opacity: 0 });
+      gsap.set(["#cv-35"], { opacity: 0 });
+      gsap.set("#b-j2", { display: "none" });
+      gsap.set("#b-exp .chip", { opacity: 0.4 }); // the export formats wait, unlit, until the voice names them
+      tl.set({}, {}, F(S1) - 0.001); // the timeline spans the whole slot
+
+      // ===================== b1: one spec (v03), checked by the server (v04) =====================
+      tl.fromTo(cam, C(222, 418, 1.34), { ...C(222, 422, 1.37), duration: F(VO.v03.end) - 0.35, ease: "none" }, 0);
+      tl.fromTo("#b-fade", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 0);
+      pop("#c-client", W("v03", "claude") - 0.1);
+      tl.fromTo("#c-client-chips .chip", { opacity: 0, scale: 0.8 }, { opacity: 1, scale: 1, duration: 0.35, ease: "back.out(2)", stagger: 0.12 }, W("v03", "claude") + 0.35);
+      pop("#b-spec", W("v03", "writes") + 0.05);
+      hl("#j1-slides", W("v03", "slides"));
+      hl("#j1-table", W("v03", "tables"));
+      hl("#j1-chart", W("v03", "charts"));
+      hl("#j1-notes", W("v03", "notes"));
+      hl("#j1-transition", W("v03", "transitions"));
+      // v04: the server zone arrives, server.py and the spec check light on their words
+      const v4 = F(VO.v04.start);
+      go(F(VO.v03.end) - 0.35, 590, 360, 1.36, 1.2);
+      fade("#z-srv", v4 - 0.5, 0.6);
+      fade("#z-srv-l", v4 - 0.3, 0.4);
+      ["server", "check", "styles", "build", "png", "frag", "desc", "runner"].forEach((id, i) => ph(`#c-${id}`, v4 - 0.3 + i * 0.05));
+      wire("w-call", W("v04", "server") - 0.35, 0.4);
+      fade("#wl-call", W("v04", "server") - 0.1, 0.35);
+      light("#c-server", W("v04", "server"));
+      dot("#c-server-st", W("v04", "server") + 0.5);
+      wire("w-spec", W("v04", "checks") - 0.2, 0.25);
+      light("#c-check", W("v04", "checks"));
+      ["#j1-slides", "#j1-table", "#j1-chart", "#j1-notes", "#j1-transition"].forEach((s) => unhl(s, W("v04", "before")));
+
+      // ===================== b2: checked first (v05): the real reply =====================
+      const b2 = B("b2");
+      go(F(VO.v04.end) - 0.1, 895, 483, 1.26, 1.1); // the spec check stays whole above its reply, the reply whole above the captions
+      // the reply opens over rows 2-4: what lies under it steps back (lit parts to 30%, faint placeholders to 15%)
+      const DIM2 = "#c-server, #b-spec, #c-client, #wl-call, #w-call, #w-spec";
+      const PH2 = "#c-styles, #c-build, #c-png, #c-frag, #c-desc, #c-runner";
+      tl.to(DIM2, { opacity: 0.1, duration: 0.6, ease: "power1.inOut" }, b2); // faint enough that the cut JSON at the frame edge never competes with the reply
+      tl.to(PH2, { opacity: 0.12, duration: 0.6, ease: "power1.inOut" }, b2);
+      win("#b-val", W("v05", "a") - 0.25);
+      tl.fromTo("#vr1 .vi", { scale: 0.4, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(2.2)" }, W("v05", "typo"));
+      hl("#vr1 .bad", W("v05", "typo"), "rgba(255,56,60,0.10)");
+      tl.fromTo("#vr3 .vi", { scale: 0.4, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.4, ease: "back.out(2.2)" }, W("v05", "invented"));
+      hl("#vr3 .bad", W("v05", "invented"), "rgba(255,56,60,0.10)");
+      hl("#fx1", W("v05", "named"));
+      hl("#fx3", W("v05", "use"));
+      dot("#b-val-st", W("v05", "invented") + 0.6); // "0 AppleScript calls" holds ~2.7 s, after both rejected keys
+
+      // ===================== b3: text as data (v06, v07) =====================
+      const b3 = B("b3");
+      const t3 = F(VO.v05.end) + 0.05;
+      out("#b-val", t3 - 0.1, 0.35);
+      tl.to(DIM2, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, t3);
+      tl.to(PH2, { opacity: 0.5, duration: 0.5, ease: "power1.inOut" }, t3);
+      go(t3, 662, 452, 1.4, 1.2);
+      wire("w-valid", W("v06", "your") - 0.3, 0.25);
+      fade("#wl-valid", W("v06", "your") - 0.2, 0.3);
+      light("#c-build", W("v06", "your") - 0.05);
+      wire("w-style", W("v06", "your") + 0.2, 0.25);
+      quiet("#c-styles", W("v06", "your") + 0.35); // side branches fill in quietly: only the text's own path (build_deck, fragments.py, runner) pulses
+      wire("w-frag", W("v06", "reaches") - 0.1, 0.25);
+      light("#c-frag", W("v06", "applescript") - 0.1);
+      wire("w-png", W("v06", "applescript") + 0.25, 0.25);
+      quiet("#c-png", W("v06", "applescript") + 0.4);
+      wire("w-osa", W("v06", "arguments") - 0.3, 0.25);
+      fade("#wl-osa", W("v06", "arguments") - 0.2, 0.3);
+      light("#c-runner", W("v06", "arguments"));
+      const DIM3 = "#c-png, #c-desc, #b-spec, #c-styles, #w-png, #w-style";
+      tl.to(DIM3, { opacity: 0.18, duration: 0.4, ease: "power1.inOut" }, W("v06", "arguments") + 0.2);
+      win("#b-osa", W("v06", "arguments") + 0.45);
+      hl("#b-ref", W("v06", "never"));
+      dot("#b-osa-st", W("v06", "pasted") + 0.1);
+      // v07: the title travels as argv into Keynote, which shows it as plain title text
+      const v7 = F(VO.v07.start);
+      const t7 = F(VO.v06.end) - 0.15;
+      out("#b-osa", t7 - 0.05, 0.35);
+      tl.to(DIM3, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, t7);
+      tl.to("#c-desc", { opacity: 0.5, duration: 0.5, ease: "power1.inOut" }, t7);
+      go(t7, 1374, 424, 1.35, 1.1);
+      fade("#z-mac", v7 - 0.55, 0.6);
+      fade("#z-mac-l", v7 - 0.35, 0.4);
+      ph("#b-slides", v7 - 0.3);
+      ph("#c-keynote", v7 - 0.25);
+      tl.set("#b-slides > *", { opacity: 0 }, 0);
+      wire("w-argv", W("v07", "so") - 0.05, 0.35);
+      fade("#wl-argv", W("v07", "so") + 0.1, 0.3);
+      tl.fromTo("#b-tok", { x: 1240, y: 629, opacity: 0 }, { x: 1262, y: 629, opacity: 1, duration: 0.3, ease: "power1.out" }, W("v07", "title"));
+      tl.to("#b-tok", { x: 1324, duration: 0.5, ease: "power1.inOut" }, W("v07", "title") + 0.3);
+      tl.to("#b-tok", { opacity: 0, duration: 0.15 }, W("v07", "title") + 0.75);
+      light("#c-keynote", W("v07", "quotes"));
+      light("#b-slides", W("v07", "quotes") + 0.2);
+      tl.set("#b-17", { opacity: 0 }, W("v07", "quotes") + 0.21);
+      fade("#cv-adv", W("v07", "break") - 0.05, 0.4);
+      const swap = (prev, at) => tl.set(prev, { opacity: 0 }, at + 0.45); // the slide underneath is hidden once covered
+      dot("#c-runner-st", W("v07", "take"));
+
+      // ===================== b4: native Keynote objects (v08), then exports (v09) =====================
+      const b4 = B("b4");
+      // zoomed framings keep each zone label either fully under the title (y < 104) or fully below it (y > 116)
+      go(F(VO.v07.end) + 0.05, 1595, 420, 1.36, 1.2);
+      tl.to(cam, { ...C(1595, 414, 1.4), duration: W("v09", "html") + 0.5 - (F(VO.v07.end) + 1.25), ease: "none" }, F(VO.v07.end) + 1.25);
+      dot("#c-keynote-st", W("v08", "keynote"));
+      wire("w-draw", W("v08", "builds") - 0.1, 0.3);
+      fade("#wl-draw", W("v08", "builds") + 0.1, 0.3);
+      fade("#cv-tab", W("v08", "tables") - 0.3, 0.25);
+      swap("#cv-adv", W("v08", "tables") - 0.3);
+      tl.fromTo("#cv-hl", { opacity: 0 }, { opacity: 1, duration: 0.3 }, W("v08", "live"));
+      tl.to("#cv-f", { opacity: 0, duration: 0.3, ease: "power1.in" }, W("v08", "formulas"));
+      tl.to("#cv-35", { opacity: 1, duration: 0.35, ease: "power1.out" }, W("v08", "formulas") + 0.32);
+      fade("#cv-pie", W("v08", "17") - 0.15, 0.35);
+      swap("#cv-tab", W("v08", "17") - 0.15);
+      pop("#b-17", W("v08", "chart") - 0.05, 8);
+      fade("#cv-lin", W("v08", "styled") - 0.1, 0.35);
+      swap("#cv-pie", W("v08", "styled") - 0.1);
+      [["PDF", 1], ["PowerPoint", 2], ["movie", 3], ["HTML", 4]].forEach(([w, i]) => {
+        const t = W("v09", w.toLowerCase());
+        tl.to(`#b-exp .chip:nth-child(${i})`, { opacity: 1, duration: 0.3, ease: "power1.out" }, t - 0.05);
+        tl.fromTo(`#b-exp .chip:nth-child(${i})`, { scale: 1 }, { scale: 1.12, duration: 0.18, ease: "power2.out", yoyo: true, repeat: 1 }, t - 0.05);
+      });
+      tl.to("#b-exp .chip:nth-child(5)", { opacity: 1, duration: 0.4, ease: "power1.out" }, W("v09", "html") + 0.45);
+
+      // ===================== b5: round trip (v10) =====================
+      const b5 = B("b5");
+      go(W("v09", "html") + 0.55, 1170, 475, 1.3, 1.2); // leaves after the last export lights, settles before "describe"
+      tl.to("#wl-call", { opacity: 0, duration: 0.4, ease: "power1.inOut" }, W("v09", "html") + 0.55); // it would sit cut at the frame edge
+
+      light("#c-desc", W("v10", "describe"));
+      wire("w-read", W("v10", "describe") + 0.1, 0.7);
+      fade("#wl-read", W("v10", "deck") + 0.2, 0.35);
+      fade("#cv-run", W("v10", "reads") - 0.1, 0.4);
+      swap("#cv-lin", W("v10", "reads") - 0.1);
+      go(W("v10", "deck", 1), 432, 590, 1.36, 1.0);
+      wire("w-same", W("v10", "same") - 0.25, 0.35);
+      fade("#wl-same", W("v10", "same"), 0.35);
+      tl.to("#b-j1", { opacity: 0, duration: 0.3, ease: "power1.in" }, W("v10", "same") - 0.1);
+      tl.set("#b-j1", { display: "none" }, W("v10", "same") + 0.2);
+      tl.set("#b-j2", { display: "block" }, W("v10", "same") + 0.2);
+      tl.fromTo("#b-j2", { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power1.out" }, W("v10", "same") + 0.2);
+      [["r1", "r1c", "rgba(0,0,0,0.07)"], ["r2", "r2c", "rgba(131,0,65,0.10)"], ["r3", "r3c", "rgba(240,148,144,0.20)"]].forEach(([a, b, c], i) => {
+        hl(`#j2-${a}, #j2-${b}`, W("v10", "spec") + 0.2 + i * 0.25, c);
+      });
+      dot("#c-desc-st", W("v10", "ready") - 0.1);
+      pop("#b-git", W("v10", "diff") - 0.05, 8);
+
+      // ===================== b6: proof (v11, v12) =====================
+      const b6 = B("b6");
+      go(F(VO.v10.end) + 0.02, 700, 700, 1.5, 1.0);
+      tl.to(["#j2-r1", "#j2-r1c", "#j2-r2", "#j2-r2c", "#j2-r3", "#j2-r3c"], { backgroundColor: "rgba(0,0,0,0)", duration: 0.5 }, b6);
+      ph("#c-t757", F(VO.v10.end) + 0.0);
+      ph("#c-t289", F(VO.v10.end) + 0.08);
+      ph("#b-up", F(VO.v10.end) + 0.16);
+      tl.set("#b-up > *", { opacity: 0 }, 0);
+      light("#c-t757", W("v11", "757") - 0.1);
+      count("#n-t757", W("v11", "757"), 757, 1.15);
+      wire("w-ci", W("v11", "unit"), 0.3);
+      fade("#wl-ci", W("v11", "unit") + 0.2, 0.3);
+      dot("#c-t757-st", W("v11", "pass"));
+      go(F(VO.v11.end) - 0.15, 1140, 610, 1.3, 1.1);
+      light("#c-t289", W("v12", "real"));
+      count("#n-t289", W("v12", "289"), 289, 0.8);
+      wire("w-live", W("v12", "live") - 0.1, 0.7);
+      fade("#wl-live", W("v12", "live") + 0.4, 0.3);
+      dot("#c-t289-st", W("v12", "none"));
+
+      // ===================== b7: the whole board (v13), then out =====================
+      // at zoom 1.0 only what reads at that size stays: titles, status words, chips, the spec, the legend.
+      const b7 = B("b7");
+      go(F(VO.v12.end) - 0.1, 960, 523, 1.0, 1.2);
+      tl.to("#b-fade", { "--t0": "0px", "--t1": "0px", duration: 0.6, ease: "power1.inOut" }, b7 + 0.2);
+      const FOLD = ".card .s, #b-spec .s, #c-client-chips, .wl, .zl span";
+      tl.to(FOLD, { opacity: 0, duration: 0.35, ease: "power1.out" }, b7 + 0.05);
+      tl.set(FOLD, { display: "none" }, b7 + 0.45);
+      fade("#b-head", b7 + 0.75, 0.5);
+      tl.set("#b-up .uc .chip", { opacity: 0.35 }, 0);
+      light("#b-up", W("v13", "rebuilds") - 0.3);
+      tl.fromTo("#up-3", { opacity: 0.35 }, { opacity: 1, duration: 0.3 }, W("v13", "rebuilds"));
+      tl.fromTo("#up-3", { scale: 1 }, { scale: 1.1, duration: 0.2, ease: "power2.out", yoyo: true, repeat: 1 }, W("v13", "rebuilds"));
+      tl.fromTo("#up-2", { opacity: 0.35 }, { opacity: 1, duration: 0.3 }, W("v13", "by"));
+      tl.fromTo("#up-2", { scale: 1 }, { scale: 1.1, duration: 0.2, ease: "power2.out", yoyo: true, repeat: 1 }, W("v13", "by"));
+      tl.fromTo("#up-1", { opacity: 0.35 }, { opacity: 1, duration: 0.3 }, W("v13", "easy"));
+      tl.fromTo("#up-1", { scale: 1 }, { scale: 1.1, duration: 0.2, ease: "power2.out", yoyo: true, repeat: 1 }, W("v13", "easy"));
+      tl.to("#b-all", { opacity: 0, duration: 0.4, ease: "power1.in" }, F(S1) - 0.4);
+
+      window.__timelines["s3-board"] = tl;
+    })();
+  </script>
+</template>

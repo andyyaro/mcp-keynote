@@ -1,9 +1,19 @@
+<p align="center">
+  <img src="docs/assets/brand/lockup/lockup-color.svg" alt="mcp-keynote" width="454">
+</p>
+
 # Keynote MCP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Coverage 95%](https://img.shields.io/badge/coverage-95%25-brightgreen.svg)](#development)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
+
+<p align="center">
+  <a href="https://andyyaro.github.io/mcp-keynote/film.html"><img src="docs/assets/readme/mcp-keynote-in-action.webp" alt="The architecture board from the launch film: a title full of quotes shows on Keynote's slide as plain text, then Keynote draws a native table with its live SUM row, a pie chart and three styled connectors, the PDF, PowerPoint, movie and HTML export chips light up, and describe_deck reads the deck back into the same spec. Select to watch the 67-second film." width="920"></a>
+</p>
+
+<p align="center"><b>Watch the 67-second launch film:</b> <a href="https://andyyaro.github.io/mcp-keynote/film.html">with sound and captions</a> · <a href="https://andyyaro.github.io/mcp-keynote/film/mcp-keynote-launch.mp4">MP4, 18.9 MB</a> · <a href="media/launch-film/">how it was made</a></p>
 
 An MCP server that gives AI full control over Apple Keynote through AppleScript
 automation. Build entire decks from one declarative spec — native tables and
@@ -204,6 +214,7 @@ src/keynote_mcp/
 skills/           # keynote-presentation Claude Skill
 docs/             # ENVIRONMENT, TOOL_MATRIX, CAPABILITY_MATRIX, CEILING,
                   # MCP_V2_MIGRATION, MODERNIZATION_REPORT
+media/launch-film/ # the launch film's source and its watch page
 ```
 
 ## Standalone Binary
