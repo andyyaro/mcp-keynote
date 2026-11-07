@@ -2713,14 +2713,33 @@ class DeckTools(DocumentTargetedTools):
 
             # Validate every slide's layout against the live theme; a miss
             # deletes the fresh document so nothing half-built remains.
+            # A slide without a layout gets "Blank", which every built-in
+            # theme has but a theme FILE need not; check that default too,
+            # or each such slide's whole session fails mid-build.
+            theme_label = (
+                f"theme file {os.path.basename(source_theme)!r}"
+                if source_theme
+                else f"theme {theme!r}"
+                if theme
+                else "default theme"
+            )
             layout_errors = []
+            unlaid: list[int] = []
             for i, slide in enumerate(spec["slides"]):
                 wanted = slide.get("layout")
                 if wanted and wanted not in layouts:
                     layout_errors.append(
-                        f"slides[{i}].layout: {wanted!r} not in theme '{theme}' "
+                        f"slides[{i}].layout: {wanted!r} not in the {theme_label} "
                         f"(available: {sorted(layouts)})"
                     )
+                elif not wanted and "Blank" not in layouts:
+                    unlaid.append(i)
+            if unlaid:
+                layout_errors.append(
+                    f"slides {unlaid} give no layout, and the {theme_label} has no "
+                    f"'Blank' layout to default to; set layout on each to one of "
+                    f"{sorted(layouts)}"
+                )
             if layout_errors:
                 self.runner.run(
                     'on run argv\ntell application "Keynote" to close document '

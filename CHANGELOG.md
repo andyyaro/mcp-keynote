@@ -53,8 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   A sparse `slide_range` is read in spans of at most 20 slides, never the
   whole stretch between its ends.
 - The build-animation tools find the Animate inspector by its "Build In" tab,
-  which Keynote 15 moved into a splitter group, and switch inspector panes
-  with the toolbar buttons, falling back to the View menu.
+  which Keynote 15 moved into a splitter group, and open the Animate pane with
+  the toolbar button, falling back to the View menu. They leave it through the
+  View menu first and use the toolbar only if Animate is still selected: on
+  Keynote 14.5, leaving by the toolbar put the next `add_table` at (960, 100),
+  29x38 points, whatever it asked for, every time. The harness's rendered
+  table-header check caught it.
 
 ### Fixed
 
@@ -62,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   ±1e15 had come in with `edit_table`'s shared cell code. NaN and infinity,
   which would reach AppleScript as undefined identifiers, are refused, and in
   `build_deck` by the spec validator, before anything is built.
+- `build_deck` checks the default layout too. A slide that gives no layout
+  gets "Blank", which a theme file need not have; such a spec is now refused
+  before anything is built, naming the slides and the theme's layouts, instead
+  of failing those slides' sessions mid-build. Layout errors name a theme file
+  by its file name rather than as theme ''.
 
 ## [4.1.0] - 2026-07-26
 
