@@ -98,6 +98,37 @@ def _show_inspector_pane(pane: str) -> str:
                     end tell"""
 
 
+# Leaves the Animate pane: View menu first, toolbar if Animate is still the
+# selected pane half a second later. See ContentTools._restore_format_pane.
+_RESTORE_FORMAT_PANE = """
+                    tell application "System Events"
+                        tell application process "Keynote"
+                            try
+                                click menu item "Format" of menu 1 of menu item "Inspector" of ¬
+                                    menu 1 of menu bar item "View" of menu bar 1
+                            end try
+                            set stillAnimate to false
+                            repeat 5 times
+                                set stillAnimate to false
+                                try
+                                    if (value of (first radio button of group 1 of toolbar 1 of ¬
+                                        window 1 whose description is "Animate")) as integer is 1 ¬
+                                        then set stillAnimate to true
+                                end try
+                                if not stillAnimate then exit repeat
+                                delay 0.1
+                            end repeat
+                            if stillAnimate then
+                                click (first radio button of group 1 of toolbar 1 of window 1 ¬
+                                    whose description is "Format")
+                                -- The click returns before Keynote has settled;
+                                -- on 14.5 a 0.8 s pause was enough.
+                                delay 1
+                            end if
+                        end tell
+                    end tell"""
+
+
 # One consistent routing signal on every element-creating primitive: with 59
 # tools on the surface, a model asked for a 15-slide deck will otherwise chain
 # ~5 of these per slide. They stay for editing; build_deck authors.
@@ -1785,12 +1816,18 @@ class ContentTools(DocumentTargetedTools):
         ``make new line`` fails DETERMINISTICALLY with -10000 "AppleEvent
         handler failed" (verified live; other make-new classes still work).
         Best-effort: UI state must never fail the build call itself.
+
+        The View menu goes first and the toolbar only if the Animate pane is
+        still up afterwards. After add_build_in or add_builds_to_slide on
+        Keynote 14.5, leaving Animate by a toolbar click put the next table at
+        (960, 100), 29x38 points, whatever its properties asked for, every
+        time; the menu click (and a pause of 0.8 s) leaves it right. On 15.x
+        the menu stops switching panes after the first use, which is what the
+        toolbar fallback is for; it waits a second after its click. The same
+        symptom is what made the rendered table-header check flaky on 15.3.1.
         """
         try:
-            self.runner.run(
-                _show_inspector_pane("Format"),
-                timeout=10.0,
-            )
+            self.runner.run(_RESTORE_FORMAT_PANE, timeout=10.0)
         except Exception:
             logger.debug("Could not restore the Format inspector pane", exc_info=True)
 

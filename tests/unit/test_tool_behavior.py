@@ -377,7 +377,9 @@ class TestContentTools:
         assert "Failed to add build in" in result[0].text
         assert "could not be brought forward" in result[0].text
         scripts = [c.kwargs["input"] for c in mock_subprocess_run.call_args_list]
-        assert not any("System Events" in s and "Animate" in s for s in scripts)
+        # The Format restore still runs (and names the Animate button it
+        # checks), but the Animate pane was never opened.
+        assert not any('click menu item "Animate"' in s for s in scripts)
 
     async def test_build_in_ui_timeout_is_extended(self, content_tools, mock_subprocess_run):
         mock_subprocess_run.return_value.stdout = "Deck.key"
@@ -386,6 +388,20 @@ class TestContentTools:
         # scripting call itself gets the extended 60s timeout
         timeouts = [c.kwargs.get("timeout") for c in mock_subprocess_run.call_args_list]
         assert 60.0 in timeouts
+
+    async def test_format_restore_tries_the_menu_before_the_toolbar(
+        self, content_tools, mock_subprocess_run
+    ):
+        """On Keynote 14.5, leaving Animate by a toolbar click put the next
+        table at (960, 100), 29x38, whatever it asked for. The View menu goes
+        first; the toolbar is only the fallback while Animate stays selected."""
+        mock_subprocess_run.return_value.stdout = "Deck.key"
+        await content_tools.add_build_in(2, "text", 3, doc_name="Deck.key")
+        restore = last_script(mock_subprocess_run)
+        menu = restore.index('click menu item "Format"')
+        toolbar = restore.index('whose description is "Format"')
+        assert menu < toolbar
+        assert "if stillAnimate then" in restore[menu:toolbar]
 
     async def test_builds_batch_rejects_garbage_indices(self, content_tools, mock_subprocess_run):
         result = await content_tools.add_builds_to_slide(1, "1,-2")
